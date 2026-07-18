@@ -1,7 +1,17 @@
 import json
+import logging
 import os
 import sys
+import tempfile
 from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
+
+
+class ConfigStorageError(ValueError):
+    """Raised when the local configuration cannot be safely persisted."""
+
 
 class Config:
     _instance = None
@@ -19,6 +29,8 @@ class Config:
     _DEFAULT_INTENT_ROUTER_TIMEOUT_SECONDS = "8"
     _DEFAULT_INTENT_EMBEDDING_THRESHOLD = "0.74"
     _DEFAULT_INTENT_EMBEDDING_MARGIN = "0.05"
+    _CONFIG_DIR_MODE = 0o700
+    _CONFIG_FILE_MODE = 0o600
     _ALLOWED_XAI_TOOLS = {"web_search", "x_search"}
     _ALLOWED_VALIDATION_LEVELS = {"fast", "balanced", "strict"}
     _ALLOWED_FALLBACK_MODES = {"auto", "off"}
@@ -147,21 +159,31 @@ class Config:
     @staticmethod
     def _safe_mkdir(p: Path) -> bool:
         try:
-            p.mkdir(parents=True, exist_ok=True)
-            return True
+            p.mkdir(parents=True, exist_ok=True, mode=Config._CONFIG_DIR_MODE)
+            if not sys.platform.startswith("win"):
+                p.chmod(Config._CONFIG_DIR_MODE)
+            return p.is_dir()
         except (PermissionError, OSError):
             return False
+
+    @staticmethod
+    def _secure_file_mode(p: Path) -> None:
+        if not sys.platform.startswith("win"):
+            p.chmod(Config._CONFIG_FILE_MODE)
+
+    @staticmethod
+    def _config_storage_hint() -> str:
+        return "请设置 SMART_SEARCH_CONFIG_DIR 指向可写且受保护的配置目录"
+
+    def _config_storage_error(self, config_dir: Path | None = None) -> str:
+        target = config_dir or self.config_file.parent
+        return f"无法准备安全配置目录: {target}。{self._config_storage_hint()}。"
 
     @property
     def config_file(self) -> Path:
         if self._config_file is None:
             config_dir, config_dir_source = self._resolve_config_dir()
-            ok = self._safe_mkdir(config_dir)
-            if config_dir_source == "default" and not ok:
-                cwd_dir = Path.cwd() / ".smart-search"
-                if self._safe_mkdir(cwd_dir):
-                    config_dir = cwd_dir
-                    config_dir_source = "cwd_fallback"
+            self._safe_mkdir(config_dir)
             self._config_file = config_dir / "config.json"
             self._config_dir_source = config_dir_source
         return self._config_file
@@ -181,12 +203,47 @@ class Config:
             return {}
 
     def _save_config_file(self, config_data: dict) -> None:
+        target = self.config_file
+        temp_path: Path | None = None
+        temp_fd: int | None = None
+        logger.info("开始安全写入配置: %s", target)
         try:
-            with open(self.config_file, 'w', encoding='utf-8') as f:
+            if not self._safe_mkdir(target.parent):
+                raise PermissionError(self._config_storage_error(target.parent))
+
+            # Keep the temporary file beside the target so os.replace is atomic
+            # on the same filesystem and an interrupted write preserves the old file.
+            temp_fd, temp_name = tempfile.mkstemp(
+                prefix=f".{target.name}.",
+                suffix=".tmp",
+                dir=str(target.parent),
+            )
+            temp_path = Path(temp_name)
+            if not sys.platform.startswith("win"):
+                os.fchmod(temp_fd, self._CONFIG_FILE_MODE)
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                temp_fd = None
                 json.dump(config_data, f, ensure_ascii=False, indent=2)
-        except (IOError, PermissionError, OSError) as e:
-            hint = " (sandbox/CI 下可设 SMART_SEARCH_CONFIG_DIR 指向可写目录)" if isinstance(e, PermissionError) else ""
-            raise ValueError(f"无法保存配置文件: {str(e)}{hint}")
+                f.flush()
+                os.fsync(f.fileno())
+            self._secure_file_mode(temp_path)
+            os.replace(temp_path, target)
+            temp_path = None
+            logger.info("配置写入完成: %s", target)
+        except (IOError, OSError, TypeError, ValueError) as e:
+            if temp_fd is not None:
+                try:
+                    os.close(temp_fd)
+                except OSError:
+                    pass
+            hint = f"。{self._config_storage_hint()}"
+            raise ConfigStorageError(f"无法保存配置文件: {str(e)}{hint}") from e
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
 
     def _get_config_value(self, key: str, default: str | None = None) -> str | None:
         env_value = os.getenv(key)
@@ -282,17 +339,23 @@ class Config:
             self._cached_model = None
 
     def config_path_info(self) -> dict:
+        config_file = self.config_file
+        storage_ok = self._safe_mkdir(config_file.parent)
+        storage_error = "" if storage_ok else self._config_storage_error(config_file.parent)
         return {
-            "ok": True,
-            "config_file": str(self.config_file),
-            "config_dir": str(self.config_file.parent),
+            "ok": storage_ok,
+            "config_file": str(config_file),
+            "config_dir": str(config_file.parent),
             "config_dir_source": self.config_dir_source,
             "default_config_file": str(self._default_config_dir() / "config.json"),
             "legacy_windows_config_file": str(self._legacy_windows_config_dir() / "config.json") if sys.platform.startswith("win") else "",
             "legacy_windows_config_exists": (self._legacy_windows_config_dir() / "config.json").exists() if sys.platform.startswith("win") else False,
             "config_dir_override_value": self._config_dir_override_value(),
             "config_dir_override_matches_default": self._config_dir_override_matches_default(),
-            "exists": self.config_file.exists(),
+            "exists": config_file.exists(),
+            "config_storage_ok": storage_ok,
+            "error_type": "" if storage_ok else "config_error",
+            "error": storage_error,
         }
 
     @property
@@ -682,6 +745,7 @@ class Config:
 
     def get_config_info(self) -> dict:
         config_parameter_errors: list[str] = []
+        config_path = self.config_path_info()
         explicit_main_configured = bool(
             self.xai_api_key
             or (self.openai_compatible_api_url and self.openai_compatible_api_key)
@@ -742,6 +806,8 @@ class Config:
         )
         if config_parameter_errors and config_status.startswith("ok:"):
             config_status = f"config_error: {'; '.join(config_parameter_errors)}"
+        if not config_path.get("ok", False):
+            config_status = f"config_error: {config_path.get('error', self._config_storage_hint())}"
 
         return {
             "XAI_API_URL": self.xai_api_url,
@@ -810,6 +876,8 @@ class Config:
             "config_file": str(self.config_file),
             "config_dir": str(self.config_file.parent),
             "config_dir_source": self.config_dir_source,
+            "config_storage_ok": config_path.get("ok", False),
+            "config_storage_error": config_path.get("error", ""),
             "default_config_file": str(self._default_config_dir() / "config.json"),
             "legacy_windows_config_file": str(self._legacy_windows_config_dir() / "config.json") if sys.platform.startswith("win") else "",
             "legacy_windows_config_exists": (self._legacy_windows_config_dir() / "config.json").exists() if sys.platform.startswith("win") else False,

@@ -1526,6 +1526,35 @@ def test_setup_non_interactive_saves_values(monkeypatch, capsys):
     assert "classifier-test-secret" not in out
 
 
+def test_setup_reports_config_storage_failure(monkeypatch, capsys):
+    def fake_config_set(key, value):
+        return {
+            "ok": False,
+            "error_type": "config_error",
+            "error": "无法保存配置文件。请设置 SMART_SEARCH_CONFIG_DIR。",
+            "config_file": "C:/tmp/config.json",
+        }
+
+    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
+
+    code = cli.main([
+        "setup",
+        "--non-interactive",
+        "--skip-skills",
+        "--xai-api-key",
+        "secret",
+        "--format",
+        "json",
+    ])
+
+    data = json.loads(capsys.readouterr().out)
+    assert code == cli.EXIT_CONFIG_ERROR
+    assert data["ok"] is False
+    assert data["error_type"] == "config_error"
+    assert "SMART_SEARCH_CONFIG_DIR" in data["error"]
+    assert "secret" not in json.dumps(data)
+
+
 def test_setup_non_interactive_autofills_qwen3_8b_embedding_preset(monkeypatch, tmp_path, capsys):
     saved = {}
 

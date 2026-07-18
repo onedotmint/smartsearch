@@ -94,6 +94,25 @@ def test_config_set_list_unset_and_path(monkeypatch, tmp_path):
     assert "XAI_API_KEY" not in service.config_list()["values"]
 
 
+def test_config_commands_report_storage_errors(monkeypatch, tmp_path):
+    _reset_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(service.config, "_safe_mkdir", lambda path: False)
+
+    path_result = service.config_path()
+    list_result = service.config_list()
+    set_result = service.config_set("XAI_API_KEY", "secret")
+    unset_result = service.config_unset("XAI_API_KEY")
+
+    assert path_result["error_type"] == "config_error"
+    assert list_result["error_type"] == "config_error"
+    assert set_result["error_type"] == "config_error"
+    assert unset_result["error_type"] == "config_error"
+    assert all(
+        "SMART_SEARCH_CONFIG_DIR" in result["error"]
+        for result in (path_result, list_result, set_result, unset_result)
+    )
+
+
 def test_config_file_supplies_explicit_main_settings(monkeypatch, tmp_path):
     _reset_config(monkeypatch, tmp_path)
 
@@ -1798,6 +1817,20 @@ async def test_doctor_redacts_secret_and_reports_config_error(monkeypatch):
     assert result["ok"] is False
     assert result["error_type"] == "config_error"
     assert result["primary_connection_test"]["status"] == "config_error"
+
+
+@pytest.mark.asyncio
+async def test_doctor_reports_config_storage_error(monkeypatch, tmp_path):
+    _reset_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(service.config, "_safe_mkdir", lambda path: False)
+
+    result = await service.doctor()
+
+    assert result["ok"] is False
+    assert result["error_type"] == "config_error"
+    assert "SMART_SEARCH_CONFIG_DIR" in result["error"]
+    assert result["config_storage_ok"] is False
+    assert "SMART_SEARCH_CONFIG_DIR" in result["config_storage_error"]
 
 
 @pytest.mark.asyncio

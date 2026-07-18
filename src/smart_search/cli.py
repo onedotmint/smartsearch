@@ -2641,10 +2641,26 @@ def _run_setup(args: argparse.Namespace) -> int:
             setup_warnings.extend(_apply_embedding_setup_preset(values, current_for_setup, interactive=False, lang=lang))
 
     saved: dict[str, str] = {}
+    config_error: dict[str, Any] | None = None
     for key, value in values.items():
         if value:
             result = service.config_set(key, value)
+            if not result.get("ok", False):
+                config_error = result
+                break
             saved[key] = result.get("value", "")
+
+    if config_error is not None:
+        data = {
+            "ok": False,
+            "error_type": config_error.get("error_type", "config_error"),
+            "error": config_error.get("error", "配置保存失败。"),
+            "config_file": config_error.get("config_file", ""),
+            "saved": saved,
+        }
+        if setup_warnings:
+            data["warnings"] = setup_warnings
+        return _print_result("setup", data, args.format, args.output)
 
     skill_result = None
     if not args.skip_skills and selected_skill_targets:

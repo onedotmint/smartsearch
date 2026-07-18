@@ -1,3 +1,6 @@
+import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -152,3 +155,63 @@ def test_save_unwritable_raises_with_hint(monkeypatch, tmp_path):
     with pytest.raises(ValueError) as exc:
         config._save_config_file({"x": 1})
     assert "无法保存" in str(exc.value)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable to Windows")
+def test_config_storage_uses_owner_only_modes(monkeypatch, tmp_path):
+    target = tmp_path / "secure-config"
+    monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(target))
+    config = _fresh_config_file(monkeypatch)
+
+    config._save_config_file({"XAI_API_KEY": "secret"})
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o700
+    assert stat.S_IMODE(config.config_file.stat().st_mode) == 0o600
+
+    config.config_file.chmod(0o644)
+    config._save_config_file({"XAI_API_KEY": "rotated"})
+
+    assert stat.S_IMODE(config.config_file.stat().st_mode) == 0o600
+    assert json.loads(config.config_file.read_text(encoding="utf-8"))["XAI_API_KEY"] == "rotated"
+
+
+def test_atomic_config_replace_preserves_previous_file_on_failure(monkeypatch, tmp_path):
+    target = tmp_path / "secure-config"
+    monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(target))
+    config = _fresh_config_file(monkeypatch)
+    config._save_config_file({"XAI_API_KEY": "old"})
+
+    def fail_replace(source, destination):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("smart_search.config.os.replace", fail_replace)
+    with pytest.raises(ValueError, match="无法保存"):
+        config._save_config_file({"XAI_API_KEY": "new"})
+
+    assert json.loads(config.config_file.read_text(encoding="utf-8"))["XAI_API_KEY"] == "old"
+    assert list(target.glob(".config.json.*.tmp")) == []
+
+
+def test_unavailable_default_dir_does_not_fall_back_to_cwd(monkeypatch, tmp_path):
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    monkeypatch.setattr("smart_search.config.sys.platform", "linux")
+    monkeypatch.chdir(tmp_path)
+    config = _fresh_config_file(monkeypatch)
+    monkeypatch.setattr(config, "_safe_mkdir", lambda path: False)
+
+    expected_file = fake_home / ".config" / "smart-search" / "config.json"
+    assert config.config_file == expected_file
+    assert config.config_dir_source == "default"
+    assert not (tmp_path / ".smart-search").exists()
+
+    info = config.config_path_info()
+    assert info["ok"] is False
+    assert info["error_type"] == "config_error"
+    assert "SMART_SEARCH_CONFIG_DIR" in info["error"]
+    config_info = config.get_config_info()
+    assert config_info["config_storage_ok"] is False
+    assert "SMART_SEARCH_CONFIG_DIR" in config_info["config_storage_error"]
+    assert config_info["config_status"].startswith("config_error:")
+    with pytest.raises(ValueError, match="SMART_SEARCH_CONFIG_DIR"):
+        config._save_config_file({"XAI_API_KEY": "secret"})

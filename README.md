@@ -356,6 +356,7 @@ Local config path:
 - Windows default: `%LOCALAPPDATA%\smart-search\config.json`.
 - Linux/macOS default: `~/.config/smart-search/config.json`.
 - `SMART_SEARCH_CONFIG_DIR` is an advanced override for CI, containers, sandboxes, or portable installs.
+- If the selected config directory cannot be prepared, Smart Search fails closed. `config path`, `config list`, and `doctor` report a `config_error` with a `SMART_SEARCH_CONFIG_DIR` hint; credentials are never written to a current-working-directory fallback.
 - `SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS` and `SMART_SEARCH_RESEARCH_DISABLED_PROVIDERS` are advanced `research` routing overrides. They accept provider CSV values and can only reorder or disable providers inside existing capability boundaries.
 - Earlier Windows source builds defaulted to `~\.config\smart-search\config.json`, while some installs were already pinned to `%LOCALAPPDATA%\smart-search` through `SMART_SEARCH_CONFIG_DIR`. If the new Windows default file is missing but the old home config exists, Smart Search reads the old file as `legacy_windows_home` so upgrades do not lose configuration. `doctor` reports the active path, default path, old home path, `SMART_SEARCH_CONFIG_DIR`, and whether that override merely matches the current default.
 

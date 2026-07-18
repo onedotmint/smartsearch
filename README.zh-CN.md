@@ -365,6 +365,7 @@ smart-search anysearch-batch "AAPL" "RAG papers" --max-results 2 --format json
 - Windows 默认：`%LOCALAPPDATA%\smart-search\config.json`。
 - Linux/macOS 默认：`~/.config/smart-search/config.json`。
 - `SMART_SEARCH_CONFIG_DIR` 是高级覆盖项，适合 CI、容器、沙箱或便携安装。
+- 选定的配置目录无法创建或保护时，Smart Search 会 fail closed。`config path`、`config list` 和 `doctor` 会报告 `config_error`，并提示设置 `SMART_SEARCH_CONFIG_DIR`；不会静默把凭据写到当前工作目录。
 - 更早的 Windows 源码默认路径曾是 `~\.config\smart-search\config.json`，但有些安装会通过 `SMART_SEARCH_CONFIG_DIR` 提前固定到 `%LOCALAPPDATA%\smart-search`。如果新版默认位置还没有配置，但旧 home 路径存在配置，Smart Search 会以 `legacy_windows_home` 方式继续读取旧配置，避免升级后配置丢失；`doctor` 会同时报告当前生效路径、默认路径、旧 home 路径、`SMART_SEARCH_CONFIG_DIR` 的值，以及这个覆盖项是不是只是等于当前默认路径。
 
 常用环境变量：

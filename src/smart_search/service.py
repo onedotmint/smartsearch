@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .config import config
+from .config import ConfigStorageError, config
 from .intent_router import (
     CAPABILITY_UTTERANCES,
     CURRENT_INTENT_KEYWORDS as ROUTER_CURRENT_INTENT_KEYWORDS,
@@ -3735,10 +3735,13 @@ async def doctor() -> dict[str, Any]:
     primary_test = info.get("primary_connection_test", {})
     primary_status = primary_test.get("status")
     main_search_ok = any(status == "ok" for status in main_search_statuses) if main_connection_tests else primary_status == "ok"
-    info["ok"] = main_search_ok and minimum.get("ok", False)
+    info["ok"] = info.get("config_storage_ok", True) and main_search_ok and minimum.get("ok", False)
     if info["ok"]:
         info["error_type"] = ""
         info["error"] = ""
+    elif not info.get("config_storage_ok", True):
+        info["error_type"] = "config_error"
+        info["error"] = info.get("config_storage_error") or "配置存储不可用。请设置 SMART_SEARCH_CONFIG_DIR 指向可写且受保护的配置目录。"
     elif info.get("config_parameter_errors"):
         info["error"] = "; ".join(info["config_parameter_errors"])
         info["error_type"] = "parameter_error"
@@ -3783,9 +3786,12 @@ def config_path() -> dict[str, Any]:
 
 
 def config_list(show_secrets: bool = False) -> dict[str, Any]:
+    path_info = config.config_path_info()
+    if not path_info.get("ok"):
+        return {**path_info, "values": {}}
     return {
         "ok": True,
-        "config_file": str(config.config_file),
+        "config_file": path_info["config_file"],
         "values": config.get_saved_config(masked=not show_secrets),
     }
 
@@ -3793,6 +3799,14 @@ def config_list(show_secrets: bool = False) -> dict[str, Any]:
 def config_set(key: str, value: str) -> dict[str, Any]:
     try:
         config.set_config_value(key, value)
+    except ConfigStorageError as e:
+        return {
+            "ok": False,
+            "error_type": "config_error",
+            "error": str(e),
+            "config_file": str(config.config_file),
+            "key": key.strip().upper(),
+        }
     except ValueError as e:
         return {"ok": False, "error_type": "parameter_error", "error": str(e), "config_file": str(config.config_file)}
     saved = config.get_saved_config(masked=True)
@@ -3807,6 +3821,14 @@ def config_set(key: str, value: str) -> dict[str, Any]:
 def config_unset(key: str) -> dict[str, Any]:
     try:
         config.unset_config_value(key)
+    except ConfigStorageError as e:
+        return {
+            "ok": False,
+            "error_type": "config_error",
+            "error": str(e),
+            "config_file": str(config.config_file),
+            "key": key.strip().upper(),
+        }
     except ValueError as e:
         return {"ok": False, "error_type": "parameter_error", "error": str(e), "config_file": str(config.config_file), "key": key.strip().upper()}
     return {"ok": True, "config_file": str(config.config_file), "key": key.strip().upper()}

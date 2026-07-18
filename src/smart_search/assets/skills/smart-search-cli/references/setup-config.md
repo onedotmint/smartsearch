@@ -17,7 +17,7 @@
 - If keys are changed with `smart-search config set`, rerun the CLI; no Codex restart is needed.
 - If PATH is changed, a new terminal or Codex restart may be needed.
 - On Windows, the default local config file is `%LOCALAPPDATA%\smart-search\config.json`. Linux/macOS default to `~/.config/smart-search/config.json`.
-- In sandboxed runtimes where the default config directory is not writable or must be pinned, set `SMART_SEARCH_CONFIG_DIR` to an absolute writable path. The CLI uses it for both config and relative logs and skips default-directory selection.
+- In sandboxed runtimes where the default config directory is not writable or must be pinned, set `SMART_SEARCH_CONFIG_DIR` to an absolute writable path. The CLI uses it for both config and relative logs and skips default-directory selection. It never falls back to a current-working-directory config path; `config path`, `config list`, `doctor`, `config set`, and `config unset` report `config_error` with this remediation when storage is unavailable.
 - Earlier Windows source defaults used `~\.config\smart-search\config.json`, while some installs were already pinned to `%LOCALAPPDATA%\smart-search` through `SMART_SEARCH_CONFIG_DIR`. If the new default file is missing but the old file exists, `doctor` reports `legacy_windows_home` as the active source so upgrades do not silently lose configuration.
 - When a Windows user reports different config paths, diagnose in this order: `config_dir_source`, `config_dir_override_value`, `config_dir_override_matches_default`, then `legacy_windows_config_exists`. Do not delete either config file or the user-level override until the upgraded CLI has been verified with `config path`, `doctor`, and smoke/regression checks.
 
