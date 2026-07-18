@@ -339,6 +339,17 @@ Minimum profile defaults to `standard`, requiring at least:
 
 Missing required capabilities fail closed with a configuration error. Use `SMART_SEARCH_MINIMUM_PROFILE=off` only for local experiments.
 
+The minimum-profile modes are explicit:
+
+- `standard` keeps the default fail-closed requirement for `main_search`, `docs_search`, and `web_fetch`.
+- `lite` allows source-only search when a `main_search` or `web_search` provider is available; missing optional capabilities remain visible.
+- `full` requires the standard three capabilities plus `site_map`.
+- `off` disables the minimum gate for local experiments.
+
+Use `smart-search capabilities --format json` to inspect commands, configured providers, fallback chains, search profiles, and the active minimum profile without exposing credentials. Search profiles are `fast`, `balanced`, and `deep`; they tune validation and source budgets while `research --profile fast|balanced|deep` maps to the live executor's `quick|standard|deep` budgets.
+
+Built-in search, fetch, and research Prompts can be overridden with local UTF-8 files using `--prompt-dir`, `--search-prompt-file`, `--fetch-prompt-file`, or `--research-prompt-file`. Remote Prompt URLs are rejected. The default output file behavior is non-overwriting; use `--force` only when replacement is intended.
+
 Experimental AnySearch configuration is optional and does not satisfy or change the `standard` minimum profile:
 
 ```powershell
@@ -391,6 +402,7 @@ Provider timeouts:
 | `context7-library` | `c7`, `ctx7` | Resolve Context7 library candidates |
 | `context7-docs` | `c7d`, `c7docs`, `ctx7-docs` | Fetch Context7 docs |
 | `route-calibrate` | `route-cal`, `rcal` | Evaluate embedding router models and recommend threshold/margin |
+| `capabilities` | - | Report configured capabilities and profile availability |
 | `doctor` | `d` | Masked config and connectivity check |
 | `diagnose` | `diag` | Focused OpenAI-compatible troubleshooting report |
 | `setup` | `init` | Interactive or scripted setup |
@@ -403,6 +415,8 @@ Useful examples:
 
 ```powershell
 smart-search search "query" --validation balanced --extra-sources 3 --timeout 90 --format json --output result.json
+smart-search search "query" --profile balanced --response-mode evidence --format json
+smart-search capabilities --format json
 smart-search route "React useEffect API docs" --format markdown
 smart-search route-calibrate --models "Qwen/Qwen3-Embedding-8B" --format markdown
 smart-search research "query" --budget deep --fallback auto --format json --output research.json
@@ -455,6 +469,8 @@ smart-search doctor --format content
 ```
 
 `content` is intentionally brief. Use `doctor --format markdown` for general human troubleshooting, `diagnose openai-compatible --format markdown` for OpenAI-compatible search hangs/timeouts, and JSON formats for complete machine-readable contracts.
+
+JSON responses add `schema_version: "1"`, `command`, `data`, and `meta` while retaining legacy flat fields. Failed responses keep the legacy top-level `error` string and expose stable `error_code`, `error_detail`, and `data.error.code` values. stdout contains one final JSON value; logs and progress remain on stderr.
 
 Save multi-source evidence under an explicit stable folder. The default uses the platform temp directory; the commands below use a Windows explicit path example:
 

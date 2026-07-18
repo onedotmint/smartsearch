@@ -20,9 +20,9 @@
 
 ## Commands
 
-- `smart-search search QUERY [--platform NAME] [--model ID] [--extra-sources N] [--validation fast|balanced|strict] [--fallback auto|off] [--providers auto|CSV] [--stream|--no-stream] [--timeout SECONDS] [--format json|markdown|content] [--output PATH]`
+- `smart-search search QUERY [--platform NAME] [--model ID] [--extra-sources N] [--profile fast|balanced|deep] [--response-mode evidence|concise|synthesized] [--validation fast|balanced|strict] [--fallback auto|off] [--providers auto|CSV] [--stream|--no-stream] [--timeout SECONDS] [--prompt-dir PATH] [--search-prompt-file PATH] [--fetch-prompt-file PATH] [--research-prompt-file PATH] [--format json|markdown|content] [--output PATH] [--force]`
 - `smart-search route QUERY [--validation fast|balanced|strict] [--router-mode hybrid|rules|off] [--format json|markdown|content] [--output PATH]`
-- `smart-search fetch URL [--format json|markdown|content] [--output PATH]`
+- `smart-search fetch URL [--prompt-dir PATH] [--search-prompt-file PATH] [--fetch-prompt-file PATH] [--research-prompt-file PATH] [--format json|markdown|content] [--output PATH] [--force]`
 - `smart-search exa-search QUERY [--num-results N] [--search-type neural|keyword|auto] [--include-text] [--include-highlights] [--start-published-date YYYY-MM-DD] [--include-domains DOMAIN...] [--exclude-domains DOMAIN...] [--category NAME] [--format json|markdown|content] [--output PATH]`
 - `smart-search exa-similar URL [--num-results N] [--format json|markdown|content] [--output PATH]`
 - `smart-search zhipu-search QUERY [--count N] [--search-engine NAME] [--search-recency-filter VALUE] [--search-domain-filter DOMAIN] [--content-size medium|high] [--format json|markdown|content] [--output PATH]`
@@ -38,12 +38,13 @@
 - `smart-search context7-library NAME [QUERY] [--format json|markdown|content] [--output PATH]`
 - `smart-search context7-docs LIBRARY_ID QUERY [--format json|markdown|content] [--output PATH]`
 - `smart-search deep QUERY [--budget quick|standard|deep] [--evidence-dir PATH] [--format json|markdown|content] [--output PATH]`
-- `smart-search research QUERY [--budget quick|standard|deep] [--evidence-dir PATH] [--fallback auto|off] [--format json|markdown|content] [--output PATH]`
+- `smart-search research QUERY [--budget quick|standard|deep] [--profile fast|balanced|deep] [--evidence-dir PATH] [--fallback auto|off] [--prompt-dir PATH] [--search-prompt-file PATH] [--fetch-prompt-file PATH] [--research-prompt-file PATH] [--format json|markdown|content] [--output PATH] [--force]`
+- `smart-search capabilities [--format json|markdown|content] [--output PATH] [--force]`
 - `smart-search route-calibrate [--models CSV] [--format json|markdown|content] [--output PATH]`
 - `smart-search map URL [--instructions TEXT] [--max-depth N] [--max-breadth N] [--limit N] [--timeout SECONDS] [--format json|markdown|content] [--output PATH]`
 - `smart-search doctor [--format json|markdown|content] [--output PATH]`
 - `smart-search diagnose openai-compatible [--timeout SECONDS] [--format json|markdown] [--output PATH]`
-- `smart-search setup [--lang zh|en] [--advanced] [--non-interactive] [--skip-skills] [--install-skills CSV] [--skills-root PATH] [--xai-api-url URL] [--xai-api-key KEY] [--xai-model ID] [--xai-tools-explicit CSV] [--openai-compatible-api-url URL] [--openai-compatible-api-key KEY] [--openai-compatible-model ID] [--openai-compatible-fallback-models CSV] [--openai-compatible-stream true|false] [--validation-level fast|balanced|strict] [--fallback-mode auto|off] [--minimum-profile standard|off] [--intent-router hybrid|rules|off] [--intent-embedding-api-url URL] [--intent-embedding-api-key KEY] [--intent-embedding-model ID] [--intent-embedding-threshold FLOAT] [--intent-embedding-margin FLOAT] [--intent-classifier-api-url URL] [--intent-classifier-api-key KEY] [--intent-classifier-model ID] [--intent-router-timeout SECONDS] [--exa-key KEY] [--context7-key KEY] [--zhipu-key KEY] [--zhipu-api-url URL] [--zhipu-search-engine ENGINE] [--zhipu-mcp-key KEY] [--zhipu-mcp-search-api-url URL] [--zhipu-mcp-reader-api-url URL] [--zhipu-mcp-zread-api-url URL] [--zhipu-mcp-timeout SECONDS] [--jina-key KEY] [--jina-reader-api-url URL] [--jina-respond-with MODE] [--jina-timeout SECONDS] [--tavily-api-url URL] [--tavily-key KEY] [--firecrawl-api-url URL] [--firecrawl-key KEY] [--anysearch-api-url URL] [--anysearch-key KEY] [--anysearch-timeout SECONDS] [--format json|markdown|content] [--output PATH]`
+- `smart-search setup [--lang zh|en] [--advanced] [--non-interactive] [--skip-skills] [--install-skills CSV] [--skills-root PATH] [--minimum-profile lite|standard|full|off] [--format json|markdown|content] [--output PATH]`
 - `smart-search config path|list|set|unset ... [--format json|markdown|content] [--output PATH]`
 - `smart-search model set MODEL [--format json|markdown|content] [--output PATH]`
 - `smart-search model current [--format json|markdown|content] [--output PATH]`
@@ -59,6 +60,8 @@ Nested aliases: `config path`/`cfg p`, `config list`/`cfg ls`/`cfg l`, `config s
 ## Output Format Expectations
 
 - `--format json` is the stable machine-readable contract for agents and scripts. JSON output remains parseable and uses readable non-ASCII text when the terminal encoding supports it.
+- JSON results add `schema_version: "1"`, `command`, `data`, and `meta` while retaining legacy flat fields. Failed results keep the legacy top-level `error` string and expose structured `data.error`, `error_detail`, and `error_code` values.
+- `--output` never overwrites an existing file unless `--force` is supplied. Output files are written atomically with restrictive permissions where the platform supports them.
 - `--format markdown` is the human-readable report format. `route --format markdown`, `route-calibrate --format markdown`, `doctor --format markdown`, and `diagnose openai-compatible --format markdown` must render useful reports rather than raw JSON dumps.
 - `--format content` prints only the `content` field for content-bearing commands such as `search`, `fetch`, `context7-docs`, and `research`. Commands without a `content` field, including `route`, `route-calibrate`, `doctor`, `smoke`, `config`, and `model`, must print a compact non-empty text summary.
 - Successful search output includes `ok`, `query`, `primary_api_mode`, `content`, `sources`, `sources_count`, `primary_sources`, `primary_sources_count`, `extra_sources`, `extra_sources_count`, `source_warning`, `routing_decision`, `providers_used`, `provider_attempts`, `fallback_used`, `validation_level`, and `elapsed_ms`.

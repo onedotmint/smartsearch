@@ -348,6 +348,17 @@ smart-search setup --non-interactive `
 
 缺少任一最低能力时，`doctor` 和 `search` 会 fail closed 并返回缺失 capability。`SMART_SEARCH_MINIMUM_PROFILE=off` 只建议本地实验使用。
 
+最低配置档位是显式选择：
+
+- `standard` 保留默认 fail-closed 门槛，要求 `main_search`、`docs_search`、`web_fetch`。
+- `lite` 只要求存在 `main_search` 或 `web_search`，允许返回来源候选；缺失的可选能力仍会在结果里显示。
+- `full` 在 standard 三项之上再要求 `site_map`。
+- `off` 只用于本地实验，关闭最低配置门槛。
+
+用 `smart-search capabilities --format json` 查看命令、已配置 provider、兜底链、搜索 profile 和当前最低配置档位，不会暴露凭据。搜索 profile 是 `fast`、`balanced`、`deep`；它们调整校验和来源预算。`research --profile fast|balanced|deep` 会映射到 live 执行器的 `quick|standard|deep` budget。
+
+内置 search、fetch、research Prompt 支持用本地 UTF-8 文件覆盖，可用 `--prompt-dir`、`--search-prompt-file`、`--fetch-prompt-file`、`--research-prompt-file`。远程 Prompt URL 会被拒绝。输出文件默认不覆盖已有文件，确认替换时再加 `--force`。
+
 AnySearch 是可选实验配置，不满足也不改变 `standard` 最低配置：
 
 ```powershell
@@ -443,6 +454,7 @@ smart-search anysearch-batch "AAPL" "RAG papers" --max-results 2 --format json
 | `context7-library` | `c7`、`ctx7` | 查 Context7 库候选 |
 | `context7-docs` | `c7d`、`c7docs`、`ctx7-docs` | 抓 Context7 文档 |
 | `route-calibrate` | `route-cal`、`rcal` | 评测 embedding 路由模型并推荐 threshold/margin |
+| `capabilities` | - | 查看已配置 capability 和 profile 可用性 |
 | `doctor` | `d` | 配置和连通性检查 |
 | `setup` | `init` | 配置向导 |
 | `config` | `cfg` | 本机配置读写 |
@@ -454,6 +466,8 @@ smart-search anysearch-batch "AAPL" "RAG papers" --max-results 2 --format json
 
 ```powershell
 smart-search search "query" --validation balanced --extra-sources 3 --timeout 90 --format json --output result.json
+smart-search search "query" --profile balanced --response-mode evidence --format json
+smart-search capabilities --format json
 smart-search route "React useEffect API docs" --format markdown
 smart-search route-calibrate --models "Qwen/Qwen3-Embedding-8B" --format markdown
 smart-search research "query" --budget deep --fallback auto --format json --output research.json
@@ -503,6 +517,8 @@ smart-search doctor --format content
 ```
 
 `content` 刻意保持很短，只适合快速看结论。完整排障给人看用 `doctor --format markdown`，给脚本和 AI 解析用 `doctor --format json`。
+
+JSON 响应新增 `schema_version: "1"`、`command`、`data`、`meta`，同时保留旧版扁平字段。失败响应保留顶层旧版 `error` 字符串，并提供稳定的 `error_code`、`error_detail` 和 `data.error.code`。stdout 只输出一个最终 JSON 值，日志和进度信息写到 stderr。
 
 多来源研究建议显式指定稳定目录保存证据文件。默认使用平台临时目录，以 Windows 显式路径为例：
 
