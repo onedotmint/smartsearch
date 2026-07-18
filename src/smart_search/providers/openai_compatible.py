@@ -8,7 +8,7 @@ from typing import Any, List, Optional
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_random_exponential
 from tenacity.wait import wait_base
 from .base import BaseSearchProvider, SearchResult
-from ..utils import search_prompt, fetch_prompt, url_describe_prompt, rank_sources_prompt
+from ..utils import get_prompt
 from ..logger import log_info
 from ..config import config
 
@@ -152,7 +152,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
             "messages": [
                 {
                     "role": "system",
-                    "content": search_prompt,
+                    "content": get_prompt("search"),
                 },
                 {"role": "user", "content": time_context + query + platform_prompt},
             ],
@@ -170,7 +170,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
             "messages": [
                 {
                     "role": "system",
-                    "content": fetch_prompt,
+                    "content": get_prompt("fetch"),
                 },
                 {"role": "user", "content": url + "\n获取该网页内容并返回其结构化Markdown格式" },
             ],
@@ -499,7 +499,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": url_describe_prompt},
+                {"role": "system", "content": get_prompt("fetch") + "\n\nReturn the page title and 2-4 verbatim extracts."},
                 {"role": "user", "content": url},
             ],
             "stream": False,
@@ -519,7 +519,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": rank_sources_prompt},
+                {"role": "system", "content": get_prompt("search") + "\n\nReturn only reordered source numbers."},
                 {"role": "user", "content": f"Query: {query}\n\n{sources_text}"},
             ],
             "stream": False,

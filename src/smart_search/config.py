@@ -34,7 +34,7 @@ class Config:
     _ALLOWED_XAI_TOOLS = {"web_search", "x_search"}
     _ALLOWED_VALIDATION_LEVELS = {"fast", "balanced", "strict"}
     _ALLOWED_FALLBACK_MODES = {"auto", "off"}
-    _ALLOWED_MINIMUM_PROFILES = {"standard", "off"}
+    _ALLOWED_MINIMUM_PROFILES = {"lite", "standard", "full", "off"}
     _ALLOWED_INTENT_ROUTER_MODES = {"hybrid", "rules", "off"}
     _CONFIG_KEYS = {
         "XAI_API_URL",
@@ -52,6 +52,10 @@ class Config:
         "SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS",
         "SMART_SEARCH_RESEARCH_DISABLED_PROVIDERS",
         "SMART_SEARCH_INTENT_ROUTER",
+        "SMART_SEARCH_PROMPT_DIR",
+        "SMART_SEARCH_SEARCH_PROMPT_FILE",
+        "SMART_SEARCH_FETCH_PROMPT_FILE",
+        "SMART_SEARCH_RESEARCH_PROMPT_FILE",
         "INTENT_EMBEDDING_API_URL",
         "INTENT_EMBEDDING_API_KEY",
         "INTENT_EMBEDDING_MODEL",
@@ -510,6 +514,22 @@ class Config:
         )
 
     @property
+    def prompt_dir(self) -> str:
+        return self._get_config_value("SMART_SEARCH_PROMPT_DIR", "") or ""
+
+    @property
+    def search_prompt_file(self) -> str:
+        return self._get_config_value("SMART_SEARCH_SEARCH_PROMPT_FILE", "") or ""
+
+    @property
+    def fetch_prompt_file(self) -> str:
+        return self._get_config_value("SMART_SEARCH_FETCH_PROMPT_FILE", "") or ""
+
+    @property
+    def research_prompt_file(self) -> str:
+        return self._get_config_value("SMART_SEARCH_RESEARCH_PROMPT_FILE", "") or ""
+
+    @property
     def intent_router_mode(self) -> str:
         return self._validated_enum(
             "SMART_SEARCH_INTENT_ROUTER",
@@ -822,6 +842,10 @@ class Config:
             "SMART_SEARCH_VALIDATION_LEVEL": validation_level,
             "SMART_SEARCH_FALLBACK_MODE": fallback_mode,
             "SMART_SEARCH_MINIMUM_PROFILE": minimum_profile,
+            "SMART_SEARCH_PROMPT_DIR": self.prompt_dir,
+            "SMART_SEARCH_SEARCH_PROMPT_FILE": self.search_prompt_file,
+            "SMART_SEARCH_FETCH_PROMPT_FILE": self.fetch_prompt_file,
+            "SMART_SEARCH_RESEARCH_PROMPT_FILE": self.research_prompt_file,
             "SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS": ",".join(self.research_preferred_providers),
             "SMART_SEARCH_RESEARCH_DISABLED_PROVIDERS": ",".join(self.research_disabled_providers),
             "SMART_SEARCH_INTENT_ROUTER": intent_router_mode,

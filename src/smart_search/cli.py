@@ -62,6 +62,9 @@ from .skill_installer import (
     parse_skill_targets,
     status_skill_targets,
 )
+from .cli_contract import build_json_result
+from .logger import configure_cli_logging, logger
+from .utils import PromptConfigurationError, prompt_overrides
 
 
 EXIT_OK = 0
@@ -69,6 +72,8 @@ EXIT_PARAMETER_ERROR = 2
 EXIT_CONFIG_ERROR = 3
 EXIT_NETWORK_ERROR = 4
 EXIT_RUNTIME_ERROR = 5
+
+_CLI_FORCE_OUTPUT = False
 
 COMMAND_ALIASES = {
     "search": ["s"],
@@ -261,24 +266,117 @@ def _exit_code(data: dict[str, Any]) -> int:
         return EXIT_NETWORK_ERROR
     if error_type == "evidence_error":
         return EXIT_NETWORK_ERROR
+    if error_type == "output_exists":
+        return EXIT_PARAMETER_ERROR
+    if error_type == "output_error":
+        return EXIT_RUNTIME_ERROR
     return EXIT_RUNTIME_ERROR
 
 
-def _print_result(command: str, data: dict[str, Any], fmt: str, output: str = "") -> int:
-    rendered = _render(command, data, fmt)
-    if output:
-        service.write_output(output, rendered)
+def _print_result(
+    command: str,
+    data: dict[str, Any],
+    fmt: str,
+    output: str = "",
+    *,
+    force: bool | None = None,
+) -> int:
+    """
+    =================================================================================
+    步骤1：渲染稳定 CLI 结果
+    =================================================================================
+    目标：让 JSON stdout 只包含最终协议对象，同时保留 Markdown/content 的既有行为。
+    数据源：Service 扁平结果、命令名、格式和输出路径。
+    操作：
+    1) JSON 格式包裹 schema_version、data、meta 和结构化 error。
+    2) 其他格式沿用现有人类可读渲染器。
+    3) 输出文件失败时返回机器可读错误，而不是写入半成品。
+    """
+    logger.info("开始渲染命令结果: command=%s format=%s", command, fmt)
+    force = _CLI_FORCE_OUTPUT if force is None else force
+    result_data = data
     if fmt == "json":
-        rendered = _json_stdout_safe(data)
+        result_data = build_json_result(command, data)
+        rendered = _json_stdout_safe(result_data)
+    else:
+        rendered = _render(command, data, fmt)
+
+    if output:
+        try:
+            if force:
+                service.write_output(output, rendered, force=True)
+            else:
+                service.write_output(output, rendered)
+        except FileExistsError as exc:
+            result_data = {
+                "ok": False,
+                "error_type": "output_exists",
+                "error_code": "OUTPUT_EXISTS",
+                "error": str(exc),
+                "output": output,
+            }
+            rendered = (
+                _json_stdout_safe(build_json_result(command, result_data))
+                if fmt == "json"
+                else _render(command, result_data, fmt)
+            )
+        except OSError as exc:
+            result_data = {
+                "ok": False,
+                "error_type": "output_error",
+                "error_code": "OUTPUT_WRITE_FAILED",
+                "error": str(exc),
+                "output": output,
+            }
+            rendered = (
+                _json_stdout_safe(build_json_result(command, result_data))
+                if fmt == "json"
+                else _render(command, result_data, fmt)
+            )
     _write_stdout(rendered)
     if rendered and not rendered.endswith("\n"):
         _write_stdout("\n")
-    return _exit_code(data)
+    logger.info("命令结果渲染完成: command=%s ok=%s", command, result_data.get("ok", False))
+    return _exit_code(result_data)
 
 
 def _add_format_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--format", choices=["json", "markdown", "content"], default="json")
     parser.add_argument("--output", default="", help="Write rendered output to a file.")
+    parser.add_argument("--force", action="store_true", help="Allow replacing an existing output file.")
+    parser.add_argument("--prompt-dir", default="", help="Load local UTF-8 Prompt files from this directory.")
+    parser.add_argument("--search-prompt-file", default="", help="Use a local UTF-8 search Prompt file.")
+    parser.add_argument("--fetch-prompt-file", default="", help="Use a local UTF-8 fetch Prompt file.")
+    parser.add_argument("--research-prompt-file", default="", help="Use a local UTF-8 research Prompt file.")
+
+
+def _prompt_override_context(args: argparse.Namespace):
+    """
+    =================================================================================
+    步骤2：准备本地 Prompt 覆盖
+    =================================================================================
+    目标：把显式 CLI Prompt 配置限制在当前命令调用内。
+    数据源：命令行参数；环境变量、用户配置和内置 Prompt 由 utils 继续处理。
+    操作：
+    1) 读取四个本地路径参数。
+    2) 交给 ContextVar，避免污染同进程的后续调用。
+    """
+    return prompt_overrides(
+        prompt_dir=getattr(args, "prompt_dir", ""),
+        search_prompt_file=getattr(args, "search_prompt_file", ""),
+        fetch_prompt_file=getattr(args, "fetch_prompt_file", ""),
+        research_prompt_file=getattr(args, "research_prompt_file", ""),
+    )
+
+
+def _supports_argument(callable_obj: Any, name: str) -> bool:
+    try:
+        parameters = inspect.signature(callable_obj).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return name in inspect.signature(callable_obj).parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters
+    )
 
 
 def _is_secret_key(key: str) -> bool:
@@ -518,6 +616,10 @@ def _setup_status_from_values(values: dict[str, str]) -> dict[str, Any]:
             "configured": ["anysearch"] if has("ANYSEARCH_API_KEY") else [],
             "fallback_chain": ["anysearch"],
             "experimental": True,
+        },
+        "site_map": {
+            "configured": ["tavily"] if has("TAVILY_API_KEY") else [],
+            "fallback_chain": ["tavily"],
         },
     }
     for item in status.values():
@@ -1117,7 +1219,7 @@ def _prompt_optional_enhancements(values: dict[str, str], current: dict[str, str
         )
         values["SMART_SEARCH_MINIMUM_PROFILE"] = _prompt_value(
             "SMART_SEARCH_MINIMUM_PROFILE",
-            _t(lang, "最低配置门槛 (standard/off)", "Minimum profile (standard/off)"),
+            _t(lang, "最低配置门槛 (lite/standard/full/off)", "Minimum profile (lite/standard/full/off)"),
             current.get("SMART_SEARCH_MINIMUM_PROFILE", ""),
             optional=True,
             lang=lang,
@@ -1348,7 +1450,7 @@ def _run_advanced_setup_prompts(values: dict[str, str], current: dict[str, str],
         ("OPENAI_COMPATIBLE_STREAM", "OpenAI-compatible stream mode (true/false)", True),
         ("SMART_SEARCH_VALIDATION_LEVEL", "Validation level (fast/balanced/strict)", True),
         ("SMART_SEARCH_FALLBACK_MODE", "Fallback mode (auto/off)", True),
-        ("SMART_SEARCH_MINIMUM_PROFILE", "Minimum profile (standard/off)", True),
+        ("SMART_SEARCH_MINIMUM_PROFILE", "Minimum profile (lite/standard/full/off)", True),
         ("SMART_SEARCH_INTENT_ROUTER", "Intent router mode (hybrid/rules/off)", True),
         ("INTENT_EMBEDDING_API_URL", "Intent embedding API URL", True),
         ("INTENT_EMBEDDING_API_KEY", "Intent embedding API key", True),
@@ -1408,18 +1510,23 @@ async def _run_async(args: argparse.Namespace) -> int:
             "fallback": args.fallback,
             "providers": args.providers,
         }
+        if _supports_argument(service.search, "profile"):
+            search_kwargs["profile"] = args.profile
+        if _supports_argument(service.search, "response_mode"):
+            search_kwargs["response_mode"] = args.response_mode
         if args.stream is not None:
             search_kwargs["stream"] = args.stream
-        if "timeout_seconds" in inspect.signature(service.search).parameters:
+        if _supports_argument(service.search, "timeout_seconds"):
             search_kwargs["timeout_seconds"] = args.timeout
-        try:
-            data = await asyncio.wait_for(
-                service.search(args.query, **search_kwargs),
-                timeout=args.timeout,
-            )
-        except asyncio.TimeoutError:
-            data = _search_timeout_result(args.query, args.timeout, search_kwargs)
-            return _print_result("search", data, args.format, args.output)
+        with _prompt_override_context(args):
+            try:
+                data = await asyncio.wait_for(
+                    service.search(args.query, **search_kwargs),
+                    timeout=args.timeout,
+                )
+            except asyncio.TimeoutError:
+                data = _search_timeout_result(args.query, args.timeout, search_kwargs)
+                return _print_result("search", data, args.format, args.output)
         return _print_result("search", data, args.format, args.output)
     if args.command == "route":
         data = await service.route(args.query, validation=args.validation, mode=args.router_mode)
@@ -1428,7 +1535,8 @@ async def _run_async(args: argparse.Namespace) -> int:
         data = await service.route_calibrate(models=args.models)
         return _print_result("route-calibrate", data, args.format, args.output)
     if args.command == "fetch":
-        data = await service.fetch(args.url)
+        with _prompt_override_context(args):
+            data = await service.fetch(args.url)
         return _print_result("fetch", data, args.format, args.output)
     if args.command == "map":
         data = await service.map_site(
@@ -1512,12 +1620,18 @@ async def _run_async(args: argparse.Namespace) -> int:
         )
         return _print_result("deep", data, args.format, args.output)
     if args.command == "research":
-        data = await service.research(
-            args.query,
-            budget=args.budget,
-            evidence_dir=args.evidence_dir,
-            fallback=args.fallback,
-        )
+        research_budget = {
+            "fast": "quick",
+            "balanced": "standard",
+            "deep": "deep",
+        }.get(args.profile, args.budget)
+        with _prompt_override_context(args):
+            data = await service.research(
+                args.query,
+                budget=research_budget,
+                evidence_dir=args.evidence_dir,
+                fallback=args.fallback,
+            )
         return _print_result("research", data, args.format, args.output)
     if args.command == "smoke":
         data = await service.smoke(args.mode)
@@ -1525,6 +1639,9 @@ async def _run_async(args: argparse.Namespace) -> int:
     if args.command == "doctor":
         data = await service.doctor()
         return _print_result("doctor", data, args.format, args.output)
+    if args.command == "capabilities":
+        data = service.capabilities()
+        return _print_result("capabilities", data, args.format, args.output)
     if args.command == "diagnose":
         if args.diagnose_target == "openai-compatible":
             data = await service.diagnose_openai_compatible(timeout_seconds=args.timeout)
@@ -1709,17 +1826,19 @@ def _run_setup(args: argparse.Namespace) -> int:
         current_after = service.config_list(show_secrets=True)["values"]
         final_values = _merge_setup_values(current_after, values)
         final_status = _setup_status_from_values(final_values)
+        configured_profile = final_values.get("SMART_SEARCH_MINIMUM_PROFILE") or "standard"
+        minimum_result = service._minimum_profile_result(configured_profile, final_status)
         _write_stderr(_t(lang, "\n保存完成。\n", "\nSaved.\n"))
         if skill_result is not None:
             _write_skill_install_summary(skill_result, lang)
         _write_setup_status(final_status, lang, final=True)
-        missing = [capability for capability in ("main_search", "docs_search", "web_fetch") if not final_status[capability]["ok"]]
+        missing = minimum_result.get("missing_required", [])
         if missing:
             _write_stderr(
                 _t(
                     lang,
-                    "\n当前配置尚未满足 standard 最低配置。\nsearch / doctor 会 fail closed，不会假装可用。\n",
-                    "\nThe current config does not satisfy the standard minimum profile.\nsearch / doctor will fail closed instead of pretending to work.\n",
+                    f"\n当前配置尚未满足 {configured_profile} 最低配置。\nsearch / doctor 会 fail closed，不会假装可用。\n",
+                    f"\nThe current config does not satisfy the {configured_profile} minimum profile.\nsearch / doctor will fail closed instead of pretending to work.\n",
                 )
             )
         else:
@@ -1730,7 +1849,7 @@ def _run_setup(args: argparse.Namespace) -> int:
                     "\nNext steps:\n  smart-search doctor --format json\n  smart-search smoke --mock --format json\n",
                 )
             )
-        data["minimum_profile_ok"] = not missing
+        data["minimum_profile_ok"] = minimum_result.get("ok", False)
         data["minimum_profile_missing"] = missing
         data["capability_status"] = final_status
     return _print_result("setup", data, args.format, args.output)
@@ -1777,6 +1896,13 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("--platform", default="")
     search_parser.add_argument("--model", default="")
     search_parser.add_argument("--extra-sources", type=int, default=0)
+    search_parser.add_argument("--profile", choices=["fast", "balanced", "deep"], default="")
+    search_parser.add_argument(
+        "--response-mode",
+        choices=["evidence", "concise", "synthesized"],
+        default="concise",
+        help="Choose evidence-only, concise, or full synthesized output.",
+    )
     search_parser.add_argument("--validation", choices=["fast", "balanced", "strict"], default="")
     search_parser.add_argument("--fallback", choices=["auto", "off"], default="")
     search_parser.add_argument("--providers", default="auto")
@@ -1994,6 +2120,7 @@ def build_parser() -> argparse.ArgumentParser:
     research_parser.set_defaults(command="research")
     research_parser.add_argument("query")
     research_parser.add_argument("--budget", choices=["quick", "standard", "deep"], default="deep")
+    research_parser.add_argument("--profile", choices=["fast", "balanced", "deep"], default="")
     research_parser.add_argument("--evidence-dir", default="")
     research_parser.add_argument("--fallback", choices=["auto", "off"], default="auto")
     _add_format_args(research_parser)
@@ -2015,6 +2142,13 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser.set_defaults(command="doctor")
     _add_format_args(doctor_parser)
 
+    capabilities_parser = sub.add_parser(
+        "capabilities",
+        help="Report configured capabilities for agents and scripts.",
+    )
+    capabilities_parser.set_defaults(command="capabilities")
+    _add_format_args(capabilities_parser)
+
     diagnose_parser = sub.add_parser(
         "diagnose",
         aliases=COMMAND_ALIASES["diagnose"],
@@ -2025,6 +2159,7 @@ def build_parser() -> argparse.ArgumentParser:
     diagnose_parser.add_argument("--timeout", type=float, default=30, metavar="SECONDS", help="Per search-shape probe timeout in seconds.")
     diagnose_parser.add_argument("--format", choices=["json", "markdown"], default="markdown")
     diagnose_parser.add_argument("--output", default="", help="Write rendered output to a file.")
+    diagnose_parser.add_argument("--force", action="store_true", help="Allow replacing an existing output file.")
 
     model_parser = sub.add_parser(
         "model",
@@ -2169,8 +2304,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """
+    =================================================================================
+    步骤3：启动公共 CLI 边界
+    =================================================================================
+    目标：统一日志出口、输出覆盖策略和异常 JSON 契约。
+    数据源：解析后的命令参数和 Service 结果。
+    操作：
+    1) 在执行命令前把日志绑定到 stderr。
+    2) 记录本次是否允许覆盖输出文件。
+    3) 将配置和运行异常转换为稳定的非零结果。
+    """
+    global _CLI_FORCE_OUTPUT
     parser = build_parser()
     args = parser.parse_args(argv)
+    _CLI_FORCE_OUTPUT = bool(getattr(args, "force", False))
+    configure_cli_logging(json_mode=getattr(args, "format", "") == "json")
     try:
         if args.command == "regression":
             return _run_regression()
@@ -2185,6 +2334,33 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run_async(args))
     except KeyboardInterrupt:
         return EXIT_RUNTIME_ERROR
+    except PromptConfigurationError as exc:
+        data = {
+            "ok": False,
+            "error_type": "config_error",
+            "error_code": "CONFIGURATION_ERROR",
+            "error": str(exc),
+        }
+        return _print_result(
+            getattr(args, "command", "unknown"),
+            data,
+            getattr(args, "format", "json"),
+            getattr(args, "output", ""),
+        )
+    except Exception as exc:
+        logger.exception("CLI 命令执行失败: command=%s", getattr(args, "command", "unknown"))
+        data = {
+            "ok": False,
+            "error_type": "runtime_error",
+            "error_code": "INTERNAL_ERROR",
+            "error": str(exc),
+        }
+        return _print_result(
+            getattr(args, "command", "unknown"),
+            data,
+            getattr(args, "format", "json"),
+            getattr(args, "output", ""),
+        )
 
 
 if __name__ == "__main__":

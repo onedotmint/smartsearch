@@ -4,6 +4,7 @@ import json
 import re
 import tempfile
 import time
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -31,7 +32,7 @@ from .intent_router import (
     _ordered_capabilities,
     _semantic_summary,
 )
-from .logger import log_info
+from .logger import log_info, logger
 from .providers.anysearch import AnySearchProvider
 from .providers.context7 import Context7Provider
 from .providers.exa import ExaSearchProvider
@@ -41,7 +42,8 @@ from .providers.xai_responses import XAIResponsesSearchProvider
 from .providers.zhipu import ZhipuWebSearchProvider
 from .providers.zhipu_mcp import ZhipuMCPProvider
 from .sources import merge_sources, new_session_id, split_answer_and_sources
-from .utils import search_prompt
+from .security import sanitize_text
+from .utils import PromptConfigurationError, get_prompt
 
 
 _AVAILABLE_MODELS_CACHE: dict[tuple[str, str], list[str]] = {}
@@ -50,9 +52,9 @@ SOURCE_PROVENANCE_WARNING = (
     "extra_sources are retrieved in parallel and are not automatically used to verify generated content; "
     "use fetch on key URLs for claim-level evidence."
 )
-MINIMUM_PROFILE_ERROR = (
-    "最低配置不满足：必须至少配置 main_search、docs_search、web_fetch 三类能力各一个 provider。"
-)
+MINIMUM_PROFILE_ERROR = "当前能力档位缺少可用的搜索或取证能力。"
+PROFILE_NAMES = ("fast", "balanced", "deep")
+CAPABILITY_PROFILE_NAMES = ("lite", "standard", "full", "off")
 OPENAI_COMPATIBLE_DIAGNOSE_COMMAND = "smart-search diagnose openai-compatible --format markdown"
 DOCS_INTENT_KEYWORDS = ROUTER_DOCS_INTENT_KEYWORDS
 ZH_CURRENT_KEYWORDS = ROUTER_CURRENT_INTENT_KEYWORDS
@@ -315,7 +317,7 @@ def _empty_search_result(
     data: dict[str, Any] = {
         "ok": False,
         "error_type": error_type,
-        "error": error,
+        "error": sanitize_text(error),
         "session_id": session_id,
         "query": query,
         "primary_api_mode": primary_api_mode,
@@ -336,6 +338,7 @@ def _empty_search_result(
     }
     if extra:
         data.update(extra)
+        data["error"] = sanitize_text(str(data.get("error") or ""))
     return data
 
 
@@ -354,12 +357,13 @@ def _attempt(
         "provider": provider,
         "status": status,
         "error_type": error_type,
-        "error": error,
+        "error": sanitize_text(error),
         "elapsed_ms": _elapsed_ms(start),
         "result_count": result_count,
     }
     if extra:
         data.update(extra)
+        data["error"] = sanitize_text(str(data.get("error") or ""))
     return data
 
 
@@ -1470,27 +1474,82 @@ def get_capability_status() -> dict[str, Any]:
             ],
             "fallback_chain": ["tavily", "jina", "zhipu-mcp-reader", "firecrawl"],
         },
+        "site_map": {
+            "configured": ["tavily"] if config.tavily_api_key else [],
+            "fallback_chain": ["tavily"],
+        },
         "vertical_search": {
             "configured": ["anysearch"] if config.anysearch_api_key else [],
             "fallback_chain": ["anysearch"],
             "experimental": True,
         },
     }
-    for capability in ("web_search", "docs_search", "web_fetch", "vertical_search"):
+    deep_research_providers = (
+        main_configured
+        if main_configured
+        and (config.tavily_api_key or config.jina_api_key or config.zhipu_mcp_api_key or config.firecrawl_api_key)
+        and (status["web_search"]["configured"] or status["docs_search"]["configured"])
+        else []
+    )
+    status["deep_research"] = {
+        "configured": deep_research_providers,
+        "fallback_chain": deep_research_providers,
+        "ok": bool(deep_research_providers),
+    }
+    for capability in ("web_search", "docs_search", "web_fetch", "site_map", "vertical_search"):
         status[capability]["ok"] = bool(status[capability]["configured"])
     return status
 
 
 def _minimum_profile_result(profile: str, capability_status: dict[str, Any]) -> dict[str, Any]:
-    required = [] if profile == "off" else ["main_search", "docs_search", "web_fetch"]
-    missing = [capability for capability in required if not capability_status.get(capability, {}).get("ok")]
+    """
+    =================================================================================
+    步骤1：计算能力档位
+    =================================================================================
+    目标：让缺失的可选能力可观察，但不阻断已具备基础搜索和取证能力的部署。
+    数据源：Provider capability status 和 SMART_SEARCH_MINIMUM_PROFILE。
+    操作：
+    1) 保留旧的 recommended required 字段，兼容诊断和安装器。
+    2) 根据 lite、standard、full 计算真正的 enforced_required。
+    3) 返回缺失能力和降级信息。
+    """
+    legacy_required = [] if profile == "off" else ["main_search", "docs_search", "web_fetch"]
+    available_search = any(
+        capability_status.get(capability, {}).get("ok")
+        for capability in ("main_search", "web_search")
+    )
+    if profile == "off":
+        enforced_required: list[str] = []
+    elif profile == "lite":
+        enforced_required = ["search"] if not available_search else []
+    elif profile == "standard":
+        enforced_required = list(legacy_required)
+    elif profile == "full":
+        enforced_required = ["main_search", "docs_search", "web_fetch", "site_map"]
+    else:
+        enforced_required = list(legacy_required)
+
+    missing = [capability for capability in legacy_required if not capability_status.get(capability, {}).get("ok")]
+    missing_required = []
+    if "search" in enforced_required and not available_search:
+        missing_required.append("search")
+    for capability in enforced_required:
+        if capability == "search":
+            continue
+        if not capability_status.get(capability, {}).get("ok"):
+            missing_required.append(capability)
+    ok = not missing_required
     return {
-        "ok": not missing,
-        "error_type": "config_error" if missing else "",
-        "error": f"{MINIMUM_PROFILE_ERROR} 缺失能力: {', '.join(missing)}" if missing else "",
+        "ok": ok,
+        "error_type": "config_error" if missing_required else "",
+        "error": f"{MINIMUM_PROFILE_ERROR} 缺失能力: {', '.join(missing_required)}" if missing_required else "",
         "profile": profile,
-        "required": required,
+        "required": legacy_required,
+        "enforced_required": enforced_required,
         "missing": missing,
+        "missing_required": missing_required,
+        "optional_missing": [capability for capability in missing if capability not in missing_required],
+        "degraded": bool(missing and not missing_required),
         "capability_status": capability_status,
     }
 
@@ -1501,6 +1560,56 @@ def validate_minimum_profile() -> dict[str, Any]:
     except ValueError as e:
         return {"ok": False, "error_type": "parameter_error", "error": str(e), "missing": []}
     return _minimum_profile_result(profile, get_capability_status())
+
+
+def capabilities() -> dict[str, Any]:
+    """
+    =================================================================================
+    步骤2：生成公共能力清单
+    =================================================================================
+    目标：让任意客户端、Extension、Adapter 或脚本在执行前发现当前能力。
+    数据源：Provider registry、配置状态和固定 CLI 命令集合。
+    操作：
+    1) 只返回 provider id 和配置状态，不返回凭据。
+    2) 同时暴露可用命令、profile 和输出格式。
+    3) 保留缺失能力，避免客户端误以为系统拥有未配置功能。
+    """
+    status = get_capability_status()
+    try:
+        active_minimum_profile = config.minimum_profile
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "error_type": "parameter_error",
+            "error": str(exc),
+            "capabilities": {},
+        }
+    public_capabilities: dict[str, dict[str, Any]] = {}
+    for name, item in status.items():
+        configured = list(item.get("configured") or [])
+        public_capabilities[name] = {
+            "configured": bool(configured),
+            "providers": configured,
+            "fallback_providers": list(item.get("fallback_chain") or []),
+            "experimental": bool(item.get("experimental", False)),
+        }
+    return {
+        "ok": True,
+        "commands": {
+            "search": True,
+            "fetch": True,
+            "map": True,
+            "route": True,
+            "research": True,
+            "doctor": True,
+            "capabilities": True,
+        },
+        "capabilities": public_capabilities,
+        "profiles": list(PROFILE_NAMES),
+        "minimum_profiles": list(CAPABILITY_PROFILE_NAMES),
+        "active_minimum_profile": active_minimum_profile,
+        "output_formats": ["json", "markdown", "content"],
+    }
 
 
 def _parse_provider_filter(providers: str = "auto") -> set[str] | None:
@@ -1886,6 +1995,100 @@ async def call_tavily_extract(url: str) -> str | None:
         return None
 
 
+def _resolve_search_profile(
+    profile: str,
+    validation: str,
+    extra_sources: int,
+) -> tuple[str, str, int]:
+    """
+    =================================================================================
+    步骤2：解析搜索 profile
+    =================================================================================
+    目标：用 fast、balanced、deep 控制搜索深度，不把普通 search 升级成 research。
+    数据源：CLI profile、旧 validation 参数和 extra_sources 参数。
+    操作：
+    1) 校验 profile 名称。
+    2) 仅在旧参数未显式传入时补默认 validation。
+    3) 为 balanced/deep 提供合理来源预算。
+    """
+    normalized = (profile or "").strip().lower()
+    if normalized and normalized not in PROFILE_NAMES:
+        raise ValueError(f"Invalid search profile: {normalized}")
+    effective_validation = (validation or "").strip().lower()
+    effective_extra = max(0, int(extra_sources or 0))
+    if normalized == "fast":
+        effective_validation = effective_validation or "fast"
+        effective_extra = min(effective_extra, 2)
+    elif normalized == "balanced":
+        effective_validation = effective_validation or "balanced"
+        effective_extra = max(effective_extra, 3)
+    elif normalized == "deep":
+        effective_validation = effective_validation or "strict"
+        effective_extra = max(effective_extra, 5)
+    return normalized, effective_validation, effective_extra
+
+
+async def _search_without_synthesis(
+    query: str,
+    *,
+    count: int,
+    providers: str,
+    fallback: str,
+    validation_level: str,
+    profile: str,
+    response_mode: str,
+    start: float,
+    session_id: str,
+) -> dict[str, Any]:
+    """
+    =================================================================================
+    步骤3：使用来源搜索降级
+    =================================================================================
+    目标：仅配置 Tavily-compatible 或其他 source provider 时仍能完成 Search。
+    数据源：web_search/docs_search fallback 链。
+    操作：
+    1) 优先获取 web_search 来源。
+    2) 没有结果时尝试已配置 docs_search 来源。
+    3) 返回证据候选，不伪造综合答案。
+    """
+    sources, attempts = await _run_web_search_fallback(query, count=count, providers=providers, fallback=fallback)
+    if not sources:
+        docs_sources, docs_attempts = await _run_docs_search_fallback(query, providers=providers, fallback=fallback)
+        sources.extend(docs_sources)
+        attempts.extend(docs_attempts)
+    ok = bool(sources)
+    return {
+        "ok": ok,
+        "error_type": "" if ok else "network_error",
+        "error": "" if ok else "搜索 provider 未返回来源",
+        "session_id": session_id,
+        "query": query,
+        "profile": profile,
+        "response_mode": response_mode,
+        "primary_api_mode": "source-only",
+        "content": "",
+        "sources": sources,
+        "results": sources,
+        "sources_count": len(sources),
+        "primary_sources": sources,
+        "primary_sources_count": len(sources),
+        "extra_sources": [],
+        "extra_sources_count": 0,
+        "source_warning": "未配置 main_search；当前结果仅包含来源候选，请先 fetch 后再形成最终结论。",
+        "routing_decision": {
+            "mode": "source-only",
+            "reason": "No main_search provider configured; returned same-capability source discovery.",
+            "required_capabilities": ["web_search"],
+        },
+        "providers_used": _provider_names_from_attempts(attempts),
+        "provider_attempts": attempts,
+        "fallback_used": _fallback_used(attempts),
+        "validation_level": validation_level,
+        "minimum_profile_ok": True,
+        "elapsed_ms": _elapsed_ms(start),
+    }
+
+
 async def call_tavily_search(query: str, max_results: int = 6) -> list[dict] | None:
     api_key = config.tavily_api_key
     if not api_key:
@@ -2031,18 +2234,26 @@ async def search(
     providers: str = "auto",
     stream: bool | None = None,
     timeout_seconds: float | None = None,
+    profile: str = "",
+    response_mode: str = "concise",
 ) -> dict[str, Any]:
     start = time.time()
     session_id = new_session_id()
     try:
-        validation_level = (validation or config.validation_level).strip().lower()
+        profile_name, profile_validation, profile_extra_sources = _resolve_search_profile(profile, validation, extra_sources)
+        validation_level = (profile_validation or config.validation_level).strip().lower()
         fallback_mode = (fallback or config.fallback_mode).strip().lower()
+        response_mode = (response_mode or "concise").strip().lower()
         if validation_level not in config._ALLOWED_VALIDATION_LEVELS:
             raise ValueError(f"Invalid validation level: {validation_level}")
         if fallback_mode not in config._ALLOWED_FALLBACK_MODES:
             raise ValueError(f"Invalid fallback mode: {fallback_mode}")
+        if response_mode not in {"evidence", "concise", "synthesized"}:
+            raise ValueError(f"Invalid response mode: {response_mode}")
     except ValueError as e:
         return _empty_search_result(start, session_id, query, "parameter_error", str(e))
+
+    extra_sources = profile_extra_sources
 
     minimum = validate_minimum_profile()
     if not minimum.get("ok"):
@@ -2065,6 +2276,23 @@ async def search(
         return _empty_search_result(start, session_id, query, "parameter_error", str(e), extra={"validation_level": validation_level})
 
     if not main_provider_configs:
+        source_capabilities = minimum.get("capability_status", {})
+        has_source_search = bool(
+            source_capabilities.get("web_search", {}).get("configured")
+            or source_capabilities.get("docs_search", {}).get("configured")
+        )
+        if has_source_search:
+            return await _search_without_synthesis(
+                query,
+                count=max(3, min(6, extra_sources or 3)),
+                providers=providers,
+                fallback=fallback_mode,
+                validation_level=validation_level,
+                profile=profile_name,
+                response_mode=response_mode,
+                start=start,
+                session_id=session_id,
+            )
         return _empty_search_result(
             start,
             session_id,
@@ -2079,6 +2307,11 @@ async def search(
         )
 
     primary_api_mode = main_provider_configs[0]["mode"]
+    provider_platform = platform
+    if response_mode == "evidence":
+        provider_platform = f"{platform}\nReturn compact evidence and source metadata only; do not write a long final answer."
+    elif response_mode == "concise":
+        provider_platform = f"{platform}\nReturn a concise conclusion with source metadata."
     if stream is not None:
         for provider_config in main_provider_configs:
             if provider_config["provider"] == "openai-compatible":
@@ -2176,9 +2409,9 @@ async def search(
             )
             try:
                 if attempt_timeout is not None:
-                    candidate_result = await asyncio.wait_for(search_provider.search(query, platform), timeout=attempt_timeout)
+                    candidate_result = await asyncio.wait_for(search_provider.search(query, provider_platform), timeout=attempt_timeout)
                 else:
-                    candidate_result = await search_provider.search(query, platform)
+                    candidate_result = await search_provider.search(query, provider_platform)
                 transport_attempts = getattr(search_provider, "last_transport_attempts", [])
                 if _append_openai_transport_attempts(provider_attempts, search_provider, candidate_config):
                     transport_fallback_used = transport_fallback_used or any(
@@ -2313,9 +2546,12 @@ async def search(
         "query": query,
         "platform": platform,
         "model": effective_model,
+        "profile": profile_name,
+        "response_mode": response_mode,
         "primary_api_mode": primary_api_mode,
         "content": answer,
         "sources": sources,
+        "results": sources,
         "sources_count": len(sources),
         "primary_sources": primary_sources,
         "primary_sources_count": len(primary_sources),
@@ -2696,7 +2932,7 @@ def _model_failure_result(model: str, start: float, error: str, error_type: str 
         "ok": False,
         "availability": "failed",
         "error_type": error_type,
-        "error": error,
+        "error": sanitize_text(error),
         "dimension": 0,
         "latency_ms": 0.0,
         "semantic_macro_f1": 0.0,
@@ -2854,6 +3090,15 @@ def _primary_search_exception_result(
     provider_name: str,
     exc: BaseException,
 ) -> dict[str, Any]:
+    if isinstance(exc, PromptConfigurationError):
+        return _primary_search_error_result(
+            start,
+            session_id,
+            query,
+            primary_api_mode,
+            "config_error",
+            str(exc),
+        )
     if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError, TimeoutError)):
         return _primary_search_error_result(
             start,
@@ -3307,7 +3552,7 @@ async def _probe_openai_compatible_search_shape(
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": search_prompt},
+            {"role": "system", "content": get_prompt("search")},
             {"role": "user", "content": get_local_time_info() + "\nping"},
         ],
         "stream": stream,
@@ -4238,7 +4483,53 @@ async def _smoke_live(start: float) -> dict[str, Any]:
     }
 
 
-def write_output(path: str | Path, content: str) -> None:
+class OutputFileExistsError(FileExistsError):
+    """Raised when a CLI output path exists and overwrite was not requested."""
+
+
+def write_output(path: str | Path, content: str, *, force: bool = False) -> None:
+    """
+    =================================================================================
+    步骤3：安全写入命令输出
+    =================================================================================
+    目标：避免默认覆盖已有研究结果，并让临时文件以安全权限落盘。
+    数据源：CLI 输出路径和已渲染文本。
+    操作：
+    1) 在目标目录创建 0600 临时文件并写入 UTF-8 内容。
+    2) force 模式用原子替换覆盖目标。
+    3) 默认模式用硬链接占位，目标已存在时保留原文件并抛出稳定错误。
+    """
+    logger.info("开始写入 CLI 输出: path=%s force=%s", path, force)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    if target.exists() and not force:
+        raise OutputFileExistsError(f"Output file already exists: {target}")
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        dir=str(target.parent),
+        text=True,
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.chmod(temporary, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if force:
+            os.replace(temporary, target)
+        else:
+            try:
+                os.link(temporary, target)
+            except FileExistsError as exc:
+                raise OutputFileExistsError(f"Output file already exists: {target}") from exc
+            finally:
+                temporary.unlink(missing_ok=True)
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
+    logger.info("CLI 输出写入完成: path=%s", target)

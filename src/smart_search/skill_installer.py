@@ -25,6 +25,7 @@ class SkillTarget:
 
 
 SKILL_TARGETS: tuple[SkillTarget, ...] = (
+    SkillTarget("generic", "Generic Agent Skills", ".agents/skills"),
     SkillTarget("codex", "Codex", ".codex/skills", True),
     SkillTarget("claude", "Claude Code", ".claude/skills", True),
     SkillTarget("cursor", "Cursor", ".cursor/skills", True),

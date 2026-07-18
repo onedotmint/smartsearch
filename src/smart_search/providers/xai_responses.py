@@ -9,7 +9,7 @@ from .base import BaseSearchProvider
 from .openai_compatible import _WaitWithRetryAfter, _is_retryable_exception, get_local_time_info
 from ..config import config
 from ..logger import log_info
-from ..utils import search_prompt
+from ..utils import get_prompt
 
 
 _logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ class XAIResponsesSearchProvider(BaseSearchProvider):
         time_context = get_local_time_info() + "\n"
         payload: dict[str, Any] = {
             "model": self.model,
-            "instructions": search_prompt,
+            "instructions": get_prompt("search"),
             "input": [{"role": "user", "content": time_context + query + platform_prompt}],
             "stream": False,
             "tools": [{"type": tool} for tool in self.tools],
