@@ -43,7 +43,7 @@ smart-search research "OpenAI Responses API web_search 和 Chat Completions 联�
  -> 在 docs_search / web_search / web_fetch / vertical_search 内选择 provider 和兜底
 ```
 
-`smart-search route "query"` 只解释这次会需要哪些能力，不执行搜索、文档查询、网页抓取或 provider 调用。`smart-search deep` 仍保持离线 planner 契约，只使用本地/rules 信号。
+`smart-search route "query"` 不会执行搜索、文档查询、网页抓取或垂直搜索 provider。默认 `hybrid` 模式可能调用已配置的远程 embeddings 和 classifier endpoint，补充本地规则。需要纯本地规则路由时使用 `--router-mode rules`；使用 `--router-mode off` 可以关闭路由。`smart-search deep` 始终保持离线 planner 契约，只使用本地/rules 信号。
 
 ## 安装
 
@@ -78,38 +78,45 @@ smart-search setup
 smart-search doctor --format json
 ```
 
-2. 普通快速搜索：
+2. 如果 OpenAI-compatible `search` 卡住或超时，先生成诊断报告：
+
+```powershell
+smart-search doctor --format markdown
+smart-search diagnose openai-compatible --format markdown
+```
+
+3. 普通快速搜索：
 
 ```powershell
 smart-search search "今天有什么值得关注的 AI 新闻？" --validation balanced --extra-sources 2 --format json
 ```
 
-3. 只看意图路由，不调用 provider：
+4. 查看意图路由，不调用搜索、文档、抓取或垂直搜索 provider。默认 `hybrid` 可能调用已配置的远程路由 endpoint；要只用本地规则就指定 `rules`：
 
 ```powershell
-smart-search route "React useEffect API docs" --format markdown
-smart-search route "请核验这个链接里的说法 https://example.com/source" --format json
+smart-search route "React useEffect API docs" --router-mode rules --format markdown
+smart-search route "请核验这个链接里的说法 https://example.com/source" --router-mode rules --format json
 ```
 
-4. 抓取关键网页正文：
+5. 抓取关键网页正文：
 
 ```powershell
 smart-search fetch "https://example.com/source" --format markdown --output evidence.md
 ```
 
-5. 生成 Deep Research 计划：
+6. 生成 Deep Research 计划：
 
 ```powershell
 smart-search deep "深度搜索一下最近的比特币行情" --budget standard --format json
 ```
 
-6. 让 CLI 直接执行 live Deep Research：
+7. 让 CLI 直接执行 live Deep Research：
 
 ```powershell
 smart-search research "深度搜索一下最近的比特币行情" --budget deep --format markdown
 ```
 
-7. 把 skill 安装给 AI 工具：
+8. 把 skill 安装给 AI 工具：
 
 ```powershell
 smart-search setup --non-interactive --install-skills codex,claude,cursor,hermes
@@ -119,7 +126,7 @@ Skill 安装会把内置 `smart-search-cli` 写入用户级工具目录，例如
 `~/.claude/skills`、`~/.cursor/skills`、`~/.hermes/skills`。它不会初始化 Trellis、hooks、
 agents 或 commands。`--skills-root PATH` 只适合便携安装或测试时高级覆盖根目录。
 
-8. 升级 CLI 后，同步已经安装到全局 AI 工具里的 skill：
+9. 升级 CLI 后，同步已经安装到全局 AI 工具里的 skill：
 
 ```powershell
 smart-search skills status --targets codex --format json
@@ -129,6 +136,177 @@ smart-search skills update --targets codex --format json
 `setup --install-skills` 仍然保留给第一次配置使用。平时升级包以后，优先用 `skills status` 和
 `skills update`；它们只检查或覆盖 `smart-search-cli` 托管文件，不会改 provider key，也不会创建
 Trellis、hooks、agents 或 commands。
+
+## 常用命令
+
+普通快速回答用 `search`，抓取网页证据用 `fetch`，先规划用 `deep`，让 CLI 执行完整证据流用 `research`。provider 专用命令用于定向发现或正文抽取。
+
+| 命令 | 简写 | 用途 |
+| --- | --- | --- |
+| `search` | `s` | 快速联网搜索和综合回答 |
+| `route` | `rt` | 解释所需能力，不运行搜索/抓取 provider；`hybrid` 可能调用远程路由 endpoint |
+| `deep` | `dr` | Deep Research 离线计划 |
+| `research` | `rs` | live Deep Research 执行 |
+| `fetch` | `f` | 抓取一个 URL，输出 JSON、Markdown 或 content |
+| `map` | `m` | 读取站点结构 |
+| `exa-search` | `exa`、`x` | Exa 来源发现 |
+| `exa-similar` | `xs` | 从一个 URL 找相似页面 |
+| `zhipu-search` | `z`、`zp` | 智谱 Web Search API |
+| `zhipu-mcp-search` | `zmcp-search` | 智谱 Coding Plan MCP `web_search_prime` |
+| `zhipu-mcp-reader` | `zmcp-reader` | 智谱 Coding Plan MCP `webReader` |
+| `zhipu-mcp-search-doc` | `zmcp-doc` | 通过 zread MCP 搜开源仓库文档 |
+| `zhipu-mcp-repo-structure` | `zmcp-tree` | 通过 zread MCP 读仓库结构 |
+| `zhipu-mcp-read-file` | `zmcp-file` | 通过 zread MCP 读单个仓库文件 |
+| `anysearch-domains` | `as-domains` | 实验 AnySearch 域名/能力发现 |
+| `anysearch-search` | `as-search`、`as` | 实验 AnySearch 垂直/通用搜索 |
+| `anysearch-extract` | `as-extract` | 实验 AnySearch URL 抽取 |
+| `anysearch-batch` | `as-batch` | 实验 AnySearch 批量搜索，最多 5 条 |
+| `context7-library` | `c7`、`ctx7` | 查 Context7 库候选 |
+| `context7-docs` | `c7d`、`c7docs`、`ctx7-docs` | 抓 Context7 文档 |
+| `route-calibrate` | `route-cal`、`rcal` | 评测 embedding 路由模型并推荐 threshold/margin |
+| `capabilities` | - | 查看已配置 capability 和 profile 可用性 |
+| `doctor` | `d` | 配置和连通性检查 |
+| `diagnose` | `diag` | OpenAI-compatible 专项排障报告 |
+| `setup` | `init` | 配置向导 |
+| `config` | `cfg` | 本机配置读写 |
+| `model` | `mdl` | 查看显式 provider 模型 |
+| `smoke` | `sm` | provider 路由冒烟测试 |
+| `regression` | `reg` | 离线回归测试 |
+| `skills status` | `skill status`、`skills st` | 检查已安装的托管 skill 文件 |
+| `skills update` | `skill update`、`skills up` | 用内置副本刷新托管 skill 文件 |
+
+示例：
+
+```powershell
+smart-search search "query" --validation balanced --extra-sources 3 --timeout 90 --format json --output result.json
+smart-search search "query" --profile balanced --response-mode evidence --format json
+smart-search capabilities --format json
+smart-search route "React useEffect API docs" --router-mode rules --format markdown
+smart-search route-calibrate --models "Qwen/Qwen3-Embedding-8B" --format markdown
+smart-search research "query" --budget deep --fallback auto --format json --output research.json
+smart-search search "query" --stream --format json
+smart-search search "query" --no-stream --format json
+smart-search config set OPENAI_COMPATIBLE_FALLBACK_MODELS "grok-4.3-fast" --format json
+smart-search search "nba 战报" --format content
+smart-search exa-search "OpenAI Responses API documentation" --include-domains platform.openai.com developers.openai.com --num-results 5 --include-text --format json
+smart-search context7-library "react" "hooks" --format json
+smart-search context7-docs "/facebook/react" "useEffect cleanup" --format json
+smart-search zhipu-search "今天国内 AI 新闻" --search-engine search_pro_sogou --count 5 --format json
+smart-search zhipu-mcp-search "今天国内 AI 新闻" --count 5 --format json
+smart-search zhipu-mcp-reader "https://example.com/source" --format json
+smart-search zhipu-mcp-search-doc "owner/repo" "install" --format json
+smart-search anysearch-search "CVE-2024-3094" --domain security.cve --max-results 3 --format json
+smart-search anysearch-extract "https://example.com/source" --format json
+smart-search exa-similar "https://example.com/source" --num-results 5 --format json
+smart-search fetch "https://example.com/source" --format markdown --output page.md
+smart-search map "https://docs.example.com" --instructions "Find API reference pages" --max-depth 1 --limit 50 --format json
+smart-search doctor --format markdown
+smart-search diagnose openai-compatible --format markdown
+smart-search skills status --targets codex --format json
+smart-search skills update --targets codex --format json
+smart-search smoke --mock --format json
+smart-search regression
+```
+
+## 输出和证据策略
+
+AI 和脚本解析优先用 JSON：
+
+```powershell
+smart-search search "query" --format json
+smart-search doctor --format json
+```
+
+给人看连接状态、详细排障报告、冒烟结果、来源列表、网页正文时用 Markdown：
+
+```powershell
+smart-search doctor --format markdown
+smart-search diagnose openai-compatible --format markdown
+smart-search smoke --mock --format markdown
+smart-search exa-search "OpenAI Responses API documentation" --format markdown
+smart-search fetch "https://example.com" --format markdown
+```
+
+终端快速扫正文或摘要用 content：
+
+```powershell
+smart-search search "nba 战报" --format content
+smart-search doctor --format content
+```
+
+`content` 刻意保持很短。完整排障给人看用 `doctor --format markdown`，OpenAI-compatible 搜索卡住或超时用 `diagnose openai-compatible --format markdown`，完整机器契约用 JSON。
+
+JSON 响应新增 `schema_version: "1"`、`command`、`data`、`meta`，同时保留旧版扁平字段。失败响应保留顶层旧版 `error` 字符串，并提供稳定的 `error_code`、`error_detail` 和 `data.error.code`。stdout 只输出一个最终 JSON 值，日志和进度信息写到 stderr。
+
+写 claim-level 结论时建议流程：
+
+1. 用 `search`、`exa-search`、`zhipu-search` 或 `exa-similar` 找候选 URL。
+2. 用 `fetch` 抓关键 URL 正文。
+3. 最终回答只引用 fetch 正文能支撑的事实。
+4. 没有 fetch 的来源标为未验证候选。
+
+多来源研究建议显式指定稳定目录保存证据文件。planner 仍会返回平台临时目录形式的 `evidence_dir`，但 live executor 只有在显式传入 `--evidence-dir` 或设置 `SMART_SEARCH_PERSIST_EVIDENCE=true` 时才写 artifact。以下是 Windows 显式路径示例：
+
+```powershell
+smart-search exa-search "Reuters Iran Hormuz latest" --format json --output C:\tmp\smart-search-evidence\iran-hormuz\01-exa.json
+smart-search fetch "https://example.com/source" --format markdown --output C:\tmp\smart-search-evidence\iran-hormuz\02-fetch.md
+```
+
+## 排障
+
+如果 `doctor` 返回 `config_error`：
+
+```powershell
+smart-search setup
+smart-search config list --format json
+smart-search doctor --format markdown
+```
+
+如果 OpenAI-compatible `search` 卡住或超时：
+
+```powershell
+smart-search doctor --format markdown
+smart-search diagnose openai-compatible --format markdown
+```
+
+诊断报告会隐藏 API key，并说明问题更像是配置缺失、真实 Smart Search prompt 让上游/中转卡住，还是 stream/no-stream 兼容性不匹配。
+
+如果搜索慢：
+
+- 降低 `--extra-sources`；
+- 把大问题拆成多个小问题；
+- 先用 `exa-search` 或 `zhipu-search` 找来源，再 `fetch` 关键网页。
+
+如果想确认安装是否正常：
+
+```powershell
+smart-search --help
+smart-search --version
+smart-search regression
+smart-search smoke --mock --format json
+```
+
+Windows npm/mise 安装后验证中文 JSON 管道：
+
+```powershell
+smart-search deep "深度搜索一下最近的比特币行情" --format json | ConvertFrom-Json
+```
+
+## 开发验证
+
+源码检出目录中，用当前平台可用的 Python 执行器运行：
+
+```text
+python -m compileall -q src tests
+python -m pytest tests -q
+python -m smart_search.cli regression
+python -m smart_search.cli smoke --mock --format json
+npm test
+npm pack --dry-run
+git diff --check
+```
+
+Windows 如果 `python` 不在 `PATH`，将命令中的 `python` 替换为 `py -3`。上面的 `ConvertFrom-Json` 管道只适用于 Windows PowerShell。
 
 ## 当前架构
 
@@ -152,7 +330,7 @@ Trellis、hooks、agents 或 commands。
 | `web_search` | 智谱 Web Search API -> 智谱 Coding Plan MCP `web_search_prime` -> Tavily -> Firecrawl |
 | `web_fetch` | Tavily -> 带 `JINA_API_KEY` 的 Jina Reader -> 智谱 Coding Plan MCP `webReader` -> Firecrawl |
 
-AnySearch 当前只作为实验 `vertical_search` 暴露，不进入 `web_search` 兜底链，也不是 `standard` 最低配置要求。请先用显式命令做验收和能力边界判断，再决定未来是否把某个垂直域提升成正式路线。
+AnySearch 当前只作为实验 `vertical_search` 暴露，不进入 `web_search` 兜底链，也不是 `standard` 最低配置要求。AnySearch adapter 在没有 key 时可以省略 `Authorization`，但 CLI 能力预检要求 `ANYSEARCH_API_KEY`，没有 key 时任何 `anysearch-*` 命令都会在调用前返回配置错误。使用显式命令前先配置 key，再做验收和能力边界判断。
 
 Jina Reader 只属于 `web_fetch`，不是通用搜索 provider。只有配置 `JINA_API_KEY` 后，它才可以满足 `SMART_SEARCH_MINIMUM_PROFILE=standard`；匿名 `r.jina.ai` 只能当显式/实验抓取能力，不能让最低配置检查放松。
 
@@ -265,7 +443,7 @@ smart-search deep "https://example.com/source" --format json
 | Tavily | 额外来源、URL fetch、站点 map | `TAVILY_API_URL`、`TAVILY_API_KEY`、`TAVILY_ENABLED` | [Tavily docs](https://docs.tavily.com/) | [Tavily app](https://app.tavily.com/home) |
 | Jina Reader | 已知 URL 正文抓取；满足 standard 最低配置必须有 key | `JINA_API_KEY`、`JINA_READER_API_URL`、`JINA_RESPOND_WITH`、`JINA_TIMEOUT_SECONDS` | [Jina Reader](https://jina.ai/reader/) | [Jina AI](https://jina.ai/) |
 | Firecrawl | fetch 兜底、补充网页来源 | `FIRECRAWL_API_URL`、`FIRECRAWL_API_KEY` | [Firecrawl docs](https://docs.firecrawl.dev/) | [Firecrawl API keys](https://www.firecrawl.dev/app/api-keys) |
-| AnySearch | 实验垂直搜索验收入口，不是默认兜底 | `ANYSEARCH_API_URL`、`ANYSEARCH_API_KEY`、`ANYSEARCH_TIMEOUT_SECONDS` | [AnySearch 文档](https://www.anysearch.com/docs) | [AnySearch API keys](https://www.anysearch.com/console/api-keys) |
+| AnySearch | 实验垂直搜索验收入口；CLI 命令要求 key；不是默认兜底 | `ANYSEARCH_API_URL`、`ANYSEARCH_API_KEY`、`ANYSEARCH_TIMEOUT_SECONDS` | [AnySearch 文档](https://www.anysearch.com/docs) | [AnySearch API keys](https://www.anysearch.com/console/api-keys) |
 
 意图路由配置：
 
@@ -319,7 +497,7 @@ smart-search route-calibrate --models "Qwen/Qwen3-Embedding-8B" --format markdow
 - `ZHIPU_SEARCH_ENGINE` 默认是 `search_std`。官方值包括 `search_std`、`search_pro`、`search_pro_sogou`、`search_pro_quark`；`config set` 仍允许自定义值，方便官方以后新增服务。
 - `TAVILY_API_URL` 只影响 Tavily，不会代理智谱。Tavily Hikari / 号池用 `https://<host>/api/tavily`；setup 会把根域名或 `/mcp` 输入规范化成这个 REST base。
 - `FIRECRAWL_API_URL` 默认是 `https://api.firecrawl.dev/v2`。
-- AnySearch 默认走 `https://api.anysearch.com/mcp` 的 JSON-RPC 2.0 `tools/call`。没有 key 时允许匿名请求；有 key 时发送 `Authorization: Bearer ...`。HTTP 200 但 `result.isError=true` 会按 provider error 处理，不能当成功证据。
+- AnySearch 默认走 `https://api.anysearch.com/mcp` 的 JSON-RPC 2.0 `tools/call`。在 adapter/API 层，没有 key 时不会发送 `Authorization`，有 key 时发送 `Authorization: Bearer ...`；但 CLI 对所有 `anysearch-*` 命令执行预检，必须配置 `ANYSEARCH_API_KEY`。HTTP 200 但 `result.isError=true` 会按 provider error 处理，不能当成功证据。
 - `doctor` 和 `route` 会报告 intent router 的配置状态、embedding 模型、threshold、margin、配置来源、超时和是否可降级，不会暴露 router API key。
 - 运行时缓存需要显式设置 `SMART_SEARCH_CACHE_ENABLED=true` 才启用。search 默认缓存 `30` 秒，fetch 默认缓存 `300` 秒，LRU 容量默认 `256`；provider 行为配置或凭据变化后旧条目不会命中。
 
@@ -374,7 +552,7 @@ smart-search setup --non-interactive `
 
 内置 search、fetch、research Prompt 支持用本地 UTF-8 文件覆盖，可用 `--prompt-dir`、`--search-prompt-file`、`--fetch-prompt-file`、`--research-prompt-file`。远程 Prompt URL 会被拒绝。输出文件默认不覆盖已有文件，确认替换时再加 `--force`。
 
-AnySearch 是可选实验配置，不满足也不改变 `standard` 最低配置：
+AnySearch 不属于默认工作流，也不满足或改变 `standard` 最低配置。CLI 的 `anysearch-*` 命令要求 `ANYSEARCH_API_KEY`，底层 adapter 虽然可以表示匿名请求：
 
 ```powershell
 smart-search setup --non-interactive --anysearch-api-url "https://api.anysearch.com/mcp" --anysearch-key "your-anysearch-key"
@@ -407,7 +585,7 @@ smart-search anysearch-batch "AAPL" "RAG papers" --max-results 2 --format json
 | `OPENAI_COMPATIBLE_MODEL` | 兼容模型名 |
 | `OPENAI_COMPATIBLE_STREAM` | OpenAI-compatible 中转兼容开关，接受 `true/1/yes`，默认 `false` |
 | `ANYSEARCH_API_URL` | AnySearch JSON-RPC endpoint，默认 `https://api.anysearch.com/mcp` |
-| `ANYSEARCH_API_KEY` | 可选 AnySearch key |
+| `ANYSEARCH_API_KEY` | AnySearch CLI 命令预检要求的 key |
 | `ANYSEARCH_TIMEOUT_SECONDS` | AnySearch 请求超时，默认 `30` |
 | `SMART_SEARCH_INTENT_ROUTER` | 意图路由模式：`hybrid`、`rules`、`off`，默认 `hybrid` |
 | `INTENT_EMBEDDING_API_URL` | 可选 embeddings endpoint，用于语义路由 |
@@ -444,153 +622,6 @@ smart-search anysearch-batch "AAPL" "RAG papers" --max-results 2 --format json
 | `SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS` | `research` 路由优先 provider CSV，只能在同 capability 内调整顺序 |
 | `SMART_SEARCH_RESEARCH_DISABLED_PROVIDERS` | `research` 禁用 provider CSV，不能改变 provider capability 边界 |
 | `SMART_SEARCH_CONFIG_DIR` | 指定本机配置和日志根目录 |
-
-## 常用命令
-
-| 命令 | 简写 | 用途 |
-| --- | --- | --- |
-| `search` | `s` | 快速联网搜索和综合回答 |
-| `route` | `rt` | 只解释需要哪些 capability，不调用 provider |
-| `deep` | `dr` | Deep Research 离线计划 |
-| `research` | `rs` | live Deep Research 执行 |
-| `fetch` | `f` | 抓一个 URL 正文 |
-| `map` | `m` | 读取站点结构 |
-| `exa-search` | `exa`、`x` | Exa 来源发现 |
-| `exa-similar` | `xs` | 从一个 URL 找相似页面 |
-| `zhipu-search` | `z`、`zp` | 智谱 Web Search API |
-| `zhipu-mcp-search` | `zmcp-search` | 智谱 Coding Plan MCP `web_search_prime` |
-| `zhipu-mcp-reader` | `zmcp-reader` | 智谱 Coding Plan MCP `webReader` |
-| `zhipu-mcp-search-doc` | `zmcp-doc` | 通过 zread MCP 搜开源仓库文档 |
-| `zhipu-mcp-repo-structure` | `zmcp-tree` | 通过 zread MCP 读仓库结构 |
-| `zhipu-mcp-read-file` | `zmcp-file` | 通过 zread MCP 读单个仓库文件 |
-| `anysearch-domains` | `as-domains` | 实验 AnySearch 域名/能力发现 |
-| `anysearch-search` | `as-search`、`as` | 实验 AnySearch 垂直/通用搜索 |
-| `anysearch-extract` | `as-extract` | 实验 AnySearch URL 抽取 |
-| `anysearch-batch` | `as-batch` | 实验 AnySearch 批量搜索，最多 5 条 |
-| `context7-library` | `c7`、`ctx7` | 查 Context7 库候选 |
-| `context7-docs` | `c7d`、`c7docs`、`ctx7-docs` | 抓 Context7 文档 |
-| `route-calibrate` | `route-cal`、`rcal` | 评测 embedding 路由模型并推荐 threshold/margin |
-| `capabilities` | - | 查看已配置 capability 和 profile 可用性 |
-| `doctor` | `d` | 配置和连通性检查 |
-| `setup` | `init` | 配置向导 |
-| `config` | `cfg` | 本机配置读写 |
-| `model` | `mdl` | 查看显式 provider 模型；修改请用 `config set XAI_MODEL` 或 `OPENAI_COMPATIBLE_MODEL` |
-| `smoke` | `sm` | provider 路由冒烟测试 |
-| `regression` | `reg` | 离线回归测试 |
-
-示例：
-
-```powershell
-smart-search search "query" --validation balanced --extra-sources 3 --timeout 90 --format json --output result.json
-smart-search search "query" --profile balanced --response-mode evidence --format json
-smart-search capabilities --format json
-smart-search route "React useEffect API docs" --format markdown
-smart-search route-calibrate --models "Qwen/Qwen3-Embedding-8B" --format markdown
-smart-search research "query" --budget deep --fallback auto --format json --output research.json
-smart-search search "query" --stream --format json
-smart-search search "query" --no-stream --format json
-smart-search search "nba战报" --format content
-smart-search exa-search "OpenAI Responses API documentation" --include-domains platform.openai.com developers.openai.com --num-results 5 --include-text --format json
-smart-search context7-library "react" "hooks" --format json
-smart-search context7-docs "/facebook/react" "useEffect cleanup" --format json
-smart-search zhipu-search "今天国内 AI 新闻" --search-engine search_pro_sogou --count 5 --format json
-smart-search zhipu-mcp-search "今天国内 AI 新闻" --count 5 --format json
-smart-search zhipu-mcp-reader "https://example.com/source" --format json
-smart-search zhipu-mcp-search-doc "owner/repo" "install" --format json
-smart-search anysearch-search "CVE-2024-3094" --domain security.cve --max-results 3 --format json
-smart-search anysearch-extract "https://example.com/source" --format json
-smart-search exa-similar "https://example.com/source" --num-results 5 --format json
-smart-search fetch "https://example.com/source" --format markdown --output page.md
-smart-search map "https://docs.example.com" --instructions "Find API reference pages" --max-depth 1 --limit 50 --format json
-smart-search doctor --format markdown
-smart-search smoke --mock --format json
-smart-search regression
-```
-
-## 输出和证据策略
-
-AI 和脚本解析优先用 JSON：
-
-```powershell
-smart-search search "query" --format json
-smart-search doctor --format json
-```
-
-给人看连接状态、详细排障报告、冒烟结果、来源列表、网页正文时用 Markdown：
-
-```powershell
-smart-search doctor --format markdown
-smart-search smoke --mock --format markdown
-smart-search exa-search "OpenAI Responses API documentation" --format markdown
-smart-search fetch "https://example.com" --format markdown
-```
-
-终端快速扫正文或摘要用 content：
-
-```powershell
-smart-search search "nba战报" --format content
-smart-search doctor --format content
-```
-
-`content` 刻意保持很短，只适合快速看结论。完整排障给人看用 `doctor --format markdown`，给脚本和 AI 解析用 `doctor --format json`。
-
-JSON 响应新增 `schema_version: "1"`、`command`、`data`、`meta`，同时保留旧版扁平字段。失败响应保留顶层旧版 `error` 字符串，并提供稳定的 `error_code`、`error_detail` 和 `data.error.code`。stdout 只输出一个最终 JSON 值，日志和进度信息写到 stderr。
-
-多来源研究建议显式指定稳定目录保存证据文件。planner 仍会返回平台临时目录形式的 `evidence_dir`，但 live executor 只有在显式传入 `--evidence-dir` 或设置 `SMART_SEARCH_PERSIST_EVIDENCE=true` 时才写 artifact。以下是 Windows 显式路径示例：
-
-```powershell
-smart-search exa-search "Reuters Iran Hormuz latest" --format json --output C:\tmp\smart-search-evidence\iran-hormuz\01-exa.json
-smart-search fetch "https://example.com/source" --format markdown --output C:\tmp\smart-search-evidence\iran-hormuz\02-fetch.md
-```
-
-写 claim-level 结论时建议流程：
-
-1. 用 `search`、`exa-search`、`zhipu-search` 或 `exa-similar` 找候选 URL。
-2. 用 `fetch` 抓关键 URL 正文。
-3. 最终回答只引用 fetch 正文能支撑的事实。
-4. 没有 fetch 的来源标为未验证候选。
-
-## 排障
-
-如果 `doctor` 返回 `config_error`：
-
-```powershell
-smart-search setup
-smart-search config list --format json
-smart-search doctor --format markdown
-```
-
-如果搜索慢：
-
-- 降低 `--extra-sources`；
-- 把大问题拆成多个小问题；
-- 先用 `exa-search` 或 `zhipu-search` 找来源，再 `fetch` 关键网页。
-
-如果想确认安装是否正常：
-
-```powershell
-smart-search --help
-smart-search --version
-smart-search regression
-smart-search smoke --mock --format json
-```
-
-Windows npm/mise 安装后建议验证中文 JSON 管道：
-
-```powershell
-smart-search deep "深度搜索一下最近的比特币行情" --format json | ConvertFrom-Json
-```
-
-## 开发验证
-
-```powershell
-.\.venv\Scripts\python.exe -m compileall -q src tests
-.\.venv\Scripts\python.exe -m pytest tests -q
-.\.venv\Scripts\python.exe -m smart_search.cli regression
-.\.venv\Scripts\python.exe -m smart_search.cli smoke --mock --format json
-npm test
-npm pack --dry-run
-```
 
 ## 最新稳定版说明
 

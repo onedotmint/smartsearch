@@ -43,7 +43,7 @@ user query
  -> provider fallback inside docs_search / web_search / web_fetch / vertical_search
 ```
 
-`smart-search route "query"` explains this decision without calling search, docs, fetch, or provider APIs. `smart-search deep` keeps the offline planner contract and uses local/rules signals only.
+`smart-search route "query"` never calls search, docs, fetch, or vertical provider APIs. In the default `hybrid` mode, it may call configured remote embeddings and classifier endpoints to supplement local rules. Use `--router-mode rules` for local rules-only routing or `--router-mode off` to disable routing. `smart-search deep` always keeps the offline planner contract and uses local/rules signals only.
 
 ## Install
 
@@ -91,11 +91,11 @@ smart-search diagnose openai-compatible --format markdown
 smart-search search "today's important AI news" --validation balanced --extra-sources 2 --format json
 ```
 
-4. Inspect intent routing without running providers:
+4. Inspect intent routing without running search, docs, fetch, or vertical providers. The default `hybrid` mode may call configured remote router endpoints; use `rules` for a local-only check:
 
 ```powershell
 smart-search route "React useEffect API docs" --format markdown
-smart-search route "请核验这个链接里的说法 https://example.com/source" --format json
+smart-search route "请核验这个链接里的说法 https://example.com/source" --router-mode rules --format json
 ```
 
 5. Fetch exact page evidence:
@@ -137,6 +137,177 @@ smart-search skills update --targets codex --format json
 `skills status` and `skills update`; they only inspect or overwrite the managed `smart-search-cli` files and do not change
 provider keys or create Trellis/hooks/agents/commands.
 
+## Commands
+
+Use `search` for a fast live answer, `fetch` for page-level evidence, `deep` for an offline plan, and `research` for live staged research. Provider-specific commands are explicit tools for focused discovery or extraction.
+
+| Command | Alias | Purpose |
+| --- | --- | --- |
+| `search` | `s` | Fast live search and broad synthesis |
+| `route` | `rt` | Explain required capabilities without running search/fetch providers; hybrid may call remote router endpoints |
+| `deep` | `dr` | Offline Deep Research plan |
+| `research` | `rs` | Live Deep Research execution |
+| `fetch` | `f` | Fetch one URL as JSON, Markdown, or content |
+| `map` | `m` | Map a website structure |
+| `exa-search` | `exa`, `x` | Exa source discovery |
+| `exa-similar` | `xs` | Similar pages from one URL |
+| `zhipu-search` | `z`, `zp` | Zhipu Web Search API |
+| `zhipu-mcp-search` | `zmcp-search` | Zhipu Coding Plan MCP `web_search_prime` |
+| `zhipu-mcp-reader` | `zmcp-reader` | Zhipu Coding Plan MCP `webReader` |
+| `zhipu-mcp-search-doc` | `zmcp-doc` | Search open-source repository docs through zread MCP |
+| `zhipu-mcp-repo-structure` | `zmcp-tree` | Read repository structure through zread MCP |
+| `zhipu-mcp-read-file` | `zmcp-file` | Read one repository file through zread MCP |
+| `anysearch-domains` | `as-domains` | Experimental AnySearch domain discovery |
+| `anysearch-search` | `as-search`, `as` | Experimental AnySearch vertical/general search |
+| `anysearch-extract` | `as-extract` | Experimental AnySearch URL extraction |
+| `anysearch-batch` | `as-batch` | Experimental AnySearch batch search, up to 5 queries |
+| `context7-library` | `c7`, `ctx7` | Resolve Context7 library candidates |
+| `context7-docs` | `c7d`, `c7docs`, `ctx7-docs` | Fetch Context7 docs |
+| `route-calibrate` | `route-cal`, `rcal` | Evaluate embedding router models and recommend threshold/margin |
+| `capabilities` | - | Report configured capabilities and profile availability |
+| `doctor` | `d` | Masked config and connectivity check |
+| `diagnose` | `diag` | Focused OpenAI-compatible troubleshooting report |
+| `setup` | `init` | Interactive or scripted setup |
+| `config` | `cfg` | Local config read/write |
+| `model` | `mdl` | Show explicit provider model settings |
+| `smoke` | `sm` | Provider routing smoke tests |
+| `regression` | `reg` | Offline regression checks |
+| `skills status` | `skill status`, `skills st` | Check installed managed skill files |
+| `skills update` | `skill update`, `skills up` | Refresh managed skill files from the bundled copy |
+
+Useful examples:
+
+```powershell
+smart-search search "query" --validation balanced --extra-sources 3 --timeout 90 --format json --output result.json
+smart-search search "query" --profile balanced --response-mode evidence --format json
+smart-search capabilities --format json
+smart-search route "React useEffect API docs" --router-mode rules --format markdown
+smart-search route-calibrate --models "Qwen/Qwen3-Embedding-8B" --format markdown
+smart-search research "query" --budget deep --fallback auto --format json --output research.json
+smart-search search "query" --stream --format json
+smart-search search "query" --no-stream --format json
+smart-search config set OPENAI_COMPATIBLE_FALLBACK_MODELS "grok-4.3-fast" --format json
+smart-search search "nba report" --format content
+smart-search exa-search "OpenAI Responses API documentation" --include-domains platform.openai.com developers.openai.com --num-results 5 --include-text --format json
+smart-search context7-library "react" "hooks" --format json
+smart-search context7-docs "/facebook/react" "useEffect cleanup" --format json
+smart-search zhipu-search "today China AI news" --search-engine search_pro_sogou --count 5 --format json
+smart-search zhipu-mcp-search "today China AI news" --count 5 --format json
+smart-search zhipu-mcp-reader "https://example.com/source" --format json
+smart-search zhipu-mcp-search-doc "owner/repo" "install" --format json
+smart-search anysearch-search "CVE-2024-3094" --domain security.cve --max-results 3 --format json
+smart-search anysearch-extract "https://example.com/source" --format json
+smart-search exa-similar "https://example.com/source" --num-results 5 --format json
+smart-search fetch "https://example.com/source" --format markdown --output page.md
+smart-search map "https://docs.example.com" --instructions "Find API reference pages" --max-depth 1 --limit 50 --format json
+smart-search doctor --format markdown
+smart-search diagnose openai-compatible --format markdown
+smart-search skills status --targets codex --format json
+smart-search skills update --targets codex --format json
+smart-search smoke --mock --format json
+smart-search regression
+```
+
+## Output And Evidence Policy
+
+Use JSON for agents and scripts:
+
+```powershell
+smart-search search "query" --format json
+smart-search doctor --format json
+```
+
+Use Markdown for human-readable reports, detailed diagnostics, source lists, and fetched page text:
+
+```powershell
+smart-search doctor --format markdown
+smart-search diagnose openai-compatible --format markdown
+smart-search smoke --mock --format markdown
+smart-search exa-search "OpenAI Responses API documentation" --format markdown
+smart-search fetch "https://example.com" --format markdown
+```
+
+Use `content` for compact terminal reading:
+
+```powershell
+smart-search search "nba report" --format content
+smart-search doctor --format content
+```
+
+`content` is intentionally brief. Use `doctor --format markdown` for general human troubleshooting, `diagnose openai-compatible --format markdown` for OpenAI-compatible search hangs/timeouts, and JSON formats for complete machine-readable contracts.
+
+JSON responses add `schema_version: "1"`, `command`, `data`, and `meta` while retaining legacy flat fields. Failed responses keep the legacy top-level `error` string and expose stable `error_code`, `error_detail`, and `data.error.code` values. stdout contains one final JSON value; logs and progress remain on stderr.
+
+For claim-level evidence:
+
+1. Discover candidate URLs with `search`, `exa-search`, `zhipu-search`, or `exa-similar`.
+2. Fetch exact URLs with `fetch`.
+3. Cite fetched text in the final answer.
+4. Unsupported key claims must be fetched or downgraded to unverified candidates.
+
+Save multi-source evidence under an explicit stable folder. The planner still reports a platform-temp `evidence_dir`, but the live executor writes artifacts only when `--evidence-dir` is explicit or `SMART_SEARCH_PERSIST_EVIDENCE=true` is set. The commands below use a Windows explicit path example:
+
+```powershell
+smart-search exa-search "Reuters Iran Hormuz latest" --format json --output C:\tmp\smart-search-evidence\iran-hormuz\01-exa.json
+smart-search fetch "https://example.com/source" --format markdown --output C:\tmp\smart-search-evidence\iran-hormuz\02-fetch.md
+```
+
+## Troubleshooting
+
+If `doctor` reports `config_error`:
+
+```powershell
+smart-search setup
+smart-search config list --format json
+smart-search doctor --format markdown
+```
+
+If OpenAI-compatible `search` hangs or times out after `doctor` passes:
+
+```powershell
+smart-search doctor --format markdown
+smart-search diagnose openai-compatible --format markdown
+```
+
+The diagnose report masks the API key and says whether the problem is missing config, the upstream/relay hanging on the real Smart Search prompt, or a stream/no-stream compatibility mismatch.
+
+If search is slow:
+
+- reduce `--extra-sources`;
+- split broad questions into smaller queries;
+- use `exa-search` or `zhipu-search` for source discovery, then `fetch` key pages.
+
+If installed CLI health is uncertain:
+
+```powershell
+smart-search --help
+smart-search --version
+smart-search regression
+smart-search smoke --mock --format json
+```
+
+On Windows npm/mise installs, verify non-ASCII JSON piping:
+
+```powershell
+smart-search deep "深度搜索一下最近的比特币行情" --format json | ConvertFrom-Json
+```
+
+## Development
+
+Run the source-checkout verification with a Python executable available on your platform:
+
+```text
+python -m compileall -q src tests
+python -m pytest tests -q
+python -m smart_search.cli regression
+python -m smart_search.cli smoke --mock --format json
+npm test
+npm pack --dry-run
+git diff --check
+```
+
+On Windows, replace `python` with `py -3` when `python` is not on `PATH`. The `ConvertFrom-Json` pipeline above is a Windows PowerShell example only.
+
 ## Current Architecture
 
 | Capability | Main commands | Providers | Role |
@@ -159,7 +330,7 @@ Fallback is same-capability only:
 | `web_search` | Zhipu Web Search API -> Zhipu Coding Plan MCP `web_search_prime` -> Tavily -> Firecrawl |
 | `web_fetch` | Tavily -> Jina Reader with `JINA_API_KEY` -> Zhipu Coding Plan MCP `webReader` -> Firecrawl |
 
-AnySearch is intentionally not part of the `web_search` fallback chain and is not required by the `standard` minimum profile. Use its explicit commands for acceptance and boundary testing before promoting any vertical domain into a future route.
+AnySearch is intentionally not part of the `web_search` fallback chain and is not required by the `standard` minimum profile. Its adapter can omit `Authorization` when no key is passed, but the CLI capability preflight requires `ANYSEARCH_API_KEY` before any `anysearch-*` command runs. Configure the key before using its explicit commands for acceptance and boundary testing.
 
 Jina Reader is a `web_fetch` provider only. `JINA_API_KEY` is required before Jina satisfies `SMART_SEARCH_MINIMUM_PROFILE=standard`; anonymous `r.jina.ai` behavior is treated as explicit/experimental fetch behavior and must not weaken fail-closed setup checks.
 
@@ -254,7 +425,7 @@ The default interactive setup wizard includes optional smart intent router promp
 | Tavily | Extra web sources, URL fetch, and site map | `TAVILY_API_URL`, `TAVILY_API_KEY`, `TAVILY_ENABLED` | [Tavily docs](https://docs.tavily.com/) | [Tavily app](https://app.tavily.com/home) |
 | Jina Reader | Known URL page extraction for `web_fetch`; key required for standard minimum profile | `JINA_API_KEY`, `JINA_READER_API_URL`, `JINA_RESPOND_WITH`, `JINA_TIMEOUT_SECONDS` | [Jina Reader](https://jina.ai/reader/) | [Jina AI](https://jina.ai/) |
 | Firecrawl | Fetch fallback and supplementary web sources | `FIRECRAWL_API_URL`, `FIRECRAWL_API_KEY` | [Firecrawl docs](https://docs.firecrawl.dev/) | [Firecrawl API keys](https://www.firecrawl.dev/app/api-keys) |
-| AnySearch | Experimental vertical search acceptance surface; not a default fallback | `ANYSEARCH_API_URL`, `ANYSEARCH_API_KEY`, `ANYSEARCH_TIMEOUT_SECONDS` | [AnySearch docs](https://www.anysearch.com/docs) | [AnySearch API keys](https://www.anysearch.com/console/api-keys) |
+| AnySearch | Experimental vertical search acceptance surface; CLI commands require a key; not a default fallback | `ANYSEARCH_API_URL`, `ANYSEARCH_API_KEY`, `ANYSEARCH_TIMEOUT_SECONDS` | [AnySearch docs](https://www.anysearch.com/docs) | [AnySearch API keys](https://www.anysearch.com/console/api-keys) |
 
 Intent router configuration:
 
@@ -308,7 +479,7 @@ Important boundaries:
 - `ZHIPU_SEARCH_ENGINE` defaults to `search_std`. Supported official values include `search_std`, `search_pro`, `search_pro_sogou`, and `search_pro_quark`; custom values remain allowed for future services.
 - `TAVILY_API_URL` affects Tavily only. It does not proxy Zhipu. For Tavily Hikari / pooled endpoints, use `https://<host>/api/tavily`; setup normalizes root-host or `/mcp` inputs to that REST base.
 - `FIRECRAWL_API_URL` defaults to `https://api.firecrawl.dev/v2`.
-- AnySearch uses JSON-RPC 2.0 `tools/call` at `https://api.anysearch.com/mcp` by default. It allows anonymous calls when no key is configured, but authenticated calls send `Authorization: Bearer ...`. HTTP 200 responses with `result.isError=true` are treated as provider errors, not as successful evidence.
+- AnySearch uses JSON-RPC 2.0 `tools/call` at `https://api.anysearch.com/mcp` by default. At the adapter/API layer, no key means no `Authorization` header and a configured key sends `Authorization: Bearer ...`; the CLI preflight still requires `ANYSEARCH_API_KEY` for every `anysearch-*` command. HTTP 200 responses with `result.isError=true` are treated as provider errors, not as successful evidence.
 - `doctor` and `route` report intent router status, embedding model, threshold, margin, their config source, timeout, and degradation behavior. They do not expose router API keys.
 - The runtime cache is opt-in through `SMART_SEARCH_CACHE_ENABLED=true`. Search uses a `30` second TTL, fetch uses `300` seconds, and the LRU capacity defaults to `256`; changing provider behavior configuration or credentials invalidates old entries.
 
@@ -363,7 +534,7 @@ Use `smart-search capabilities --format json` to inspect commands, configured pr
 
 Built-in search, fetch, and research Prompts can be overridden with local UTF-8 files using `--prompt-dir`, `--search-prompt-file`, `--fetch-prompt-file`, or `--research-prompt-file`. Remote Prompt URLs are rejected. The default output file behavior is non-overwriting; use `--force` only when replacement is intended.
 
-Experimental AnySearch configuration is optional and does not satisfy or change the `standard` minimum profile:
+Experimental AnySearch is outside the default workflow and does not satisfy or change the `standard` minimum profile. The CLI `anysearch-*` commands require `ANYSEARCH_API_KEY` even though the underlying adapter can represent an anonymous request:
 
 ```powershell
 smart-search setup --non-interactive --anysearch-api-url "https://api.anysearch.com/mcp" --anysearch-key "your-anysearch-key"
@@ -390,166 +561,6 @@ Provider timeouts:
 - `TAVILY_ENABLED` defaults to `true`. Set it to `false` to keep Tavily visible as disabled in diagnostics while excluding it from search, fetch, and map calls.
 - `ANYSEARCH_TIMEOUT_SECONDS` controls experimental AnySearch JSON-RPC calls and defaults to `30`.
 - Raise it for slower Tavily Hikari / pooled / community endpoints before treating the provider as unhealthy.
-
-## Commands
-
-| Command | Alias | Purpose |
-| --- | --- | --- |
-| `search` | `s` | Fast live search and broad synthesis |
-| `route` | `rt` | Explain required capabilities without running providers |
-| `deep` | `dr` | Offline Deep Research plan |
-| `research` | `rs` | Live Deep Research execution |
-| `fetch` | `f` | Fetch one URL as JSON, Markdown, or content |
-| `map` | `m` | Map a website structure |
-| `exa-search` | `exa`, `x` | Exa source discovery |
-| `exa-similar` | `xs` | Similar pages from one URL |
-| `zhipu-search` | `z`, `zp` | Zhipu Web Search API |
-| `zhipu-mcp-search` | `zmcp-search` | Zhipu Coding Plan MCP `web_search_prime` |
-| `zhipu-mcp-reader` | `zmcp-reader` | Zhipu Coding Plan MCP `webReader` |
-| `zhipu-mcp-search-doc` | `zmcp-doc` | Search open-source repository docs through zread MCP |
-| `zhipu-mcp-repo-structure` | `zmcp-tree` | Read repository structure through zread MCP |
-| `zhipu-mcp-read-file` | `zmcp-file` | Read one repository file through zread MCP |
-| `anysearch-domains` | `as-domains` | Experimental AnySearch domain discovery |
-| `anysearch-search` | `as-search`, `as` | Experimental AnySearch vertical/general search |
-| `anysearch-extract` | `as-extract` | Experimental AnySearch URL extraction |
-| `anysearch-batch` | `as-batch` | Experimental AnySearch batch search, up to 5 queries |
-| `context7-library` | `c7`, `ctx7` | Resolve Context7 library candidates |
-| `context7-docs` | `c7d`, `c7docs`, `ctx7-docs` | Fetch Context7 docs |
-| `route-calibrate` | `route-cal`, `rcal` | Evaluate embedding router models and recommend threshold/margin |
-| `capabilities` | - | Report configured capabilities and profile availability |
-| `doctor` | `d` | Masked config and connectivity check |
-| `diagnose` | `diag` | Focused OpenAI-compatible troubleshooting report |
-| `setup` | `init` | Interactive or scripted setup |
-| `config` | `cfg` | Local config read/write |
-| `model` | `mdl` | Show explicit provider model settings; use `config set XAI_MODEL` or `OPENAI_COMPATIBLE_MODEL` to change them |
-| `smoke` | `sm` | Provider routing smoke tests |
-| `regression` | `reg` | Offline regression checks |
-
-Useful examples:
-
-```powershell
-smart-search search "query" --validation balanced --extra-sources 3 --timeout 90 --format json --output result.json
-smart-search search "query" --profile balanced --response-mode evidence --format json
-smart-search capabilities --format json
-smart-search route "React useEffect API docs" --format markdown
-smart-search route-calibrate --models "Qwen/Qwen3-Embedding-8B" --format markdown
-smart-search research "query" --budget deep --fallback auto --format json --output research.json
-smart-search search "query" --stream --format json
-smart-search search "query" --no-stream --format json
-smart-search config set OPENAI_COMPATIBLE_FALLBACK_MODELS "grok-4.3-fast" --format json
-smart-search search "nba report" --format content
-smart-search exa-search "OpenAI Responses API documentation" --include-domains platform.openai.com developers.openai.com --num-results 5 --include-text --format json
-smart-search context7-library "react" "hooks" --format json
-smart-search context7-docs "/facebook/react" "useEffect cleanup" --format json
-smart-search zhipu-search "today China AI news" --search-engine search_pro_sogou --count 5 --format json
-smart-search zhipu-mcp-search "today China AI news" --count 5 --format json
-smart-search zhipu-mcp-reader "https://example.com/source" --format json
-smart-search zhipu-mcp-search-doc "owner/repo" "install" --format json
-smart-search anysearch-search "CVE-2024-3094" --domain security.cve --max-results 3 --format json
-smart-search anysearch-extract "https://example.com/source" --format json
-smart-search exa-similar "https://example.com/source" --num-results 5 --format json
-smart-search fetch "https://example.com/source" --format markdown --output page.md
-smart-search map "https://docs.example.com" --instructions "Find API reference pages" --max-depth 1 --limit 50 --format json
-smart-search doctor --format markdown
-smart-search diagnose openai-compatible --format markdown
-smart-search smoke --mock --format json
-smart-search regression
-```
-
-## Output And Evidence Policy
-
-Use JSON for agents and scripts:
-
-```powershell
-smart-search search "query" --format json
-smart-search doctor --format json
-```
-
-Use Markdown for human-readable reports, detailed diagnostics, source lists, and fetched page text:
-
-```powershell
-smart-search doctor --format markdown
-smart-search diagnose openai-compatible --format markdown
-smart-search smoke --mock --format markdown
-smart-search exa-search "OpenAI Responses API documentation" --format markdown
-smart-search fetch "https://example.com" --format markdown
-```
-
-Use `content` for compact terminal reading:
-
-```powershell
-smart-search search "nba report" --format content
-smart-search doctor --format content
-```
-
-`content` is intentionally brief. Use `doctor --format markdown` for general human troubleshooting, `diagnose openai-compatible --format markdown` for OpenAI-compatible search hangs/timeouts, and JSON formats for complete machine-readable contracts.
-
-JSON responses add `schema_version: "1"`, `command`, `data`, and `meta` while retaining legacy flat fields. Failed responses keep the legacy top-level `error` string and expose stable `error_code`, `error_detail`, and `data.error.code` values. stdout contains one final JSON value; logs and progress remain on stderr.
-
-Save multi-source evidence under an explicit stable folder. The planner still reports a platform-temp `evidence_dir`, but the live executor writes artifacts only when `--evidence-dir` is explicit or `SMART_SEARCH_PERSIST_EVIDENCE=true` is set. The commands below use a Windows explicit path example:
-
-```powershell
-smart-search exa-search "Reuters Iran Hormuz latest" --format json --output C:\tmp\smart-search-evidence\iran-hormuz\01-exa.json
-smart-search fetch "https://example.com/source" --format markdown --output C:\tmp\smart-search-evidence\iran-hormuz\02-fetch.md
-```
-
-For claim-level evidence:
-
-1. Discover candidate URLs with `search`, `exa-search`, `zhipu-search`, or `exa-similar`.
-2. Fetch exact URLs with `fetch`.
-3. Cite fetched text in the final answer.
-4. Unsupported key claims must be fetched or downgraded to unverified candidates.
-
-## Troubleshooting
-
-If `doctor` reports `config_error`:
-
-```powershell
-smart-search setup
-smart-search config list --format json
-smart-search doctor --format markdown
-```
-
-If OpenAI-compatible `search` hangs or times out after `doctor` passes:
-
-```powershell
-smart-search doctor --format markdown
-smart-search diagnose openai-compatible --format markdown
-```
-
-The diagnose report masks the API key and says whether the problem is missing config, the upstream/relay hanging on the real Smart Search prompt, or a stream/no-stream compatibility mismatch.
-
-If search is slow:
-
-- reduce `--extra-sources`;
-- split broad questions into smaller queries;
-- use `exa-search` or `zhipu-search` for source discovery, then `fetch` key pages.
-
-If installed CLI health is uncertain:
-
-```powershell
-smart-search --help
-smart-search --version
-smart-search regression
-smart-search smoke --mock --format json
-```
-
-On Windows npm/mise installs, verify non-ASCII JSON piping:
-
-```powershell
-smart-search deep "深度搜索一下最近的比特币行情" --format json | ConvertFrom-Json
-```
-
-## Development
-
-```powershell
-.\.venv\Scripts\python.exe -m compileall -q src tests
-.\.venv\Scripts\python.exe -m pytest tests -q
-.\.venv\Scripts\python.exe -m smart_search.cli regression
-.\.venv\Scripts\python.exe -m smart_search.cli smoke --mock --format json
-npm test
-npm pack --dry-run
-```
 
 ## Latest stable release notes
 
