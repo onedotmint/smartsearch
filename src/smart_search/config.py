@@ -4,7 +4,10 @@ import logging
 import os
 import sys
 import tempfile
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 
 logger = logging.getLogger(__name__)
@@ -12,6 +15,17 @@ logger = logging.getLogger(__name__)
 
 class ConfigStorageError(ValueError):
     """Raised when the local configuration cannot be safely persisted."""
+
+
+@dataclass(frozen=True)
+class ConfigSnapshot:
+    """Immutable file-plus-environment configuration view for one runtime boundary."""
+
+    config_file: Path
+    config_dir_source: str
+    file_values: Mapping[str, object]
+    values: Mapping[str, object]
+    environment_values: Mapping[str, str | None]
 
 
 class Config:
@@ -126,6 +140,7 @@ class Config:
             cls._instance = super().__new__(cls)
             cls._instance._config_file = None
             cls._instance._config_dir_source = None
+            cls._instance._config_snapshot = None
             cls._instance._cached_model = None
             cls._instance._credential_state_digest = None
             cls._instance._credential_epoch = 0
@@ -216,6 +231,83 @@ class Config:
             _ = self.config_file
         return self._config_dir_source or "override"
 
+    def _environment_values(self) -> dict[str, str | None]:
+        return {key: os.getenv(key) for key in self._CONFIG_KEYS}
+
+    def _get_config_snapshot(self) -> ConfigSnapshot:
+        """
+        /*
+         * ================================================================================
+         * 步骤1：加载配置快照
+         * ================================================================================
+         * 目标：让一次命令内的配置属性共享同一份文件读取结果。
+         * 数据源：本地 config.json 和 _CONFIG_KEYS 对应的环境变量。
+         * 操作：
+         * 1) 文件只在快照缺失、路径变化或环境覆盖变化时读取。
+         * 2) 环境变量覆盖文件值，并把原始文件值保留给 config list/source。
+         * ================================================================================
+         */
+        """
+        config_file = self.config_file
+        config_dir_source = self.config_dir_source
+        environment_values = self._environment_values()
+        snapshot = self._config_snapshot
+        if (
+            snapshot is not None
+            and snapshot.config_file == config_file
+            and snapshot.config_dir_source == config_dir_source
+            and dict(snapshot.environment_values) == environment_values
+        ):
+            return snapshot
+
+        logger.info("开始加载配置快照: %s", config_file)
+        file_values = self._load_config_file()
+        if not isinstance(file_values, dict):
+            file_values = {}
+        file_values = dict(file_values)
+        merged_values = dict(file_values)
+        for key, value in environment_values.items():
+            if value is not None:
+                merged_values[key] = value
+
+        snapshot = ConfigSnapshot(
+            config_file=config_file,
+            config_dir_source=config_dir_source,
+            file_values=MappingProxyType(file_values),
+            values=MappingProxyType(merged_values),
+            environment_values=MappingProxyType(environment_values),
+        )
+        self._config_snapshot = snapshot
+        logger.info("配置快照加载完成: %s", config_file)
+        return snapshot
+
+    @property
+    def snapshot(self) -> ConfigSnapshot:
+        return self._get_config_snapshot()
+
+    def invalidate_snapshot(self) -> None:
+        self._config_snapshot = None
+
+    def refresh(self) -> ConfigSnapshot:
+        """
+        /*
+         * ================================================================================
+         * 步骤2：显式刷新配置
+         * ================================================================================
+         * 目标：在外部文件变化或测试边界变化后建立新的不可变配置视图。
+         * 数据源：当前 config_file、config.json 和环境变量。
+         * 操作：
+         * 1) 丢弃当前快照。
+         * 2) 立即加载并返回新的快照，供调用方固定本次配置。
+         * ================================================================================
+         */
+        """
+        logger.info("开始刷新配置快照")
+        self.invalidate_snapshot()
+        snapshot = self._get_config_snapshot()
+        logger.info("配置快照刷新完成: %s", snapshot.config_file)
+        return snapshot
+
     def _load_config_file(self) -> dict:
         try:
             with open(self.config_file, 'r', encoding='utf-8') as f:
@@ -251,6 +343,7 @@ class Config:
             self._secure_file_mode(temp_path)
             os.replace(temp_path, target)
             temp_path = None
+            self.invalidate_snapshot()
             logger.info("配置写入完成: %s", target)
         except (IOError, OSError, TypeError, ValueError) as e:
             if temp_fd is not None:
@@ -268,22 +361,20 @@ class Config:
                     pass
 
     def _get_config_value(self, key: str, default: str | None = None) -> str | None:
-        env_value = os.getenv(key)
-        if env_value is not None:
-            return env_value
-
-        data = self._load_config_file()
-        value = data.get(key)
+        snapshot = self._get_config_snapshot()
+        value = snapshot.values.get(key)
+        if value is None and key not in snapshot.environment_values:
+            value = os.getenv(key)
         if value is None:
             legacy_key = next((old for old, new in self._LEGACY_CONFIG_KEYS.items() if new == key), None)
             if legacy_key:
-                value = data.get(legacy_key)
+                value = snapshot.file_values.get(legacy_key)
         if value is None:
             return default
         return str(value)
 
     def get_saved_config(self, masked: bool = True) -> dict:
-        data = self._load_config_file()
+        data = self._get_config_snapshot().file_values
         normalized: dict[str, str] = {}
         for old_key, new_key in self._LEGACY_CONFIG_KEYS.items():
             if old_key in data and new_key not in data:
@@ -296,24 +387,37 @@ class Config:
         return {key: self._mask_if_secret(key, value) for key, value in normalized.items()}
 
     def get_config_source(self, key: str) -> str:
-        if os.getenv(key) is not None:
+        snapshot = self._get_config_snapshot()
+        environment_value = snapshot.environment_values.get(key)
+        if key not in snapshot.environment_values:
+            environment_value = os.getenv(key)
+        if environment_value is not None:
             return "environment"
-        data = self._load_config_file()
-        if key in data:
+        if key in snapshot.file_values:
             return "config_file"
         legacy_key = next((old for old, new in self._LEGACY_CONFIG_KEYS.items() if new == key), None)
-        if legacy_key and legacy_key in data:
+        if legacy_key and legacy_key in snapshot.file_values:
             return "config_file"
         return "default"
 
     def get_config_sources(self) -> dict[str, str]:
-        return {key: self.get_config_source(key) for key in sorted(self._CONFIG_KEYS)}
+        snapshot = self._get_config_snapshot()
+        sources: dict[str, str] = {}
+        for key in sorted(self._CONFIG_KEYS):
+            if snapshot.environment_values.get(key) is not None:
+                sources[key] = "environment"
+            elif key in snapshot.file_values:
+                sources[key] = "config_file"
+            else:
+                legacy_key = next((old for old, new in self._LEGACY_CONFIG_KEYS.items() if new == key), None)
+                sources[key] = "config_file" if legacy_key and legacy_key in snapshot.file_values else "default"
+        return sources
 
     def set_config_value(self, key: str, value: str) -> None:
         key = key.strip().upper()
         if key not in self._CONFIG_KEYS:
             raise ValueError(f"Unsupported config key: {key}")
-        config_data = self._load_config_file()
+        config_data = dict(self._get_config_snapshot().file_values)
         config_data[key] = value
         self._save_config_file(config_data)
         if key in {
@@ -337,7 +441,7 @@ class Config:
         key = key.strip().upper()
         if key not in self._CONFIG_KEYS:
             raise ValueError(f"Unsupported config key: {key}")
-        config_data = self._load_config_file()
+        config_data = dict(self._get_config_snapshot().file_values)
         config_data.pop(key, None)
         for old_key, new_key in self._LEGACY_CONFIG_KEYS.items():
             if new_key == key:

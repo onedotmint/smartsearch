@@ -14,6 +14,7 @@ def isolate_smart_search_config(monkeypatch, tmp_path):
     config = Config()
     monkeypatch.setattr(config, "_config_file", tmp_path / "config.json")
     monkeypatch.setattr(config, "_config_dir_source", "override")
+    monkeypatch.setattr(config, "_config_snapshot", None)
     monkeypatch.setattr(config, "_cached_model", None)
     for key in config._CONFIG_KEYS:
         monkeypatch.delenv(key, raising=False)

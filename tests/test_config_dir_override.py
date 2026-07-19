@@ -8,10 +8,14 @@ import pytest
 from smart_search.config import Config
 
 
-def _fresh_config_file(monkeypatch):
+def _fresh_config_file(monkeypatch, tmp_path=None):
     config = Config()
     monkeypatch.setattr(config, "_config_file", None)
     monkeypatch.setattr(config, "_config_dir_source", None)
+    monkeypatch.setattr(config, "_config_snapshot", None)
+    if tmp_path is not None:
+        monkeypatch.setattr(config, "_config_file", tmp_path / "config.json")
+        monkeypatch.setattr(config, "_config_dir_source", "override")
     return config
 
 
@@ -133,6 +137,66 @@ def test_tavily_timeout_can_be_configured(monkeypatch):
     info = config.get_config_info()
     assert info["TAVILY_TIMEOUT_SECONDS"] == 45.0
     assert info["config_sources"]["TAVILY_TIMEOUT_SECONDS"] == "environment"
+
+
+def test_config_snapshot_reads_file_once_for_config_info(monkeypatch, tmp_path):
+    config = _fresh_config_file(monkeypatch, tmp_path)
+    config._save_config_file({"XAI_API_KEY": "file-secret", "XAI_MODEL": "file-model"})
+    calls = 0
+    original_load = config._load_config_file
+
+    def counted_load():
+        nonlocal calls
+        calls += 1
+        return original_load()
+
+    monkeypatch.setattr(config, "_load_config_file", counted_load)
+    info = config.get_config_info()
+
+    assert info["XAI_MODEL"] == "file-model"
+    assert info["config_sources"]["XAI_API_KEY"] == "config_file"
+    assert calls == 1
+
+
+def test_config_snapshot_merges_environment_and_is_immutable(monkeypatch, tmp_path):
+    config = _fresh_config_file(monkeypatch, tmp_path)
+    config._save_config_file({"XAI_API_KEY": "file-secret"})
+    monkeypatch.setenv("XAI_API_KEY", "environment-secret")
+
+    snapshot = config.refresh()
+
+    assert snapshot.values["XAI_API_KEY"] == "environment-secret"
+    assert snapshot.file_values["XAI_API_KEY"] == "file-secret"
+    assert config.xai_api_key == "environment-secret"
+    assert config.get_config_source("XAI_API_KEY") == "environment"
+    with pytest.raises(TypeError):
+        snapshot.values["XAI_API_KEY"] = "changed"
+
+
+def test_config_snapshot_refresh_reads_external_file_changes(monkeypatch, tmp_path):
+    config = _fresh_config_file(monkeypatch, tmp_path)
+    config.config_file.parent.mkdir(parents=True, exist_ok=True)
+    config.config_file.write_text(json.dumps({"XAI_MODEL": "old-model"}), encoding="utf-8")
+
+    first = config.refresh()
+    config.config_file.write_text(json.dumps({"XAI_MODEL": "new-model"}), encoding="utf-8")
+
+    assert first.values["XAI_MODEL"] == "old-model"
+    assert config.xai_model == "old-model"
+    config.refresh()
+    assert config.xai_model == "new-model"
+
+
+def test_config_write_invalidates_snapshot(monkeypatch, tmp_path):
+    config = _fresh_config_file(monkeypatch, tmp_path)
+    config._save_config_file({"XAI_MODEL": "old-model"})
+    assert config.xai_model == "old-model"
+
+    config.set_config_value("XAI_MODEL", "new-model")
+
+    assert config.xai_model == "new-model"
+    config.unset_config_value("XAI_MODEL")
+    assert config.xai_model == config._DEFAULT_MODEL
 
 
 def test_absolute_log_dir_is_resolved_without_creation(monkeypatch, tmp_path):
