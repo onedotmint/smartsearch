@@ -22,6 +22,7 @@
 - When a Windows user reports different config paths, diagnose in this order: `config_dir_source`, `config_dir_override_value`, `config_dir_override_matches_default`, then `legacy_windows_config_exists`. Do not delete either config file or the user-level override until the upgraded CLI has been verified with `config path`, `doctor`, and smoke/regression checks.
 - Runtime caching is disabled by default. Set `SMART_SEARCH_CACHE_ENABLED=true` to enable process-local cleaned source/content reuse; `SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS` defaults to `30`, `SMART_SEARCH_FETCH_CACHE_TTL_SECONDS` to `300`, and `SMART_SEARCH_CACHE_MAX_SIZE` to `256`. TTL values must be `1..604800`, and max size must be `1..10000`.
 - Cache configuration changes and credential rotation prevent old entries from being used. The cache never stores synthesis answers, errors, empty results, prompts, credentials, or research artifacts.
+- Live research artifacts are written only when `--evidence-dir` is explicit or `SMART_SEARCH_PERSIST_EVIDENCE=true`; the generated `evidence_dir` remains available for planned output paths.
 
 ## Doctor And Diagnostics
 

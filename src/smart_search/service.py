@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .config import ConfigStorageError, config
+from .evidence import CapabilityPlan, EvidenceBundle
 from .intent_router import (
     CAPABILITY_UTTERANCES,
     CURRENT_INTENT_KEYWORDS as ROUTER_CURRENT_INTENT_KEYWORDS,
@@ -418,6 +419,164 @@ def _elapsed_ms(start: float) -> float:
     return round((time.time() - start) * 1000, 2)
 
 
+def _capability_plan(
+    command: str,
+    *,
+    required_capabilities: list[str] | tuple[str, ...] = (),
+    optional_capabilities: list[str] | tuple[str, ...] = (),
+    budget: str = "",
+    allow_synthesis: bool = False,
+    source_only: bool = False,
+    response_mode: str = "",
+) -> CapabilityPlan:
+    """
+    /*
+     * ==============================================================================
+     * 步骤1：装配命令能力计划
+     * ==============================================================================
+     * 目标：把命令能力矩阵和当前 RequestContext 预算绑定到 CapabilityPlan。
+     * 数据源：命令参数、当前 command budget 和 research budget。
+     * 操作：
+     * 1) 优先读取当前 RequestContext 的 provider/fetch 上限。
+     * 2) 没有运行时上下文时使用命令级默认上限，保证 planner 可离线构造。
+     * ==============================================================================
+     */
+    """
+    logger.info("开始装配命令能力计划: command=%s", command)
+    context = current_context()
+    if context is not None:
+        max_provider_attempts = context.budget.max_provider_attempts
+        max_fetches = context.budget.max_fetches
+    else:
+        default_limits = {
+            "quick": (12, 4),
+            "standard": (20, 8),
+            "deep": (32, 12),
+        }
+        max_provider_attempts, max_fetches = default_limits.get(
+            (budget or "").strip().lower(),
+            (32, 8),
+        )
+    result = CapabilityPlan(
+        command=command,
+        required_capabilities=tuple(required_capabilities),
+        optional_capabilities=tuple(optional_capabilities),
+        max_provider_attempts=max_provider_attempts,
+        max_fetches=max_fetches,
+        budget=budget,
+        allow_synthesis=allow_synthesis,
+        source_only=source_only,
+        response_mode=response_mode,
+    )
+    logger.info(
+        "命令能力计划装配完成: command=%s required=%s provider_limit=%s fetch_limit=%s",
+        command,
+        result.required_capabilities,
+        result.max_provider_attempts,
+        result.max_fetches,
+    )
+    return result
+
+
+def _capability_plan_from_result(
+    command: str,
+    command_result: dict[str, Any],
+    *,
+    budget: str = "",
+    allow_synthesis: bool = False,
+    response_mode: str = "",
+) -> CapabilityPlan:
+    """
+    /*
+     * ==============================================================================
+     * 步骤2：从命令预检生成能力计划
+     * ==============================================================================
+     * 目标：复用 validate_command_capabilities 的结果，避免重复定义依赖。
+     * 数据源：required_capability_groups、optional_capabilities 和 source_only。
+     * 操作：展开能力组并保留 source-only、response_mode 和 synthesis 语义。
+     * ==============================================================================
+     */
+    """
+    logger.info("开始从命令预检生成能力计划: command=%s", command)
+    groups = command_result.get("required_capability_groups") or []
+    required: list[str] = []
+    for group in groups:
+        for capability in group:
+            if capability and capability not in required:
+                required.append(capability)
+    if not required:
+        required = list(command_result.get("required_capabilities") or [])
+    plan = _capability_plan(
+        command,
+        required_capabilities=required,
+        optional_capabilities=list(command_result.get("optional_capabilities") or []),
+        budget=budget,
+        allow_synthesis=allow_synthesis,
+        source_only=bool(command_result.get("source_only")),
+        response_mode=response_mode,
+    )
+    logger.info("命令预检能力计划生成完成: command=%s", command)
+    return plan
+
+
+def _evidence_bundle_fields(bundle: EvidenceBundle) -> dict[str, Any]:
+    """
+    /*
+     * ==============================================================================
+     * 步骤3：适配 evidence bundle 到 flat JSON
+     * ==============================================================================
+     * 目标：让 CLI 继续读取旧字段，同时让新 evidence 对象成为唯一数据源。
+     * 数据源：EvidenceBundle.to_dict() 快照。
+     * 操作：输出新增嵌套字段和 evidence_items/citations 等兼容字段。
+     * ==============================================================================
+     */
+    """
+    logger.info("开始适配 evidence bundle 到 flat JSON")
+    snapshot = bundle.to_dict()
+    fields = {
+        "evidence_bundle": snapshot,
+        "discovery_candidates": snapshot["discovery_candidates"],
+        "fetched_evidence": snapshot["fetched_evidence"],
+        "evidence_items": snapshot["fetched_evidence"],
+        "citations": snapshot["citations"],
+        "gaps": snapshot["gaps"],
+    }
+    logger.info(
+        "evidence bundle flat JSON 适配完成: candidates=%s evidence=%s",
+        len(fields["discovery_candidates"]),
+        len(fields["evidence_items"]),
+    )
+    return fields
+
+
+def _combined_degraded_reason(
+    bundle: EvidenceBundle,
+    capability_metadata: dict[str, Any] | None = None,
+) -> str:
+    """
+    /*
+     * ==============================================================================
+     * 步骤4：合并 flat degraded 原因
+     * ==============================================================================
+     * 目标：让兼容 flat 字段同时保留 capability 和 evidence stage 的降级原因。
+     * 数据源：Capability metadata 与 EvidenceBundle.degraded_reasons。
+     * 操作：
+     * 1) 保留命令预检已有原因。
+     * 2) 追加 synthesis、fetch 和 gap check 产生的证据原因并去重。
+     * ==============================================================================
+     */
+    """
+    logger.info("开始合并 degraded 原因")
+    reasons: list[str] = []
+    metadata_reason = str((capability_metadata or {}).get("degraded_reason") or "").strip()
+    if metadata_reason:
+        reasons.append(metadata_reason)
+    reasons.extend(reason for reason in bundle.degraded_reasons if reason)
+    result = "; ".join(dict.fromkeys(reasons))
+    logger.info("degraded 原因合并完成: count=%s", len(reasons))
+    return result
+
+
 def reset_runtime_cache() -> None:
     """
     ================================================================================
@@ -640,6 +799,12 @@ def _empty_search_result(
         "primary_sources_count": 0,
         "extra_sources": [],
         "extra_sources_count": 0,
+        "evidence_bundle": EvidenceBundle().to_dict(),
+        "discovery_candidates": [],
+        "fetched_evidence": [],
+        "evidence_items": [],
+        "citations": [],
+        "gaps": [],
         "source_warning": "",
         "routing_decision": {},
         "providers_used": [],
@@ -1182,27 +1347,44 @@ def _research_evidence_item(
 
 
 def _citation_items(evidence_items: list[dict[str, Any]]) -> list[dict[str, str]]:
-    citations: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for item in evidence_items:
-        url = item.get("url", "")
-        if not url or url in seen:
-            continue
-        seen.add(url)
-        citations.append({
-            "url": url,
-            "title": item.get("title") or url,
-            "provider": item.get("provider") or "",
-        })
-    return citations
+    evidence_bundle = EvidenceBundle()
+    evidence_bundle.add_fetched_evidence(evidence_items)
+    return evidence_bundle.to_dict()["citations"]
 
 
-def _evidence_only_synthesis(question: str, evidence_items: list[dict[str, Any]], gaps: list[dict[str, Any]]) -> str:
+def _evidence_only_synthesis(
+    question: str,
+    evidence: EvidenceBundle | list[dict[str, Any]],
+    gaps: list[dict[str, Any]] | None = None,
+) -> str:
+    """
+    /*
+     * ==============================================================================
+     * 步骤8：只基于 EvidenceBundle 生成 synthesis
+     * ==============================================================================
+     * 目标：禁止 synthesis 重新调用 search/fetch provider，保证输入只有已读正文。
+     * 数据源：EvidenceBundle.fetched_evidence 和 gap check 结果。
+     * 操作：兼容旧的 list 调用，但立即转换为 EvidenceBundle 后再读取内容。
+     * ==============================================================================
+     */
+    """
+    logger.info("开始执行 evidence-only synthesis: question=%s", question)
+    if isinstance(evidence, EvidenceBundle):
+        evidence_bundle = evidence
+    else:
+        evidence_bundle = EvidenceBundle()
+        evidence_bundle.add_fetched_evidence(evidence)
+        for gap in gaps or []:
+            evidence_bundle.add_gap(gap)
+    evidence_items = evidence_bundle.fetched_evidence
+    resolved_gaps = evidence_bundle.gaps if gaps is None else gaps
     if not evidence_items:
-        return (
+        result = (
             f"未能为 `{question}` 获取可引用的页面正文证据。"
             "本次 research 已停止在降级状态，未对缺证据的结论做断言。"
         )
+        logger.info("evidence-only synthesis 完成: 无 fetched evidence")
+        return result
     lines = [f"Research result for: {question}", ""]
     lines.append("Evidence-backed findings:")
     for index, item in enumerate(evidence_items, 1):
@@ -1212,11 +1394,13 @@ def _evidence_only_synthesis(question: str, evidence_items: list[dict[str, Any]]
         if excerpt:
             lines.append(f"   Evidence excerpt: {excerpt}")
         lines.append(f"   Source: {item.get('url')}")
-    if gaps:
+    if resolved_gaps:
         lines.extend(["", "Unverified gaps:"])
-        for gap in gaps:
+        for gap in resolved_gaps:
             lines.append(f"- {gap.get('subquestion_id', '')}: {gap.get('reason', '')}")
-    return "\n".join(lines).strip()
+    result = "\n".join(lines).strip()
+    logger.info("evidence-only synthesis 完成: evidence=%s", len(evidence_items))
+    return result
 
 
 def _select_candidate_urls(sources: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
@@ -1245,6 +1429,25 @@ def _write_research_artifact(evidence_root: str, name: str, data: Any) -> None:
         path.write_text(data, encoding="utf-8")
     else:
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _research_artifacts_enabled(evidence_dir: str) -> bool:
+    """
+    /*
+     * ==============================================================================
+     * 步骤9：决定 research artifact 持久化
+     * ==============================================================================
+     * 目标：默认只在内存中传递证据，避免无显式意图时写入临时目录。
+     * 数据源：显式 evidence_dir 和 SMART_SEARCH_PERSIST_EVIDENCE 开关。
+     * 操作：显式路径优先；持久化开关开启时使用生成的默认目录。
+     * ==============================================================================
+     */
+    """
+    logger.info("开始判断 research artifact 持久化: evidence_dir=%s", bool(evidence_dir.strip()))
+    persist_flag = os.getenv("SMART_SEARCH_PERSIST_EVIDENCE", "").strip().lower()
+    enabled = bool(evidence_dir.strip()) or persist_flag in {"1", "true", "yes", "on"}
+    logger.info("research artifact 持久化判断完成: enabled=%s", enabled)
+    return enabled
 
 
 def _is_docs_intent(query: str) -> bool:
@@ -1566,6 +1769,13 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
             if step.get("subquestion_id") not in valid_subquestion_ids:
                 step["subquestion_id"] = fallback_subquestion_id
 
+    execution_plan = _capability_plan(
+        "deep",
+        optional_capabilities=("main_search", "docs_search", "web_search", "web_fetch"),
+        budget=budget,
+        allow_synthesis=False,
+        response_mode="plan",
+    )
     return {
         "ok": True,
         "mode": "deep_research",
@@ -1576,6 +1786,7 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
         "intent_signals": intent_signals,
         "decomposition": decomposition,
         "capability_plan": capability_plan,
+        "capability_execution_plan": execution_plan.to_dict(),
         "evidence_policy": "fetch_before_claim",
         "preflight": {
             "tool": "doctor",
@@ -1648,7 +1859,16 @@ async def research(
         capability_status=minimum.get("capability_status", {}),
     )
     capability_metadata = _command_capability_metadata(command_capabilities, minimum)
+    execution_plan = _capability_plan_from_result(
+        "research",
+        command_capabilities,
+        budget=_deep_budget(budget or "deep"),
+        allow_synthesis=True,
+        response_mode="synthesized",
+    )
     if not command_capabilities.get("ok"):
+        evidence_bundle = EvidenceBundle()
+        evidence_bundle.add_gap({"subquestion_id": "", "reason": "minimum profile is missing required capabilities"})
         return {
             "ok": False,
             "error_type": command_capabilities.get("error_type", "config_error"),
@@ -1666,12 +1886,22 @@ async def research(
             "fallback_used": False,
             "route_policy_version": RESEARCH_ROUTE_POLICY_VERSION,
             "evidence_dir": evidence_dir,
+            "capability_execution_plan": execution_plan.to_dict(),
             **capability_metadata,
+            **_evidence_bundle_fields(evidence_bundle),
+            "degraded": bool(capability_metadata.get("degraded")) or evidence_bundle.degraded,
+            "degraded_reason": _combined_degraded_reason(evidence_bundle, capability_metadata),
             "elapsed_ms": _elapsed_ms(start),
         }
 
     plan = build_deep_research_plan(question, budget=_deep_budget(budget or "deep"), evidence_dir=evidence_dir)
     evidence_root = plan.get("evidence_dir") or _default_evidence_dir(question)
+    persist_artifacts = _research_artifacts_enabled(evidence_dir)
+
+    def persist_artifact(name: str, data: Any) -> None:
+        if persist_artifacts:
+            _write_research_artifact(evidence_root, name, data)
+
     try:
         with observe_stage("research.route"):
             route_result = await IntentRouter(config).route(
@@ -1697,7 +1927,7 @@ async def research(
     stage_results: list[dict[str, Any]] = []
     gaps: list[dict[str, Any]] = []
 
-    _write_research_artifact(evidence_root, "00-plan.json", plan)
+    persist_artifact("00-plan.json", plan)
 
     urls = _extract_urls(question)
     fetch_order = routes["capabilities"]["web_fetch"]["providers"]
@@ -1716,7 +1946,7 @@ async def research(
                     subquestion_id="sq1",
                 )
                 evidence_items.append(item)
-                _write_research_artifact(evidence_root, f"{index:02d}-fetch-{fetch_result['provider']}.md", fetch_result["content"])
+                persist_artifact(f"{index:02d}-fetch-{fetch_result['provider']}.md", fetch_result["content"])
             else:
                 gaps.append({"subquestion_id": "sq1", "reason": f"failed to fetch known URL: {url}", "url": url})
 
@@ -1795,7 +2025,7 @@ async def research(
                                 subquestion_id="sq2",
                             )
                             evidence_items.append(item)
-                            _write_research_artifact(evidence_root, "docs-context7.md", docs_content)
+                            persist_artifact("docs-context7.md", docs_content)
                             break
                         docs_status = "error" if docs_outcome.get("error_type") else "empty"
                         provider_attempts.append(_attempt("docs_search", "context7", docs_status, docs_start, error_type=docs_outcome.get("error_type", ""), error=docs_outcome.get("error", ""), extra=_cache_attempt_extra(docs_execution)))
@@ -1919,7 +2149,7 @@ async def research(
                 subquestion_id=candidate.get("subquestion_id", ""),
             )
             evidence_items.append(item)
-            _write_research_artifact(evidence_root, f"fetch-{index:02d}-{fetch_result['provider']}.md", content)
+            persist_artifact(f"fetch-{index:02d}-{fetch_result['provider']}.md", content)
         elif fallback_mode == "off":
             gaps.append({"subquestion_id": "", "reason": f"fetch failed with fallback off: {url}", "url": url})
 
@@ -1928,16 +2158,33 @@ async def research(
     elif no_new_evidence and not urls and candidates:
         gaps.append({"subquestion_id": "", "reason": "discovery produced candidates but no new fetch evidence converged"})
 
-    covered = bool(evidence_items)
-    gap_status = "closed" if covered and not gaps else ("degraded" if evidence_items else "failed")
-    citations = _citation_items(evidence_items)
+    evidence_bundle = EvidenceBundle()
+    evidence_bundle.add_discovery_candidates(discovery_sources)
+    evidence_bundle.add_fetched_evidence(evidence_items)
+    evidence_bundle.add_provider_attempts(provider_attempts)
+    for gap in gaps:
+        evidence_bundle.add_gap(gap)
+    evidence_items = evidence_bundle.evidence_items
+    discovery_sources = evidence_bundle.discovery_candidates
+    synthesis_error = ""
     if allow_synthesis():
         with observe_stage("research.synthesis"):
-            final_answer = _evidence_only_synthesis(question, evidence_items, gaps)
+            try:
+                final_answer = _evidence_only_synthesis(question, evidence_bundle)
+                if evidence_items and not final_answer.strip():
+                    raise RuntimeError("evidence-only synthesis returned empty content")
+            except Exception as exc:
+                synthesis_error = sanitize_text(str(exc)) or "evidence-only synthesis failed"
+                evidence_bundle.add_gap({"subquestion_id": "", "reason": f"synthesis failed: {synthesis_error}"})
+                final_answer = ""
     else:
-        gaps.append({"subquestion_id": "", "reason": "request budget exhausted before synthesis"})
-        gap_status = "degraded" if evidence_items else "failed"
+        evidence_bundle.add_gap({"subquestion_id": "", "reason": "request budget exhausted before synthesis"})
         final_answer = ""
+    bundle_fields = _evidence_bundle_fields(evidence_bundle)
+    gaps = evidence_bundle.gaps
+    citations = evidence_bundle.citations
+    covered = bool(evidence_items)
+    gap_status = "closed" if covered and not gaps else ("degraded" if evidence_items else "failed")
     result = {
         "ok": bool(evidence_items),
         "error_type": "" if evidence_items else "evidence_error",
@@ -1954,6 +2201,10 @@ async def research(
         "content": final_answer,
         "citations": citations,
         "evidence_items": evidence_items,
+        "fetched_evidence": evidence_items,
+        "evidence_bundle": bundle_fields["evidence_bundle"],
+        "discovery_candidates": discovery_sources,
+        "gaps": gaps,
         "gap_check": {
             "status": gap_status,
             "gaps": gaps,
@@ -1964,12 +2215,16 @@ async def research(
         "fallback_used": _fallback_used(provider_attempts),
         "route_policy_version": RESEARCH_ROUTE_POLICY_VERSION,
         "evidence_dir": evidence_root,
+        "artifacts_persisted": persist_artifacts,
+        "synthesis_error": synthesis_error,
+        "capability_execution_plan": execution_plan.to_dict(),
         **capability_metadata,
-        "degraded": bool(gaps) or bool(capability_metadata.get("degraded")),
+        "degraded_reason": _combined_degraded_reason(evidence_bundle, capability_metadata),
+        "degraded": bool(evidence_bundle.degraded) or bool(capability_metadata.get("degraded")),
         "elapsed_ms": _elapsed_ms(start),
     }
     attach_metrics(result)
-    _write_research_artifact(evidence_root, "summary.json", result)
+    persist_artifact("summary.json", result)
     return result
 
 
@@ -3004,6 +3259,20 @@ async def _search_without_synthesis(
         docs_sources, docs_attempts = await _run_docs_search_fallback(query, providers=providers, fallback=fallback)
         sources.extend(docs_sources)
         attempts.extend(docs_attempts)
+    evidence_bundle = EvidenceBundle()
+    evidence_bundle.add_discovery_candidates(sources)
+    evidence_bundle.add_provider_attempts(attempts)
+    evidence_bundle.mark_degraded("main_search 未配置；source-only 结果不能直接作为最终结论")
+    evidence_fields = _evidence_bundle_fields(evidence_bundle)
+    execution_plan = _capability_plan(
+        "search",
+        required_capabilities=tuple(capability_metadata.get("required_capabilities") or ("web_search", "docs_search")),
+        optional_capabilities=tuple(capability_metadata.get("optional_missing_capabilities") or ()),
+        budget=profile,
+        allow_synthesis=False,
+        source_only=True,
+        response_mode=response_mode,
+    )
     ok = bool(sources)
     source_capabilities = list(
         dict.fromkeys(
@@ -3022,11 +3291,11 @@ async def _search_without_synthesis(
         "response_mode": response_mode,
         "primary_api_mode": "source-only",
         "content": "",
-        "sources": sources,
-        "results": sources,
-        "sources_count": len(sources),
-        "primary_sources": sources,
-        "primary_sources_count": len(sources),
+        "sources": evidence_fields["evidence_bundle"]["sources"],
+        "results": evidence_fields["evidence_bundle"]["sources"],
+        "sources_count": len(evidence_fields["evidence_bundle"]["sources"]),
+        "primary_sources": evidence_fields["evidence_bundle"]["sources"],
+        "primary_sources_count": len(evidence_fields["evidence_bundle"]["sources"]),
         "extra_sources": [],
         "extra_sources_count": 0,
         "source_warning": "未配置 main_search；当前结果仅包含来源候选，请先 fetch 后再形成最终结论。",
@@ -3039,9 +3308,13 @@ async def _search_without_synthesis(
         "provider_attempts": attempts,
         "fallback_used": _fallback_used(attempts),
         "validation_level": validation_level,
+        "capability_execution_plan": execution_plan.to_dict(),
         "elapsed_ms": _elapsed_ms(start),
     }
     result.update(capability_metadata)
+    result.update(evidence_fields)
+    result["degraded"] = bool(result.get("degraded")) or evidence_bundle.degraded
+    result["degraded_reason"] = _combined_degraded_reason(evidence_bundle, capability_metadata)
     result["minimum_profile_ok"] = bool(capability_metadata.get("minimum_profile_ok", False))
     logger.info("source-only 搜索完成: ok=%s sources=%s", ok, len(sources))
     return result
@@ -3373,6 +3646,7 @@ async def search(
     }
 
     provider_attempts: list[dict] = []
+    fetched_evidence: list[dict[str, Any]] = []
     primary_start = time.time()
     primary_result = None
     successful_main_config: dict[str, Any] | None = None
@@ -3537,6 +3811,19 @@ async def search(
         result["routing_decision"] = routing_decision
         result["validation_level"] = validation_level
         result.update(capability_metadata)
+        evidence_bundle = EvidenceBundle()
+        evidence_bundle.add_provider_attempts(provider_attempts)
+        evidence_bundle.add_gap({"subquestion_id": "", "reason": result.get("error") or "搜索失败或无结果"})
+        result.update(_evidence_bundle_fields(evidence_bundle))
+        result["degraded"] = bool(result.get("degraded")) or evidence_bundle.degraded
+        result["degraded_reason"] = _combined_degraded_reason(evidence_bundle, capability_metadata)
+        result["capability_execution_plan"] = _capability_plan_from_result(
+            "search",
+            command_capabilities,
+            budget=profile_name,
+            allow_synthesis=response_mode == "synthesized",
+            response_mode=response_mode,
+        ).to_dict()
         return result
 
     successful_main_config = successful_main_config or selected_main_provider_configs[0]
@@ -3627,6 +3914,15 @@ async def search(
                 fetch_result, fetch_attempts = await _run_web_fetch_fallback(fetch_url, fallback=fallback_mode)
             provider_attempts.extend(fetch_attempts)
             if fetch_result:
+                fetched_evidence.append(
+                    {
+                        "url": fetch_result["url"],
+                        "provider": fetch_result["provider"],
+                        "title": fetch_result.get("title") or fetch_result["url"],
+                        "content": fetch_result.get("content") or "",
+                        "source_type": "fetched_page",
+                    }
+                )
                 supplemental_sources.append({"url": fetch_result["url"], "provider": fetch_result["provider"], "description": fetch_result["content"][:300]})
         if "vertical_search" in supplemental_paths:
             with observe_stage("search.supplemental_vertical"):
@@ -3639,6 +3935,20 @@ async def search(
     ok = bool(answer or sources)
     if validation_level == "strict" and not sources:
         ok = False
+    evidence_bundle = EvidenceBundle()
+    evidence_bundle.add_discovery_candidates(merge_sources(primary_sources, extra_source_items))
+    evidence_bundle.add_fetched_evidence(fetched_evidence)
+    evidence_bundle.add_provider_attempts(provider_attempts)
+    if validation_level == "strict" and not sources:
+        evidence_bundle.add_gap({"subquestion_id": "", "reason": "strict 模式证据不足"})
+    evidence_fields = _evidence_bundle_fields(evidence_bundle)
+    execution_plan = _capability_plan_from_result(
+        "search",
+        command_capabilities,
+        budget=profile_name,
+        allow_synthesis=response_mode == "synthesized",
+        response_mode=response_mode,
+    )
     return {
         "ok": ok,
         "error_type": "" if ok else ("evidence_error" if validation_level == "strict" else "network_error"),
@@ -3667,6 +3977,10 @@ async def search(
         "model_fallback_used": model_fallback_used,
         "validation_level": validation_level,
         **capability_metadata,
+        **evidence_fields,
+        "capability_execution_plan": execution_plan.to_dict(),
+        "degraded": bool(capability_metadata.get("degraded")) or evidence_bundle.degraded,
+        "degraded_reason": _combined_degraded_reason(evidence_bundle, capability_metadata),
         "elapsed_ms": _elapsed_ms(start),
     }
 
@@ -4297,6 +4611,12 @@ def _primary_search_error_result(
         "primary_sources_count": 0,
         "extra_sources": [],
         "extra_sources_count": 0,
+        "evidence_bundle": EvidenceBundle().to_dict(),
+        "discovery_candidates": [],
+        "fetched_evidence": [],
+        "evidence_items": [],
+        "citations": [],
+        "gaps": [],
         "source_warning": "",
         "elapsed_ms": _elapsed_ms(start),
     }
@@ -4330,7 +4650,10 @@ async def fetch(url: str) -> dict[str, Any]:
         capability_status=minimum.get("capability_status", {}),
     )
     capability_metadata = _command_capability_metadata(command_capabilities, minimum)
+    execution_plan = _capability_plan_from_result("fetch", command_capabilities, response_mode="evidence")
     if not command_capabilities.get("ok"):
+        evidence_bundle = EvidenceBundle()
+        evidence_bundle.add_gap({"subquestion_id": "", "reason": "fetch 缺少 web_fetch 能力"})
         return {
             "ok": False,
             "url": url,
@@ -4338,6 +4661,8 @@ async def fetch(url: str) -> dict[str, Any]:
             "content": "",
             "error_type": command_capabilities.get("error_type", "config_error"),
             "error": command_capabilities.get("error", "fetch 缺少 web_fetch 能力"),
+            "capability_execution_plan": execution_plan.to_dict(),
+            **_evidence_bundle_fields(evidence_bundle),
             **capability_metadata,
             "elapsed_ms": _elapsed_ms(start),
         }
@@ -4345,13 +4670,32 @@ async def fetch(url: str) -> dict[str, Any]:
     with observe_stage("fetch.providers"):
         fetch_result, attempts = await _run_web_fetch_fallback(url)
     if fetch_result:
+        evidence_bundle = EvidenceBundle()
+        evidence_bundle.add_fetched_evidence(
+            [
+                {
+                    "url": fetch_result.get("url") or url,
+                    "provider": fetch_result.get("provider") or "",
+                    "title": fetch_result.get("title") or fetch_result.get("url") or url,
+                    "content": fetch_result.get("content") or "",
+                    "source_type": "fetched_page",
+                }
+            ]
+        )
+        evidence_bundle.add_provider_attempts(attempts)
+        evidence_fields = _evidence_bundle_fields(evidence_bundle)
         result = {
             **fetch_result,
             "provider_attempts": attempts,
             "fallback_used": _fallback_used(attempts),
+            "sources": evidence_fields["evidence_bundle"]["sources"],
             "elapsed_ms": _elapsed_ms(start),
         }
+        result.update(evidence_fields)
+        result["capability_execution_plan"] = execution_plan.to_dict()
         result.update(capability_metadata)
+        result["degraded"] = bool(result.get("degraded")) or evidence_bundle.degraded
+        result["degraded_reason"] = _combined_degraded_reason(evidence_bundle, capability_metadata)
         return result
 
     fetch_capability = get_capability_status()["web_fetch"]
@@ -4373,6 +4717,9 @@ async def fetch(url: str) -> dict[str, Any]:
     if any(attempt.get("error_type") == "budget_exhausted" for attempt in attempts):
         error = "request budget exhausted"
         error_type = "budget_exhausted"
+    evidence_bundle = EvidenceBundle()
+    evidence_bundle.add_provider_attempts(attempts)
+    evidence_bundle.add_gap({"subquestion_id": "", "reason": error})
     result = {
         "ok": False,
         "url": url,
@@ -4382,7 +4729,11 @@ async def fetch(url: str) -> dict[str, Any]:
         "error": error,
         "provider_attempts": attempts,
         "fallback_used": _fallback_used(attempts),
+        "capability_execution_plan": execution_plan.to_dict(),
         **capability_metadata,
+        **_evidence_bundle_fields(evidence_bundle),
+        "degraded": bool(capability_metadata.get("degraded")) or evidence_bundle.degraded,
+        "degraded_reason": _combined_degraded_reason(evidence_bundle, capability_metadata),
         "elapsed_ms": _elapsed_ms(start),
     }
     return result

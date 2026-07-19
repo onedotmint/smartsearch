@@ -225,7 +225,7 @@ smart-search rs "https://example.com/source" --fallback off --format markdown
 
 `research` 会执行 plan -> discover -> fetch/read -> gap check -> evidence-only synthesis。默认 `--fallback auto`，会在同一 capability 内兜底；`--fallback off` 只尝试每个 capability 选中的第一个 provider，适合手动调试某个 provider。
 
-`research` JSON 会包含 `final_answer`、`citations`、`evidence_items`、`gap_check`、`provider_attempts`、`fallback_used`、`degraded`、`route_policy_version` 和 `evidence_dir`。发现阶段的 snippet 只是候选，不会直接变成 citation；只有 fetch/read 到正文的来源才会被引用。兜底仍然补不齐证据时，`research` 会降级输出 gap，不会编造结论。
+`research` JSON 会包含 `final_answer`、`citations`、`evidence_items`、`gap_check`、`provider_attempts`、`fallback_used`、`degraded`、`route_policy_version` 和 `evidence_dir`。新增的 `evidence_bundle` 统一保存 `discovery_candidates`、`fetched_evidence`、`sources`、`citations`、`gaps` 和 provider attempts。发现阶段的 snippet 只是候选，不会直接变成 citation；只有 fetch/read 到正文的来源才会被引用。synthesis 失败时，已抓取证据和 citation 仍保留，并返回 `synthesis_error` 和降级 gap；synthesis 不会重新调用 search 或 fetch。兜底仍然补不齐证据时，`research` 会降级输出 gap，不会编造结论。
 
 `research` 的路由是 capability-first 加 provider 优势：
 
@@ -290,6 +290,7 @@ smart-search deep "https://example.com/source" --format json
 | `SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS` | 搜索/发现缓存 TTL，默认 `30`，允许范围 `1..604800` |
 | `SMART_SEARCH_FETCH_CACHE_TTL_SECONDS` | 抓取正文缓存 TTL，默认 `300`，允许范围 `1..604800` |
 | `SMART_SEARCH_CACHE_MAX_SIZE` | 进程内 LRU 最大条目数，默认 `256`，允许范围 `1..10000` |
+| `SMART_SEARCH_PERSIST_EVIDENCE` | 将 live research artifact 写入生成的 evidence 目录，默认 `false` |
 
 缓存只保存清理后的成功 source/content。它只存在于当前进程，默认关闭，不缓存 synthesis、错误、空结果、凭据、prompt 或 research artifact。相同 key 的并发请求可以共享 in-flight provider task；等待者取消不会取消 owner。
 
@@ -535,7 +536,7 @@ smart-search doctor --format content
 
 JSON 响应新增 `schema_version: "1"`、`command`、`data`、`meta`，同时保留旧版扁平字段。失败响应保留顶层旧版 `error` 字符串，并提供稳定的 `error_code`、`error_detail` 和 `data.error.code`。stdout 只输出一个最终 JSON 值，日志和进度信息写到 stderr。
 
-多来源研究建议显式指定稳定目录保存证据文件。默认使用平台临时目录，以 Windows 显式路径为例：
+多来源研究建议显式指定稳定目录保存证据文件。planner 仍会返回平台临时目录形式的 `evidence_dir`，但 live executor 只有在显式传入 `--evidence-dir` 或设置 `SMART_SEARCH_PERSIST_EVIDENCE=true` 时才写 artifact。以下是 Windows 显式路径示例：
 
 ```powershell
 smart-search exa-search "Reuters Iran Hormuz latest" --format json --output C:\tmp\smart-search-evidence\iran-hormuz\01-exa.json

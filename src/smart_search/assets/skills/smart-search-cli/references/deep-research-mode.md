@@ -4,9 +4,14 @@
 
 This contract keeps Deep Research capability-based and evidence-first:
 `smart-search deep` only plans, `smart-search research` executes live work, and
-claim-level conclusions require fetched evidence. Evidence paths come from an
-explicit `--evidence-dir` or the CLI's platform temporary directory; the
-omitted-directory runtime default is `tempfile.gettempdir()/smart-search-evidence/<timestamp>-<slug>`.
+claim-level conclusions require fetched evidence. The internal `CapabilityPlan`
+binds command capabilities and request budgets, while `EvidenceBundle` keeps
+discovery candidates separate from fetched/read evidence. Evidence paths come
+from an explicit `--evidence-dir` or the CLI's platform temporary directory;
+the omitted-directory planner default is
+`tempfile.gettempdir()/smart-search-evidence/<timestamp>-<slug>`. The live
+executor persists artifacts only for an explicit directory or when
+`SMART_SEARCH_PERSIST_EVIDENCE=true` is set.
 Preserve the planned `steps[].command --output` value and matching
 `steps[].output_path`.
 
@@ -165,7 +170,7 @@ smart-search research "question" --budget deep --fallback auto --evidence-dir "<
 
 `research --fallback auto` permits same-capability fallback inside selected routes. `research --fallback off` tries only the first selected provider in each capability route and is for debugging or provider comparison. Dynamic routing may reorder providers only inside the same capability. Every attempt must record capability, provider, status, error type, latency, and result count.
 
-Research output includes `final_answer`, `citations`, `evidence_items`, `gap_check`, `provider_attempts`, `fallback_used`, `degraded`, `route_policy_version`, and `evidence_dir`. The synthesis is evidence-only. It may cite fetched/read evidence, but it must not cite unfetched discovery candidates as proof. If providers are exhausted or evidence cannot close, return the degraded gaps rather than inventing missing claims.
+Research output includes `final_answer`, `citations`, `evidence_items`, `fetched_evidence`, `discovery_candidates`, `evidence_bundle`, `gap_check`, `provider_attempts`, `fallback_used`, `degraded`, `synthesis_error`, `artifacts_persisted`, `route_policy_version`, and `evidence_dir`. The synthesis is evidence-only. It may cite fetched/read evidence, but it must not cite unfetched discovery candidates as proof. If synthesis fails, preserve the evidence and citations, report `synthesis_error`, and return degraded gaps. If providers are exhausted or evidence cannot close, return the degraded gaps rather than inventing missing claims.
 
 Research provider advantage routing:
 

@@ -216,7 +216,7 @@ smart-search rs "https://example.com/source" --fallback off --format markdown
 
 `research` runs plan -> discover -> fetch/read -> gap check -> evidence-only synthesis. It defaults to `--fallback auto`, which permits same-capability fallback even when a normal `search` configuration is conservative. `--fallback off` tries only the first provider selected inside each capability, which is useful for debugging provider behavior.
 
-Research JSON includes `final_answer`, `citations`, `evidence_items`, `gap_check`, `provider_attempts`, `fallback_used`, `degraded`, `route_policy_version`, and `evidence_dir`. Discovery snippets are candidates only; citations are produced only from fetched/read evidence. If fallback cannot close a gap, `research` finishes degraded and lists unsupported gaps instead of inventing evidence.
+Research JSON includes `final_answer`, `citations`, `evidence_items`, `gap_check`, `provider_attempts`, `fallback_used`, `degraded`, `route_policy_version`, and `evidence_dir`. The additive `evidence_bundle` keeps `discovery_candidates`, `fetched_evidence`, `sources`, `citations`, `gaps`, and provider attempts together. Discovery snippets are candidates only; citations are produced only from fetched/read evidence. If synthesis fails, the fetched evidence and citations remain in the result with `synthesis_error` and degraded gaps; synthesis does not call search or fetch again. If fallback cannot close a gap, `research` finishes degraded and lists unsupported gaps instead of inventing evidence.
 
 The research router is capability-first plus provider-advantage:
 
@@ -279,6 +279,7 @@ Runtime cache configuration:
 | `SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS` | Search/discovery cache TTL; default `30`, allowed range `1..604800` |
 | `SMART_SEARCH_FETCH_CACHE_TTL_SECONDS` | Fetch/content cache TTL; default `300`, allowed range `1..604800` |
 | `SMART_SEARCH_CACHE_MAX_SIZE` | Shared per-process LRU capacity; default `256`, allowed range `1..10000` |
+| `SMART_SEARCH_PERSIST_EVIDENCE` | Persist live research artifacts under the generated evidence directory; default `false` |
 
 The cache stores only cleaned successful source/content results. It is process-local, disabled by default, and does not cache synthesis answers, errors, empty results, credentials, prompts, or research artifacts. Repeated requests in one event loop can share an in-flight provider task; canceling a waiter does not cancel the owner.
 
@@ -485,7 +486,7 @@ smart-search doctor --format content
 
 JSON responses add `schema_version: "1"`, `command`, `data`, and `meta` while retaining legacy flat fields. Failed responses keep the legacy top-level `error` string and expose stable `error_code`, `error_detail`, and `data.error.code` values. stdout contains one final JSON value; logs and progress remain on stderr.
 
-Save multi-source evidence under an explicit stable folder. The default uses the platform temp directory; the commands below use a Windows explicit path example:
+Save multi-source evidence under an explicit stable folder. The planner still reports a platform-temp `evidence_dir`, but the live executor writes artifacts only when `--evidence-dir` is explicit or `SMART_SEARCH_PERSIST_EVIDENCE=true` is set. The commands below use a Windows explicit path example:
 
 ```powershell
 smart-search exa-search "Reuters Iran Hormuz latest" --format json --output C:\tmp\smart-search-evidence\iran-hormuz\01-exa.json
