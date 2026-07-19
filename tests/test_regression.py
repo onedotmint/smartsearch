@@ -3,6 +3,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_SKILL_DIR = ROOT / "skills" / "smart-search-cli"
 PACKAGED_SKILL_DIR = ROOT / "src" / "smart_search" / "assets" / "skills" / "smart-search-cli"
+PUBLIC_DOCS_DIR = ROOT / "docs"
 
 
 def test_regression_does_not_create_repo_log_file():
@@ -66,6 +67,13 @@ def _skill_text_files(path: Path) -> dict[str, str]:
         for p in sorted(path.rglob("*"))
         if p.is_file() and p.suffix in {".md", ".yaml", ".yml"}
     }
+
+
+def _read_public_docs() -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(PUBLIC_DOCS_DIR.rglob("*.md"))
+    )
 
 
 def test_deep_research_skill_contract_public_and_packaged_assets_match():
@@ -211,14 +219,15 @@ def test_search_timeout_retry_policy_is_distributable():
         assert marker in packaged_contract
 
 
-def test_deep_research_readme_documents_capability_orchestration():
+def test_public_docs_document_workflow_boundaries():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+    public_docs = _read_public_docs()
     english_markers = [
         "Deep Research is not a fixed topic recipe system",
         "smart-search research",
         "`route_policy_version`",
-        "provider-advantage",
+        "provider advantage routing",
         "`intent_signals`",
         "`decomposition`",
         "`capability_plan`",
@@ -227,53 +236,60 @@ def test_deep_research_readme_documents_capability_orchestration():
         "smart-search deep",
         "`exa-similar`",
         "`context7-library`",
-        "smart-search skills status",
-        "smart-search skills update",
-        "`doctor` is preflight, not a research step",
         "smart-search route",
         "`intent_router_mode`",
         "`required_capabilities`",
         "degraded_reason",
         "Unsupported key claims must be fetched or downgraded to unverified candidates",
     ]
-    chinese_markers = [
-        "Deep Research 不是固定题材配方",
-        "smart-search research",
-        "`route_policy_version`",
-        "provider 优势",
-        "`intent_signals`",
-        "`decomposition`",
-        "`capability_plan`",
-        "`gap_check`",
-        "`usage_boundary`",
-        "smart-search deep",
-        "`exa-similar`",
-        "`context7-library`",
-        "smart-search skills status",
-        "smart-search skills update",
-        "`doctor` 只是配置预检",
-        "smart-search route",
-        "`intent_router_mode`",
-        "`required_capabilities`",
-        "degraded_reason",
-        "没有 fetch 的来源标为未验证候选",
-    ]
     for marker in english_markers:
-        assert marker in readme
-    for marker in chinese_markers:
-        assert marker in readme_zh
+        assert marker in public_docs
+
+    assert "docs/concepts/search-vs-deep-vs-research.md" in readme
+    assert "docs/concepts/evidence.md" in readme
+    assert "docs/concepts/routing.md" in readme
+    assert "docs/concepts/search-vs-deep-vs-research.md" in readme_zh
+    assert "没有 fetch 的来源标为未验证候选" in readme_zh
+
+
+def test_public_docs_structure_is_packaged_and_linked():
+    required_paths = [
+        "docs/getting-started.md",
+        "docs/commands.md",
+        "docs/providers.md",
+        "docs/concepts/search-vs-deep-vs-research.md",
+        "docs/concepts/evidence.md",
+        "docs/concepts/routing.md",
+        "docs/development.md",
+        "CONTRIBUTING.md",
+    ]
+    package_json = (ROOT / "package.json").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+
+    for relative_path in required_paths:
+        assert (ROOT / relative_path).exists()
+        package_marker = "docs/" if relative_path.startswith("docs/") else relative_path
+        assert package_marker in package_json
+    assert "docs/" in package_json
+    assert "CONTRIBUTING.md" in package_json
+    assert "docs/getting-started.md" in readme
+    assert "docs/getting-started.md" in readme_zh
 
 
 def test_readme_language_split_and_provider_links_are_documented():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
     package_json = (ROOT / "package.json").read_text(encoding="utf-8")
+    provider_docs = (ROOT / "docs" / "providers.md").read_text(encoding="utf-8")
 
     assert "[简体中文](README.zh-CN.md) | English" in readme
     assert "简体中文 | [English](README.md)" in readme_zh
     assert "## 中文" not in readme
     assert "## English" not in readme
     assert "README.zh-CN.md" in package_json
+    assert "docs/providers.md" in readme
+    assert "docs/providers.md" in readme_zh
 
     provider_markers = [
         "https://docs.x.ai/docs",
@@ -291,8 +307,7 @@ def test_readme_language_split_and_provider_links_are_documented():
         "https://www.firecrawl.dev/app/api-keys",
     ]
     for marker in provider_markers:
-        assert marker in readme
-        assert marker in readme_zh
+        assert marker in provider_docs
 
 
 def test_deep_research_shared_skill_files_are_synchronized():
@@ -300,8 +315,7 @@ def test_deep_research_shared_skill_files_are_synchronized():
 
 
 def test_zhipu_setup_contract_public_and_packaged_assets_match():
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+    provider_docs = (ROOT / "docs" / "providers.md").read_text(encoding="utf-8")
     public_text = _read_skill_tree(PUBLIC_SKILL_DIR)
     packaged_text = _read_skill_tree(PACKAGED_SKILL_DIR)
     public_contract = _read_reference_tree(PUBLIC_SKILL_DIR)
@@ -322,27 +336,11 @@ def test_zhipu_setup_contract_public_and_packaged_assets_match():
         "not the MCP Server",
     ]
     for marker in required_markers:
-        assert marker in readme
+        assert marker in provider_docs
         assert marker in public_text
         assert marker in packaged_text
-    zh_required_markers = [
-        "--zhipu-api-url",
-        "--zhipu-search-engine",
-        "ZHIPU_API_URL",
-        "ZHIPU_SEARCH_ENGINE",
-        "search_std",
-        "search_pro",
-        "search_pro_sogou",
-        "search_pro_quark",
-        "Web Search API",
-        "TAVILY_API_URL",
-        "不会代理智谱",
-        "不是 Chat Completions",
-        "不是 MCP Server",
-    ]
-    for marker in zh_required_markers:
-        assert marker in readme_zh
     for marker in ["--zhipu-api-url", "--zhipu-search-engine"]:
+        assert marker in provider_docs
         assert marker in public_contract
         assert marker in packaged_contract
 
@@ -350,6 +348,7 @@ def test_zhipu_setup_contract_public_and_packaged_assets_match():
 def test_jina_and_zhipu_mcp_contract_public_and_packaged_assets_match():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+    provider_docs = (ROOT / "docs" / "providers.md").read_text(encoding="utf-8")
     public_text = _read_skill_tree(PUBLIC_SKILL_DIR)
     packaged_text = _read_skill_tree(PACKAGED_SKILL_DIR)
     public_contract = _read_reference_tree(PUBLIC_SKILL_DIR)
@@ -376,39 +375,20 @@ def test_jina_and_zhipu_mcp_contract_public_and_packaged_assets_match():
         "does not affect the standard minimum profile",
     ]
     for marker in required_markers:
+        assert marker in provider_docs
         assert marker in public_text
         assert marker in packaged_text
         assert marker in public_contract
         assert marker in packaged_contract
 
-    readme_markers = [
-        "JINA_API_KEY",
-        "Zhipu Coding Plan Remote MCP",
-        "zhipu-mcp-search",
-        "zhipu-mcp-reader",
-        "not mixed into the existing `/paas/v4/web_search`",
-        "Jina Reader is not a general search provider",
-        "A normal `ZHIPU_API_KEY` for Web Search API does not prove `zhipu-mcp-search` or zread access",
-    ]
-    for marker in readme_markers:
-        assert marker in readme
-
-    zh_markers = [
-        "JINA_API_KEY",
-        "智谱 Coding Plan Remote MCP",
-        "zhipu-mcp-search",
-        "zhipu-mcp-reader",
-        "不会混进现有 `/paas/v4/web_search`",
-        "Jina Reader 不是通用搜索 provider",
-        "普通 `ZHIPU_API_KEY` 能用 Web Search API，不代表能用 `zhipu-mcp-search` 或 zread",
-    ]
-    for marker in zh_markers:
-        assert marker in readme_zh
+    assert "docs/providers.md" in readme
+    assert "docs/providers.md" in readme_zh
 
 
 def test_streaming_and_anysearch_contract_public_and_packaged_assets_match():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+    public_docs = _read_public_docs()
     public_text = _read_skill_tree(PUBLIC_SKILL_DIR)
     packaged_text = _read_skill_tree(PACKAGED_SKILL_DIR)
     public_contract = _read_reference_tree(PUBLIC_SKILL_DIR)
@@ -430,22 +410,11 @@ def test_streaming_and_anysearch_contract_public_and_packaged_assets_match():
         "not required by the `standard` minimum profile",
     ]
     for marker in required_markers:
-        assert marker in readme
+        assert marker in public_docs
         assert marker in public_text
         assert marker in packaged_text
         assert marker in public_contract
         assert marker in packaged_contract
 
-    zh_required_markers = [
-        "OPENAI_COMPATIBLE_STREAM",
-        "ANYSEARCH_API_URL",
-        "ANYSEARCH_API_KEY",
-        "ANYSEARCH_TIMEOUT_SECONDS",
-        "anysearch-domains",
-        "anysearch-search",
-        "vertical_search",
-        "不进入 `web_search` 兜底链",
-        "不是 `standard` 最低配置要求",
-    ]
-    for marker in zh_required_markers:
-        assert marker in readme_zh
+    assert "docs/providers.md" in readme
+    assert "docs/providers.md" in readme_zh

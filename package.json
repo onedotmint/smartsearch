@@ -22,6 +22,8 @@
     "pyproject.toml",
     "README.md",
     "README.zh-CN.md",
+    "docs/",
+    "CONTRIBUTING.md",
     "LICENSE"
   ],
   "scripts": {

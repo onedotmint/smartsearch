@@ -91,6 +91,7 @@ def test_publish_workflow_uses_beta_lane_and_prerelease_guardrails():
 def test_release_docs_explain_beta_lane_and_npm_immutability():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+    development_docs = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
     public_contract = read_reference_tree(ROOT / "skills" / "smart-search-cli")
     packaged_contract = read_reference_tree(
         ROOT / "src" / "smart_search" / "assets" / "skills" / "smart-search-cli"
@@ -118,22 +119,9 @@ def test_release_docs_explain_beta_lane_and_npm_immutability():
         "ConvertFrom-Json",
     ]
     for marker in required_markers:
-        assert marker in readme
-    zh_required_markers = [
-        "发布通道",
-        "<package.json version>-beta.N",
-        "npm `next`",
-        "0.1.10-beta.3",
-        ".github/releases/vX.Y.Z.md",
-        "npm 版本不可变",
-        "gh release list",
-        "npm `E409`",
-        "smart-search regression",
-        "smart-search smoke --mock --format json",
-        "ConvertFrom-Json",
-    ]
-    for marker in zh_required_markers:
-        assert marker in readme_zh
+        assert marker in development_docs
+    assert "docs/development.md" in readme
+    assert "docs/development.md" in readme_zh
     contract_markers = [
         "Release Lanes",
         "<package.json version>-beta.N",
