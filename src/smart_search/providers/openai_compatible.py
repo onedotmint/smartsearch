@@ -11,6 +11,7 @@ from .base import BaseSearchProvider, SearchResult
 from ..utils import get_prompt
 from ..logger import log_info
 from ..config import config
+from ..runtime_cache import add_retry
 
 _logger = logging.getLogger(__name__)
 _ssl_warning_emitted = False
@@ -369,6 +370,8 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
                 retry=retry_if_exception(_is_retryable_exception),
                 reraise=True,
             ):
+                if attempt.retry_state.attempt_number > 1:
+                    add_retry()
                 with attempt:
                     async with client.stream(
                         "POST",
@@ -485,6 +488,8 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
                 retry=retry_if_exception(_is_retryable_exception),
                 reraise=True,
             ):
+                if attempt.retry_state.attempt_number > 1:
+                    add_retry()
                 with attempt:
                     response = await client.post(
                         f"{self.api_url}/chat/completions",

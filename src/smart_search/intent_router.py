@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from .embedding_presets import embedding_preset_for_model, embedding_threshold_commands
+from .runtime_cache import add_remote_router_call, add_request
 
 
 ALLOWED_INTENT_ROUTER_MODES = {"hybrid", "rules", "off"}
@@ -731,6 +732,8 @@ class IntentRouter:
         }
         payload = {"model": self.config.intent_embedding_model, "input": inputs}
         timeout = httpx.Timeout(self.config.intent_router_timeout)
+        add_request()
+        add_remote_router_call()
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(self.config.intent_embedding_api_url, headers=headers, json=payload)
             response.raise_for_status()
@@ -774,6 +777,8 @@ class IntentRouter:
             "response_format": {"type": "json_object"},
         }
         timeout = httpx.Timeout(self.config.intent_router_timeout)
+        add_request()
+        add_remote_router_call()
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(self.config.intent_classifier_api_url, headers=headers, json=payload)
             response.raise_for_status()

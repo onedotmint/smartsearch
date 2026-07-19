@@ -9,6 +9,7 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 from .base import BaseSearchProvider
 from ..config import config
 from ..logger import log_info
+from ..runtime_cache import add_retry
 
 
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
@@ -127,6 +128,8 @@ class Context7Provider(BaseSearchProvider):
                 retry=retry_if_exception(_is_retryable_exception),
                 reraise=True,
             ):
+                if attempt.retry_state.attempt_number > 1:
+                    add_retry()
                 with attempt:
                     response = await client.get(endpoint, headers=self._headers())
                     response.raise_for_status()

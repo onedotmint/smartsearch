@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -29,6 +30,12 @@ class Config:
     _DEFAULT_INTENT_ROUTER_TIMEOUT_SECONDS = "8"
     _DEFAULT_INTENT_EMBEDDING_THRESHOLD = "0.74"
     _DEFAULT_INTENT_EMBEDDING_MARGIN = "0.05"
+    _DEFAULT_CACHE_ENABLED = "false"
+    _DEFAULT_SEARCH_CACHE_TTL_SECONDS = "30"
+    _DEFAULT_FETCH_CACHE_TTL_SECONDS = "300"
+    _DEFAULT_CACHE_MAX_SIZE = "256"
+    _CACHE_TTL_BOUNDS = (1, 604800)
+    _CACHE_MAX_SIZE_BOUNDS = (1, 10000)
     _CONFIG_DIR_MODE = 0o700
     _CONFIG_FILE_MODE = 0o600
     _ALLOWED_XAI_TOOLS = {"web_search", "x_search"}
@@ -101,7 +108,16 @@ class Config:
         "SMART_SEARCH_RETRY_MAX_WAIT",
         "SMART_SEARCH_OUTPUT_CLEANUP",
         "SMART_SEARCH_LOG_TO_FILE",
+        "SMART_SEARCH_CACHE_ENABLED",
+        "SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS",
+        "SMART_SEARCH_FETCH_CACHE_TTL_SECONDS",
+        "SMART_SEARCH_CACHE_MAX_SIZE",
         "SSL_VERIFY",
+    }
+    _CREDENTIAL_KEYS = {
+        key
+        for key in _CONFIG_KEYS
+        if "KEY" in key or "TOKEN" in key or "SECRET" in key
     }
     _LEGACY_CONFIG_KEYS: dict[str, str] = {}
 
@@ -111,6 +127,8 @@ class Config:
             cls._instance._config_file = None
             cls._instance._config_dir_source = None
             cls._instance._cached_model = None
+            cls._instance._credential_state_digest = None
+            cls._instance._credential_epoch = 0
         return cls._instance
 
     @staticmethod
@@ -489,6 +507,34 @@ class Config:
         except ValueError as e:
             return float(default), str(e)
 
+    def _bool_value(self, key: str, default: str) -> bool:
+        value = (self._get_config_value(key, default) or default).strip().lower()
+        if value not in {"true", "false", "1", "0", "yes", "no"}:
+            raise ValueError(f"Invalid {key}: {value}. Expected true or false.")
+        return value in {"true", "1", "yes"}
+
+    def _bool_info(self, key: str, default: str) -> tuple[bool, str]:
+        try:
+            return self._bool_value(key, default), ""
+        except ValueError as e:
+            return default.lower() in {"true", "1", "yes"}, str(e)
+
+    def _bounded_int_value(self, key: str, default: str, minimum: int, maximum: int) -> int:
+        value = self._get_config_value(key, default) or default
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid {key}: {value}. Expected an integer.")
+        if parsed < minimum or parsed > maximum:
+            raise ValueError(f"Invalid {key}: {parsed}. Expected an integer between {minimum} and {maximum}.")
+        return parsed
+
+    def _bounded_int_info(self, key: str, default: str, minimum: int, maximum: int) -> tuple[int, str]:
+        try:
+            return self._bounded_int_value(key, default, minimum, maximum), ""
+        except ValueError as e:
+            return int(default), str(e)
+
     @property
     def validation_level(self) -> str:
         return self._validated_enum(
@@ -536,6 +582,109 @@ class Config:
             self._DEFAULT_INTENT_ROUTER_MODE,
             self._ALLOWED_INTENT_ROUTER_MODES,
         )
+
+    @property
+    def cache_enabled(self) -> bool:
+        return self._bool_value("SMART_SEARCH_CACHE_ENABLED", self._DEFAULT_CACHE_ENABLED)
+
+    @property
+    def search_cache_ttl_seconds(self) -> int:
+        return self._bounded_int_value(
+            "SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS",
+            self._DEFAULT_SEARCH_CACHE_TTL_SECONDS,
+            *self._CACHE_TTL_BOUNDS,
+        )
+
+    @property
+    def fetch_cache_ttl_seconds(self) -> int:
+        return self._bounded_int_value(
+            "SMART_SEARCH_FETCH_CACHE_TTL_SECONDS",
+            self._DEFAULT_FETCH_CACHE_TTL_SECONDS,
+            *self._CACHE_TTL_BOUNDS,
+        )
+
+    @property
+    def cache_max_size(self) -> int:
+        return self._bounded_int_value(
+            "SMART_SEARCH_CACHE_MAX_SIZE",
+            self._DEFAULT_CACHE_MAX_SIZE,
+            *self._CACHE_MAX_SIZE_BOUNDS,
+        )
+
+    @property
+    def credential_epoch(self) -> int:
+        """
+        ================================================================================
+        步骤1：刷新凭据 epoch
+        ================================================================================
+        目标：凭据轮换后让旧缓存失效，但不把 secret 放入 key 或日志。
+        数据源：当前环境变量和本地配置文件中的 credential keys。
+        操作：
+        1) 只在 Config 私有内存中比较凭据摘要。
+        2) 凭据摘要变化时递增 epoch，调用方只使用整数 epoch。
+        """
+        values = [self._get_config_value(key, "") or "" for key in sorted(self._CREDENTIAL_KEYS)]
+        digest = hashlib.sha256("\0".join(values).encode("utf-8")).hexdigest()
+        if self._credential_state_digest is None:
+            self._credential_state_digest = digest
+        elif digest != self._credential_state_digest:
+            self._credential_state_digest = digest
+            self._credential_epoch += 1
+        return int(self._credential_epoch)
+
+    def runtime_cache_fingerprint(
+        self,
+        capability: str,
+        provider: str,
+        options: dict[str, object] | None = None,
+    ) -> str:
+        """
+        ================================================================================
+        步骤2：计算非敏感行为配置指纹
+        ================================================================================
+        目标：配置快照刷新后不复用旧 provider 结果。
+        数据源：capability/provider 对应的 endpoint、模型参数和调用选项。
+        操作：
+        1) 排除所有 credential key，只收集非敏感行为配置。
+        2) 将调用参数和配置按稳定 JSON 编码后计算摘要。
+        """
+        provider_config_keys = {
+            "web_search": {
+                "zhipu": ("ZHIPU_API_URL", "ZHIPU_SEARCH_ENGINE", "ZHIPU_TIMEOUT_SECONDS"),
+                "zhipu-mcp": ("ZHIPU_MCP_SEARCH_API_URL", "ZHIPU_MCP_TIMEOUT_SECONDS"),
+                "tavily": ("TAVILY_API_URL", "TAVILY_ENABLED", "TAVILY_TIMEOUT_SECONDS"),
+                "firecrawl": ("FIRECRAWL_API_URL",),
+            },
+            "docs_search": {
+                "context7": ("CONTEXT7_BASE_URL", "CONTEXT7_TIMEOUT_SECONDS"),
+                "exa": ("EXA_BASE_URL", "EXA_TIMEOUT_SECONDS"),
+            },
+            "web_fetch": {
+                "tavily": ("TAVILY_API_URL", "TAVILY_ENABLED", "TAVILY_TIMEOUT_SECONDS"),
+                "jina": ("JINA_READER_API_URL", "JINA_RESPOND_WITH", "JINA_TIMEOUT_SECONDS"),
+                "zhipu-mcp-reader": ("ZHIPU_MCP_READER_API_URL", "ZHIPU_MCP_TIMEOUT_SECONDS"),
+                "firecrawl": ("FIRECRAWL_API_URL",),
+            },
+            "vertical_search": {
+                "anysearch": ("ANYSEARCH_API_URL", "ANYSEARCH_TIMEOUT_SECONDS"),
+            },
+        }
+        keys = provider_config_keys.get(capability, {}).get(provider, ())
+        values = {
+            key: self._get_config_value(key, "") or ""
+            for key in keys
+            if key not in self._CREDENTIAL_KEYS
+        }
+        values["SMART_SEARCH_OUTPUT_CLEANUP"] = self._get_config_value("SMART_SEARCH_OUTPUT_CLEANUP", "true") or "true"
+        payload = {
+            "capability": capability,
+            "provider": provider,
+            "config": values,
+            "options": options or {},
+        }
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:24]
 
     @property
     def intent_embedding_api_url(self) -> str:
@@ -811,6 +960,25 @@ class Config:
             0.0,
             1.0,
         )
+        cache_enabled, cache_enabled_error = self._bool_info(
+            "SMART_SEARCH_CACHE_ENABLED",
+            self._DEFAULT_CACHE_ENABLED,
+        )
+        search_cache_ttl_seconds, search_cache_ttl_error = self._bounded_int_info(
+            "SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS",
+            self._DEFAULT_SEARCH_CACHE_TTL_SECONDS,
+            *self._CACHE_TTL_BOUNDS,
+        )
+        fetch_cache_ttl_seconds, fetch_cache_ttl_error = self._bounded_int_info(
+            "SMART_SEARCH_FETCH_CACHE_TTL_SECONDS",
+            self._DEFAULT_FETCH_CACHE_TTL_SECONDS,
+            *self._CACHE_TTL_BOUNDS,
+        )
+        cache_max_size, cache_max_size_error = self._bounded_int_info(
+            "SMART_SEARCH_CACHE_MAX_SIZE",
+            self._DEFAULT_CACHE_MAX_SIZE,
+            *self._CACHE_MAX_SIZE_BOUNDS,
+        )
         config_parameter_errors.extend(
             error
             for error in (
@@ -821,6 +989,10 @@ class Config:
                 intent_router_timeout_error,
                 intent_embedding_threshold_error,
                 intent_embedding_margin_error,
+                cache_enabled_error,
+                search_cache_ttl_error,
+                fetch_cache_ttl_error,
+                cache_max_size_error,
             )
             if error
         )
@@ -858,6 +1030,10 @@ class Config:
             "INTENT_CLASSIFIER_API_KEY": self._mask_api_key(self.intent_classifier_api_key) if self.intent_classifier_api_key else "未配置",
             "INTENT_CLASSIFIER_MODEL": self.intent_classifier_model or "未配置",
             "INTENT_ROUTER_TIMEOUT_SECONDS": intent_router_timeout,
+            "SMART_SEARCH_CACHE_ENABLED": cache_enabled,
+            "SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS": search_cache_ttl_seconds,
+            "SMART_SEARCH_FETCH_CACHE_TTL_SECONDS": fetch_cache_ttl_seconds,
+            "SMART_SEARCH_CACHE_MAX_SIZE": cache_max_size,
             "SMART_SEARCH_DEBUG": self.debug_enabled,
             "SMART_SEARCH_LOG_LEVEL": self.log_level,
             "SMART_SEARCH_LOG_DIR": self.log_dir_config_value,

@@ -170,6 +170,8 @@ Jina Reader 只属于 `web_fetch`，不是通用搜索 provider。只有配置 `
 | `extra_sources` | Tavily / Firecrawl 等额外发现的候选来源 |
 | `source_warning` | 来源和回答之间可能存在的证据边界提醒 |
 
+`search`、`fetch` 和 `research` 还会返回单次 command 的 `request_count`、`cache_hit`、`inflight_joined`、`remote_router_calls`、`retry_count`、`budget_exhausted` 和 `stage_elapsed_ms`，用于比较调用成本和阶段延迟。
+
 `routing_decision` 会保留旧字段：`docs_intent`、`zh_current_intent`、`web_current_intent`、`fetch_intent`、`supplemental_paths`；同时新增统一路由字段：`intent_router_mode`、`required_capabilities`、`intent_signals`、`confidence`、`router_engines_used`、`degraded_reason`。
 
 `extra_sources` 只是候选来源，不等于自动事实校验。新闻、政策、财经、医疗、严肃评测、工具选型等高风险问题，建议先发现来源，再 `fetch` 关键网页正文，最后只基于抓到的正文写结论。
@@ -280,6 +282,17 @@ smart-search deep "https://example.com/source" --format json
 | `INTENT_CLASSIFIER_MODEL` | classifier 模型名 |
 | `INTENT_ROUTER_TIMEOUT_SECONDS` | 可选远程路由调用超时，默认 `8` |
 
+运行时缓存配置：
+
+| 配置项 | 用途 |
+| --- | --- |
+| `SMART_SEARCH_CACHE_ENABLED` | 进程内 source/content 缓存开关，默认 `false` |
+| `SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS` | 搜索/发现缓存 TTL，默认 `30`，允许范围 `1..604800` |
+| `SMART_SEARCH_FETCH_CACHE_TTL_SECONDS` | 抓取正文缓存 TTL，默认 `300`，允许范围 `1..604800` |
+| `SMART_SEARCH_CACHE_MAX_SIZE` | 进程内 LRU 最大条目数，默认 `256`，允许范围 `1..10000` |
+
+缓存只保存清理后的成功 source/content。它只存在于当前进程，默认关闭，不缓存 synthesis、错误、空结果、凭据、prompt 或 research artifact。相同 key 的并发请求可以共享 in-flight provider task；等待者取消不会取消 owner。
+
 默认 `hybrid` 是 fail-open：embeddings 或 classifier 没配置、超时或失败时，会在 `degraded_reason` 里说明，然后自动退回本地规则。语义路由只有在 top1 相似度达到 `INTENT_EMBEDDING_THRESHOLD`，并且 top1 与第二名差值达到 `INTENT_EMBEDDING_MARGIN` 时，才会直接添加 capability；否则只记录 ambiguous 信号。classifier 可以补充 capability，但未知 capability 和 provider 名会被忽略；provider 仍然只能由 capability-first 注册表选择。
 
 普通用户推荐直接使用 Qwen3-Embedding-8B preset：`INTENT_EMBEDDING_API_URL=https://api.siliconflow.cn/v1/embeddings`、`INTENT_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B`、`INTENT_EMBEDDING_THRESHOLD=0.475`、`INTENT_EMBEDDING_MARGIN=0.053`。选择 8B 模型且没有手动配置 threshold/margin 时，`smart-search setup` 会自动补齐这两个推荐值。
@@ -307,6 +320,7 @@ smart-search route-calibrate --models "Qwen/Qwen3-Embedding-8B" --format markdow
 - `FIRECRAWL_API_URL` 默认是 `https://api.firecrawl.dev/v2`。
 - AnySearch 默认走 `https://api.anysearch.com/mcp` 的 JSON-RPC 2.0 `tools/call`。没有 key 时允许匿名请求；有 key 时发送 `Authorization: Bearer ...`。HTTP 200 但 `result.isError=true` 会按 provider error 处理，不能当成功证据。
 - `doctor` 和 `route` 会报告 intent router 的配置状态、embedding 模型、threshold、margin、配置来源、超时和是否可降级，不会暴露 router API key。
+- 运行时缓存需要显式设置 `SMART_SEARCH_CACHE_ENABLED=true` 才启用。search 默认缓存 `30` 秒，fetch 默认缓存 `300` 秒，LRU 容量默认 `256`；provider 行为配置或凭据变化后旧条目不会命中。
 
 非交互配置示例：
 

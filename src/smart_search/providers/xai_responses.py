@@ -9,6 +9,7 @@ from .base import BaseSearchProvider
 from .openai_compatible import _WaitWithRetryAfter, _is_retryable_exception, get_local_time_info
 from ..config import config
 from ..logger import log_info
+from ..runtime_cache import add_retry
 from ..utils import get_prompt
 
 
@@ -69,6 +70,8 @@ class XAIResponsesSearchProvider(BaseSearchProvider):
                 retry=retry_if_exception(_is_retryable_exception),
                 reraise=True,
             ):
+                if attempt.retry_state.attempt_number > 1:
+                    add_retry()
                 with attempt:
                     response = await client.post(
                         f"{self.api_url}/responses",

@@ -6,7 +6,7 @@ import tempfile
 import time
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
 import httpx
@@ -42,12 +42,25 @@ from .providers.xai_responses import XAIResponsesSearchProvider
 from .providers.zhipu import ZhipuWebSearchProvider
 from .providers.zhipu_mcp import ZhipuMCPProvider
 from .sources import merge_sources, new_session_id, split_answer_and_sources
+from .runtime_cache import (
+    CacheExecution,
+    RuntimeTTLCache,
+    add_request,
+    add_retry,
+    attach_metrics,
+    cache_input,
+    mark_budget_exhausted,
+    observe_command,
+    observe_stage,
+)
 from .security import sanitize_text
 from .utils import PromptConfigurationError, get_prompt
 
 
 _AVAILABLE_MODELS_CACHE: dict[tuple[str, str], list[str]] = {}
 _AVAILABLE_MODELS_LOCK = asyncio.Lock()
+_RUNTIME_SEARCH_CACHE = RuntimeTTLCache()
+_RUNTIME_FETCH_CACHE = RuntimeTTLCache()
 SOURCE_PROVENANCE_WARNING = (
     "extra_sources are retrieved in parallel and are not automatically used to verify generated content; "
     "use fetch on key URLs for claim-level evidence."
@@ -292,6 +305,194 @@ _OPENAI_COMPATIBLE_MODEL_BREAKERS: dict[tuple[str, str], dict[str, Any]] = {}
 
 def _elapsed_ms(start: float) -> float:
     return round((time.time() - start) * 1000, 2)
+
+
+def reset_runtime_cache() -> None:
+    """
+    ================================================================================
+    步骤1：清理运行时缓存
+    ================================================================================
+    目标：让测试、配置刷新和显式维护操作隔离旧的 source/content 结果。
+    数据源：进程内 search/fetch TTL/LRU cache。
+    操作：
+    1) 清理已完成的 TTL/LRU 条目。
+    2) 使清理前的 in-flight 任务不再回填新缓存。
+    """
+
+    logger.info("开始清理运行时缓存")
+    _RUNTIME_SEARCH_CACHE.clear()
+    _RUNTIME_FETCH_CACHE.clear()
+    logger.info("运行时缓存清理完成")
+
+
+def _runtime_cache_settings(cache: RuntimeTTLCache, kind: str) -> tuple[bool, int]:
+    """
+    ================================================================================
+    步骤2：读取缓存配置快照
+    ================================================================================
+    目标：每次 command 都使用当前配置，避免配置刷新后沿用旧行为。
+    数据源：Config 的开关、TTL 和最大条目数。
+    操作：
+    1) 读取并校验当前配置快照。
+    2) 同步 LRU 容量；显式关闭时清理旧结果。
+    """
+
+    try:
+        enabled = config.cache_enabled
+        ttl_seconds = config.search_cache_ttl_seconds if kind == "search" else config.fetch_cache_ttl_seconds
+        max_size = config.cache_max_size
+    except ValueError as exc:
+        logger.warning("运行时缓存配置无效，按关闭处理: %s", exc)
+        enabled = False
+        ttl_seconds = 0
+        max_size = 256
+    cache.configure(max_size)
+    if not enabled:
+        cache.clear()
+    return enabled, ttl_seconds
+
+
+async def _cached_runtime_call(
+    cache: RuntimeTTLCache,
+    *,
+    capability: str,
+    provider: str,
+    input_value: str,
+    input_kind: str,
+    options: dict[str, Any],
+    factory: Callable[[], Awaitable[Any]],
+    cacheable: Callable[[Any], bool] | None = None,
+) -> CacheExecution:
+    enabled, ttl_seconds = _runtime_cache_settings(cache, "fetch" if input_kind == "url" else "search")
+    normalized = cache_input(input_value, kind=input_kind)
+    if normalized is None:
+        return CacheExecution(await factory())
+
+    if not enabled or ttl_seconds <= 0:
+        return CacheExecution(await factory())
+
+    key = (
+        capability,
+        provider,
+        normalized,
+        config.runtime_cache_fingerprint(
+            capability,
+            provider,
+            {
+                **options,
+                "_runtime_cache_enabled": enabled,
+                "_runtime_cache_ttl_seconds": ttl_seconds,
+                "_runtime_cache_max_size": cache.max_size,
+            },
+        ),
+        config.credential_epoch,
+    )
+    return await cache.get_or_set(
+        key,
+        factory,
+        ttl_seconds=ttl_seconds,
+        enabled=True,
+        cacheable=cacheable,
+    )
+
+
+def _clean_cached_sources(sources: list[dict] | None) -> list[dict]:
+    """
+    ================================================================================
+    步骤3：清理可缓存 source
+    ================================================================================
+    目标：缓存只保存标准化字段，不保存 provider 原始响应或敏感 URL。
+    数据源：_normalize_source_results 产生的 source 列表。
+    操作：
+    1) 丢弃带 userinfo 或敏感 query 参数的 URL。
+    2) 只保留公共 source 字段并清理文本内容。
+    """
+
+    cleaned: list[dict] = []
+    for source in sources or []:
+        if not isinstance(source, dict):
+            continue
+        url = str(source.get("url") or "").strip()
+        if not url or cache_input(url, kind="url") is None:
+            continue
+        item: dict[str, Any] = {
+            "url": url,
+            "provider": sanitize_text(source.get("provider") or ""),
+        }
+        for field_name in ("title", "description", "published_date", "source"):
+            value = source.get(field_name)
+            if value:
+                item[field_name] = sanitize_text(value)
+        cleaned.append(item)
+    return cleaned
+
+
+async def _cached_source_provider(
+    capability: str,
+    provider: str,
+    query: str,
+    options: dict[str, Any],
+    factory: Callable[[], Awaitable[list[dict]]],
+) -> CacheExecution:
+    async def clean_factory() -> list[dict]:
+        return _clean_cached_sources(await factory())
+
+    return await _cached_runtime_call(
+        _RUNTIME_SEARCH_CACHE,
+        capability=capability,
+        provider=provider,
+        input_value=query,
+        input_kind="query",
+        options=options,
+        factory=clean_factory,
+        cacheable=lambda value: bool(value),
+    )
+
+
+async def _cached_fetch_provider(
+    provider: str,
+    url: str,
+    options: dict[str, Any],
+    factory: Callable[[], Awaitable[dict[str, Any]]],
+) -> CacheExecution:
+    return await _cached_runtime_call(
+        _RUNTIME_FETCH_CACHE,
+        capability="web_fetch",
+        provider=provider,
+        input_value=url,
+        input_kind="url",
+        options=options,
+        factory=factory,
+        cacheable=lambda value: bool(isinstance(value, dict) and value.get("content")),
+    )
+
+
+async def _cached_content_provider(
+    capability: str,
+    provider: str,
+    input_value: str,
+    options: dict[str, Any],
+    factory: Callable[[], Awaitable[dict[str, Any]]],
+) -> CacheExecution:
+    return await _cached_runtime_call(
+        _RUNTIME_FETCH_CACHE,
+        capability=capability,
+        provider=provider,
+        input_value=input_value,
+        input_kind="url",
+        options=options,
+        factory=factory,
+        cacheable=lambda value: bool(isinstance(value, dict) and value.get("content")),
+    )
+
+
+def _cache_attempt_extra(execution: CacheExecution) -> dict[str, Any]:
+    extra: dict[str, Any] = {}
+    if execution.cache_hit:
+        extra["cache_hit"] = True
+    if execution.inflight_joined:
+        extra["inflight_joined"] = True
+    return extra
 
 
 def _normalize_domain_filter(value: str | list[str] | tuple[str, ...] | None) -> list[str] | None:
@@ -1169,6 +1370,7 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
     }
 
 
+@observe_command
 async def research(
     query: str,
     budget: str = "deep",
@@ -1217,12 +1419,13 @@ async def research(
     plan = build_deep_research_plan(question, budget=_deep_budget(budget or "deep"), evidence_dir=evidence_dir)
     evidence_root = plan.get("evidence_dir") or _default_evidence_dir(question)
     try:
-        route_result = await IntentRouter(config).route(
-            question,
-            validation_level="balanced",
-            allow_remote=True,
-            plan_intent_signals=plan.get("intent_signals") or {},
-        )
+        with observe_stage("research.route"):
+            route_result = await IntentRouter(config).route(
+                question,
+                validation_level="balanced",
+                allow_remote=True,
+                plan_intent_signals=plan.get("intent_signals") or {},
+            )
     except ValueError as e:
         return {
             "ok": False,
@@ -1246,7 +1449,8 @@ async def research(
     fetch_order = routes["capabilities"]["web_fetch"]["providers"]
     if urls:
         for index, url in enumerate(urls, 1):
-            fetch_result, attempts = await _run_web_fetch_fallback(url, fallback=fallback_mode, preferred_order=fetch_order)
+            with observe_stage("research.known_url_fetch"):
+                fetch_result, attempts = await _run_web_fetch_fallback(url, fallback=fallback_mode, preferred_order=fetch_order)
             provider_attempts.extend(attempts)
             stage_results.append({"stage": "known_url_fetch", "url": url, "ok": bool(fetch_result), "provider_attempts": attempts})
             if fetch_result:
@@ -1271,34 +1475,77 @@ async def research(
         for provider in selected_docs_providers:
             step_start = time.time()
             if provider == "context7":
-                data = await context7_library(question, question)
-                if data.get("ok") and data.get("results"):
-                    provider_attempts.append(_attempt("docs_search", "context7", "ok", step_start, result_count=len(data.get("results") or [])))
-                    stage_results.append({"stage": "docs_discovery", "provider": "context7", "ok": True, "result_count": len(data.get("results") or [])})
-                    library_id = (data.get("results") or [{}])[0].get("id", "")
+                library_outcome: dict[str, Any] = {}
+
+                async def library_factory() -> list[dict]:
+                    add_request()
+                    data = await context7_library(question, question)
+                    library_outcome.update(data if isinstance(data, dict) else {})
+                    return [
+                        {
+                            "url": f"context7:{item.get('id')}",
+                            "title": item.get("title") or item.get("id") or "Context7",
+                            "description": item.get("description") or "",
+                            "provider": "context7",
+                        }
+                        for item in data.get("results", [])
+                        if data.get("ok") and item.get("id")
+                    ]
+
+                library_execution = await _cached_source_provider(
+                    "docs_search",
+                    "context7",
+                    question,
+                    {"name": question, "query": question},
+                    library_factory,
+                )
+                library_sources = library_execution.value if isinstance(library_execution.value, list) else []
+                if library_sources:
+                    provider_attempts.append(_attempt("docs_search", "context7", "ok", step_start, result_count=len(library_sources), extra=_cache_attempt_extra(library_execution)))
+                    stage_results.append({"stage": "docs_discovery", "provider": "context7", "ok": True, "result_count": len(library_sources)})
+                    library_id = str(library_sources[0].get("url", "")).removeprefix("context7:")
                     if library_id:
                         docs_start = time.time()
-                        docs_data = await context7_docs(library_id, question)
-                        if docs_data.get("ok") and docs_data.get("content"):
-                            provider_attempts.append(_attempt("docs_search", "context7", "ok", docs_start, result_count=1))
+                        docs_outcome: dict[str, Any] = {}
+
+                        async def docs_factory() -> dict[str, Any]:
+                            add_request()
+                            data = await context7_docs(library_id, question)
+                            docs_outcome.update(data if isinstance(data, dict) else {})
+                            return {
+                                "content": sanitize_text(data.get("content") or "") if data.get("ok") else "",
+                                "library_id": library_id,
+                            }
+
+                        docs_execution = await _cached_content_provider(
+                            "docs_search",
+                            "context7",
+                            f"https://context7.local/{library_id}",
+                            {"library_id": library_id, "query": question},
+                            docs_factory,
+                        )
+                        docs_payload = docs_execution.value if isinstance(docs_execution.value, dict) else {}
+                        docs_content = docs_payload.get("content") or ""
+                        if docs_content:
+                            provider_attempts.append(_attempt("docs_search", "context7", "ok", docs_start, result_count=1, extra=_cache_attempt_extra(docs_execution)))
                             item = _research_evidence_item(
                                 url=f"context7:{library_id}",
                                 provider="context7",
                                 title=library_id,
-                                content=docs_data.get("content", ""),
+                                content=docs_content,
                                 source_type="docs",
                                 subquestion_id="sq2",
                             )
                             evidence_items.append(item)
-                            _write_research_artifact(evidence_root, "docs-context7.md", docs_data.get("content", ""))
+                            _write_research_artifact(evidence_root, "docs-context7.md", docs_content)
                             break
-                        docs_status = "error" if docs_data.get("error_type") else "empty"
-                        provider_attempts.append(_attempt("docs_search", "context7", docs_status, docs_start, error_type=docs_data.get("error_type", ""), error=docs_data.get("error", "")))
+                        docs_status = "error" if docs_outcome.get("error_type") else "empty"
+                        provider_attempts.append(_attempt("docs_search", "context7", docs_status, docs_start, error_type=docs_outcome.get("error_type", ""), error=docs_outcome.get("error", ""), extra=_cache_attempt_extra(docs_execution)))
                     if fallback_mode == "off":
                         break
                     continue
-                status = "error" if data.get("error_type") in {"auth_error", "timeout", "network_error", "runtime_error"} else "empty"
-                provider_attempts.append(_attempt("docs_search", "context7", status, step_start, error_type=data.get("error_type", ""), error=data.get("error", "")))
+                status = "error" if library_outcome.get("error_type") in {"auth_error", "timeout", "network_error", "runtime_error"} else "empty"
+                provider_attempts.append(_attempt("docs_search", "context7", status, step_start, error_type=library_outcome.get("error_type", ""), error=library_outcome.get("error", ""), extra=_cache_attempt_extra(library_execution)))
             elif provider == "exa":
                 data = await exa_search(question, num_results=5, include_highlights=True)
                 if data.get("ok"):
@@ -1318,12 +1565,13 @@ async def research(
     if should_run_web_discovery:
         web_provider_order = routes["capabilities"]["web_search"]["providers"]
         if web_provider_order:
-            web_sources, attempts = await _run_web_search_fallback(
-                question,
-                count=5,
-                providers=",".join(web_provider_order),
-                fallback=fallback_mode,
-            )
+            with observe_stage("research.web_discovery"):
+                web_sources, attempts = await _run_web_search_fallback(
+                    question,
+                    count=5,
+                    providers=",".join(web_provider_order),
+                    fallback=fallback_mode,
+                )
             provider_attempts.extend(attempts)
             discovery_sources.extend(web_sources)
             stage_results.append({"stage": "web_discovery", "ok": bool(web_sources), "result_count": len(web_sources), "provider_attempts": attempts})
@@ -1338,25 +1586,52 @@ async def research(
         and not any(source.get("provider") == "exa" for source in discovery_sources)
     ):
         exa_start = time.time()
-        data = await exa_search(question, num_results=5, include_highlights=True)
-        if data.get("ok"):
-            sources = _normalize_source_results(data.get("results"), "exa")
-            if sources:
-                provider_attempts.append(_attempt("docs_search", "exa", "ok", exa_start, result_count=len(sources)))
-                discovery_sources.extend(sources)
+        exa_outcome: dict[str, Any] = {}
+
+        async def exa_factory() -> list[dict]:
+            add_request()
+            data = await exa_search(question, num_results=5, include_highlights=True)
+            exa_outcome.update(data if isinstance(data, dict) else {})
+            return _normalize_source_results(data.get("results"), "exa") if data.get("ok") else []
+
+        exa_execution = await _cached_source_provider(
+            "docs_search",
+            "exa",
+            question,
+            {"include_highlights": True, "num_results": 5},
+            exa_factory,
+        )
+        sources = exa_execution.value if isinstance(exa_execution.value, list) else []
+        if sources:
+            provider_attempts.append(_attempt("docs_search", "exa", "ok", exa_start, result_count=len(sources), extra=_cache_attempt_extra(exa_execution)))
+            discovery_sources.extend(sources)
         else:
-            provider_attempts.append(_attempt("docs_search", "exa", "error", exa_start, error_type=data.get("error_type", ""), error=data.get("error", "")))
+            provider_attempts.append(_attempt("docs_search", "exa", "error" if exa_outcome.get("error_type") else "empty", exa_start, error_type=exa_outcome.get("error_type", ""), error=exa_outcome.get("error", ""), extra=_cache_attempt_extra(exa_execution)))
 
     if signals["vertical_intent"] and routes["capabilities"]["vertical_search"]["providers"]:
         vertical_start = time.time()
-        data = await anysearch_search(question, max_results=5)
-        if data.get("ok"):
-            sources = _normalize_source_results(data.get("results"), "anysearch")
-            provider_attempts.append(_attempt("vertical_search", "anysearch", "ok" if sources else "empty", vertical_start, result_count=len(sources)))
+        vertical_outcome: dict[str, Any] = {}
+
+        async def vertical_factory() -> list[dict]:
+            add_request()
+            data = await anysearch_search(question, max_results=5)
+            vertical_outcome.update(data if isinstance(data, dict) else {})
+            return _normalize_source_results(data.get("results"), "anysearch") if data.get("ok") else []
+
+        vertical_execution = await _cached_source_provider(
+            "vertical_search",
+            "anysearch",
+            question,
+            {"max_results": 5},
+            vertical_factory,
+        )
+        sources = vertical_execution.value if isinstance(vertical_execution.value, list) else []
+        if sources:
+            provider_attempts.append(_attempt("vertical_search", "anysearch", "ok", vertical_start, result_count=len(sources), extra=_cache_attempt_extra(vertical_execution)))
             discovery_sources.extend(sources)
-            stage_results.append({"stage": "vertical_discovery", "provider": "anysearch", "ok": bool(sources), "result_count": len(sources)})
+            stage_results.append({"stage": "vertical_discovery", "provider": "anysearch", "ok": True, "result_count": len(sources)})
         else:
-            provider_attempts.append(_attempt("vertical_search", "anysearch", "error", vertical_start, error_type=data.get("error_type", ""), error=data.get("error", "")))
+            provider_attempts.append(_attempt("vertical_search", "anysearch", "error" if vertical_outcome.get("error_type") else "empty", vertical_start, error_type=vertical_outcome.get("error_type", ""), error=vertical_outcome.get("error", ""), extra=_cache_attempt_extra(vertical_execution)))
 
     candidates = _select_candidate_urls(discovery_sources, limit=6)
     fetched_urls = {item.get("url") for item in evidence_items}
@@ -1366,7 +1641,8 @@ async def research(
         if not url or url in fetched_urls:
             continue
         order = _research_fetch_order(question, url)
-        fetch_result, attempts = await _run_web_fetch_fallback(url, fallback=fallback_mode, preferred_order=order)
+        with observe_stage("research.candidate_fetch"):
+            fetch_result, attempts = await _run_web_fetch_fallback(url, fallback=fallback_mode, preferred_order=order)
         provider_attempts.extend(attempts)
         stage_results.append({"stage": "candidate_fetch", "url": url, "ok": bool(fetch_result), "provider_attempts": attempts})
         if fetch_result:
@@ -1393,7 +1669,8 @@ async def research(
     covered = bool(evidence_items)
     gap_status = "closed" if covered and not gaps else ("degraded" if evidence_items else "failed")
     citations = _citation_items(evidence_items)
-    final_answer = _evidence_only_synthesis(question, evidence_items, gaps)
+    with observe_stage("research.synthesis"):
+        final_answer = _evidence_only_synthesis(question, evidence_items, gaps)
     result = {
         "ok": bool(evidence_items),
         "error_type": "" if evidence_items else "evidence_error",
@@ -1425,6 +1702,7 @@ async def research(
         "capability_status": minimum.get("capability_status", {}),
         "elapsed_ms": _elapsed_ms(start),
     }
+    attach_metrics(result)
     _write_research_artifact(evidence_root, "summary.json", result)
     return result
 
@@ -1797,34 +2075,65 @@ async def _run_web_fetch_fallback(
 
     for provider in providers:
         start = time.time()
+        outcome: dict[str, Any] = {}
         try:
-            if provider == "tavily":
-                content = await call_tavily_extract(url)
-            elif provider == "jina":
-                data = await jina_fetch(url)
-                content = data.get("content") if data.get("ok") else None
-                if not data.get("ok"):
-                    status = "error" if data.get("error_type") in {"auth_error", "config_error", "parameter_error", "quality_error", "rate_limited", "timeout", "network_error", "runtime_error"} else "empty"
-                    attempts.append(_attempt("web_fetch", provider, status, start, error_type=data.get("error_type", ""), error=data.get("error", "")))
-                    continue
-            elif provider == "zhipu-mcp-reader":
-                data = await zhipu_mcp_reader(url)
-                content = data.get("content") if data.get("ok") else None
-                if not data.get("ok"):
-                    status = "error" if data.get("error_type") in {"auth_error", "config_error", "provider_error", "rate_limited", "timeout", "network_error", "runtime_error"} else "empty"
-                    attempts.append(_attempt("web_fetch", provider, status, start, error_type=data.get("error_type", ""), error=data.get("error", "")))
-                    continue
-            else:
+            async def fetch_factory() -> dict[str, Any]:
+                add_request()
+                if provider == "tavily":
+                    content = await call_tavily_extract(url)
+                    return {
+                        "content": sanitize_text(content or ""),
+                        "url": url,
+                        "provider": provider,
+                    }
+                if provider == "jina":
+                    data = await jina_fetch(url)
+                    outcome.update(data if isinstance(data, dict) else {})
+                    return {
+                        "content": sanitize_text(data.get("content") or "") if data.get("ok") else "",
+                        "url": url,
+                        "provider": provider,
+                        "error_type": data.get("error_type", ""),
+                        "error": data.get("error", ""),
+                    }
+                if provider == "zhipu-mcp-reader":
+                    data = await zhipu_mcp_reader(url)
+                    outcome.update(data if isinstance(data, dict) else {})
+                    return {
+                        "content": sanitize_text(data.get("content") or "") if data.get("ok") else "",
+                        "url": url,
+                        "provider": provider,
+                        "error_type": data.get("error_type", ""),
+                        "error": data.get("error", ""),
+                    }
                 content = await call_firecrawl_scrape(url)
-            if content and content.strip():
-                attempts.append(_attempt("web_fetch", provider, "ok", start, result_count=1))
+                return {
+                    "content": sanitize_text(content or ""),
+                    "url": url,
+                    "provider": provider,
+                }
+
+            execution = await _cached_fetch_provider(
+                provider,
+                url,
+                {"format": "markdown"},
+                fetch_factory,
+            )
+            fetch_data = execution.value if isinstance(execution.value, dict) else {}
+            content = fetch_data.get("content") or ""
+            error_type = outcome.get("error_type") or fetch_data.get("error_type", "")
+            error = outcome.get("error") or fetch_data.get("error", "")
+            attempt_extra = _cache_attempt_extra(execution)
+            if content.strip():
+                attempts.append(_attempt("web_fetch", provider, "ok", start, result_count=1, extra=attempt_extra))
                 return {
                     "ok": True,
                     "url": url,
                     "provider": provider,
                     "content": content,
                 }, attempts
-            attempts.append(_attempt("web_fetch", provider, "empty", start))
+            status = "error" if error_type in {"auth_error", "config_error", "parameter_error", "quality_error", "provider_error", "rate_limited", "timeout", "network_error", "runtime_error"} else "empty"
+            attempts.append(_attempt("web_fetch", provider, status, start, error_type=error_type, error=error, extra=attempt_extra))
         except Exception as e:
             attempts.append(_attempt("web_fetch", provider, "error", start, error_type="runtime_error", error=str(e)))
     return None, attempts
@@ -1854,39 +2163,37 @@ async def _run_web_search_fallback(
 
     for provider in configured:
         start = time.time()
+        outcome: dict[str, Any] = {}
         try:
-            if provider == "zhipu":
-                data = await zhipu_search(query, count=count)
-                if data.get("ok"):
-                    sources = _normalize_source_results(data.get("results"), "zhipu")
-                    if sources:
-                        attempts.append(_attempt("web_search", provider, "ok", start, result_count=len(sources)))
-                        return sources, attempts
-                status = "error" if data.get("error_type") in {"rate_limited", "auth_error", "timeout", "network_error", "runtime_error"} else "empty"
-                attempts.append(_attempt("web_search", provider, status, start, error_type=data.get("error_type", ""), error=data.get("error", "")))
-            elif provider == "zhipu-mcp":
-                data = await zhipu_mcp_search(query, count=count)
-                if data.get("ok"):
-                    sources = _normalize_source_results(data.get("results"), "zhipu-mcp")
-                    if sources:
-                        attempts.append(_attempt("web_search", provider, "ok", start, result_count=len(sources)))
-                        return sources, attempts
-                status = "error" if data.get("error_type") in {"rate_limited", "auth_error", "timeout", "network_error", "runtime_error", "provider_error"} else "empty"
-                attempts.append(_attempt("web_search", provider, status, start, error_type=data.get("error_type", ""), error=data.get("error", "")))
-            elif provider == "tavily":
-                results = await call_tavily_search(query, count)
-                sources = _normalize_source_results(results, "tavily")
-                if sources:
-                    attempts.append(_attempt("web_search", provider, "ok", start, result_count=len(sources)))
-                    return sources, attempts
-                attempts.append(_attempt("web_search", provider, "empty", start))
-            elif provider == "firecrawl":
-                results = await call_firecrawl_search(query, count)
-                sources = _normalize_source_results(results, "firecrawl")
-                if sources:
-                    attempts.append(_attempt("web_search", provider, "ok", start, result_count=len(sources)))
-                    return sources, attempts
-                attempts.append(_attempt("web_search", provider, "empty", start))
+            async def source_factory() -> list[dict]:
+                add_request()
+                if provider == "zhipu":
+                    data = await zhipu_search(query, count=count)
+                    outcome.update(data if isinstance(data, dict) else {})
+                    return _normalize_source_results(data.get("results"), provider) if data.get("ok") else []
+                if provider == "zhipu-mcp":
+                    data = await zhipu_mcp_search(query, count=count)
+                    outcome.update(data if isinstance(data, dict) else {})
+                    return _normalize_source_results(data.get("results"), provider) if data.get("ok") else []
+                if provider == "tavily":
+                    return _normalize_source_results(await call_tavily_search(query, count), provider)
+                return _normalize_source_results(await call_firecrawl_search(query, count), provider)
+
+            execution = await _cached_source_provider(
+                "web_search",
+                provider,
+                query,
+                {"count": count},
+                source_factory,
+            )
+            sources = execution.value if isinstance(execution.value, list) else []
+            attempt_extra = _cache_attempt_extra(execution)
+            if sources:
+                attempts.append(_attempt("web_search", provider, "ok", start, result_count=len(sources), extra=attempt_extra))
+                return sources, attempts
+            error_type = outcome.get("error_type", "")
+            status = "error" if error_type in {"rate_limited", "auth_error", "timeout", "network_error", "runtime_error", "provider_error"} else "empty"
+            attempts.append(_attempt("web_search", provider, status, start, error_type=error_type, error=outcome.get("error", ""), extra=attempt_extra))
         except Exception as e:
             attempts.append(_attempt("web_search", provider, "error", start, error_type="runtime_error", error=str(e)))
     return [], attempts
@@ -1911,34 +2218,42 @@ async def _run_docs_search_fallback(
 
     for provider in configured:
         start = time.time()
+        outcome: dict[str, Any] = {}
         try:
-            if provider == "exa":
-                data = await exa_search(query, num_results=5, include_highlights=True)
-                if data.get("ok"):
-                    sources = _normalize_source_results(data.get("results"), "exa")
-                    if sources:
-                        attempts.append(_attempt("docs_search", provider, "ok", start, result_count=len(sources)))
-                        return sources, attempts
-                status = "error" if data.get("error_type") in {"auth_error", "parameter_error", "rate_limited", "timeout", "network_error", "runtime_error"} else "empty"
-                attempts.append(_attempt("docs_search", provider, status, start, error_type=data.get("error_type", ""), error=data.get("error", "")))
-            elif provider == "context7":
+            async def source_factory() -> list[dict]:
+                add_request()
+                if provider == "exa":
+                    data = await exa_search(query, num_results=5, include_highlights=True)
+                    outcome.update(data if isinstance(data, dict) else {})
+                    return _normalize_source_results(data.get("results"), provider) if data.get("ok") else []
                 data = await context7_library(query, query)
-                if data.get("ok"):
-                    sources = [
-                        {
-                            "url": f"context7:{item.get('id')}",
-                            "title": item.get("title") or item.get("id") or "Context7",
-                            "description": item.get("description") or "",
-                            "provider": "context7",
-                        }
-                        for item in data.get("results", [])
-                        if item.get("id")
-                    ]
-                    if sources:
-                        attempts.append(_attempt("docs_search", provider, "ok", start, result_count=len(sources)))
-                        return sources, attempts
-                status = "error" if data.get("error_type") in {"auth_error", "timeout", "network_error", "runtime_error"} else "empty"
-                attempts.append(_attempt("docs_search", provider, status, start, error_type=data.get("error_type", ""), error=data.get("error", "")))
+                outcome.update(data if isinstance(data, dict) else {})
+                return [
+                    {
+                        "url": f"context7:{item.get('id')}",
+                        "title": item.get("title") or item.get("id") or "Context7",
+                        "description": item.get("description") or "",
+                        "provider": provider,
+                    }
+                    for item in data.get("results", [])
+                    if data.get("ok") and item.get("id")
+                ]
+
+            execution = await _cached_source_provider(
+                "docs_search",
+                provider,
+                query,
+                {"include_highlights": True, "num_results": 5},
+                source_factory,
+            )
+            sources = execution.value if isinstance(execution.value, list) else []
+            attempt_extra = _cache_attempt_extra(execution)
+            if sources:
+                attempts.append(_attempt("docs_search", provider, "ok", start, result_count=len(sources), extra=attempt_extra))
+                return sources, attempts
+            error_type = outcome.get("error_type", "")
+            status = "error" if error_type in {"auth_error", "parameter_error", "rate_limited", "timeout", "network_error", "runtime_error", "provider_error"} else "empty"
+            attempts.append(_attempt("docs_search", provider, status, start, error_type=error_type, error=outcome.get("error", ""), extra=attempt_extra))
         except Exception as e:
             attempts.append(_attempt("docs_search", provider, "error", start, error_type="runtime_error", error=str(e)))
     return [], attempts
@@ -1961,15 +2276,29 @@ async def _run_vertical_search_fallback(
 
     for provider in configured:
         start = time.time()
+        outcome: dict[str, Any] = {}
         try:
-            data = await anysearch_search(query, max_results=5)
-            if data.get("ok"):
-                sources = _normalize_source_results(data.get("results"), "anysearch")
-                if sources:
-                    attempts.append(_attempt("vertical_search", provider, "ok", start, result_count=len(sources)))
-                    return sources, attempts
-            status = "error" if data.get("error_type") in {"auth_error", "provider_error", "rate_limited", "timeout", "network_error", "runtime_error"} else "empty"
-            attempts.append(_attempt("vertical_search", provider, status, start, error_type=data.get("error_type", ""), error=data.get("error", "")))
+            async def source_factory() -> list[dict]:
+                add_request()
+                data = await anysearch_search(query, max_results=5)
+                outcome.update(data if isinstance(data, dict) else {})
+                return _normalize_source_results(data.get("results"), provider) if data.get("ok") else []
+
+            execution = await _cached_source_provider(
+                "vertical_search",
+                provider,
+                query,
+                {"max_results": 5},
+                source_factory,
+            )
+            sources = execution.value if isinstance(execution.value, list) else []
+            attempt_extra = _cache_attempt_extra(execution)
+            if sources:
+                attempts.append(_attempt("vertical_search", provider, "ok", start, result_count=len(sources), extra=attempt_extra))
+                return sources, attempts
+            error_type = outcome.get("error_type", "")
+            status = "error" if error_type in {"auth_error", "provider_error", "rate_limited", "timeout", "network_error", "runtime_error"} else "empty"
+            attempts.append(_attempt("vertical_search", provider, status, start, error_type=error_type, error=outcome.get("error", ""), extra=attempt_extra))
         except Exception as e:
             attempts.append(_attempt("vertical_search", provider, "error", start, error_type="runtime_error", error=str(e)))
     return [], attempts
@@ -2153,6 +2482,8 @@ async def call_firecrawl_scrape(url: str, ctx=None) -> str | None:
     endpoint = f"{config.firecrawl_api_url.rstrip('/')}/scrape"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     for attempt in range(config.retry_max_attempts):
+        if attempt > 0:
+            add_retry()
         body = {
             "url": url,
             "formats": ["markdown"],
@@ -2224,6 +2555,7 @@ async def call_tavily_map(
         return {"ok": False, "error_type": "network_error", "error": f"映射错误: {str(e)}"}
 
 
+@observe_command
 async def search(
     query: str,
     platform: str = "",
@@ -2332,7 +2664,8 @@ async def search(
 
     selected_main_provider_configs = main_provider_configs if fallback_mode != "off" else main_provider_configs[:1]
     try:
-        route_result = await IntentRouter(config).route(query, validation_level=validation_level, allow_remote=True)
+        with observe_stage("search.route"):
+            route_result = await IntentRouter(config).route(query, validation_level=validation_level, allow_remote=True)
     except ValueError as e:
         return _empty_search_result(start, session_id, query, "parameter_error", str(e), extra={"validation_level": validation_level})
     fetch_urls = _extract_urls(query)
@@ -2407,11 +2740,17 @@ async def search(
                 timeout_seconds,
                 total_main_candidates - completed_main_candidates + 1,
             )
+            if timeout_seconds is not None and _remaining_budget_seconds(start, timeout_seconds) <= 0:
+                mark_budget_exhausted()
             try:
-                if attempt_timeout is not None:
-                    candidate_result = await asyncio.wait_for(search_provider.search(query, provider_platform), timeout=attempt_timeout)
-                else:
-                    candidate_result = await search_provider.search(query, provider_platform)
+                add_request()
+                with observe_stage("search.primary"):
+                    if attempt_timeout is not None:
+                        candidate_result = await asyncio.wait_for(search_provider.search(query, provider_platform), timeout=attempt_timeout)
+                    else:
+                        candidate_result = await search_provider.search(query, provider_platform)
+                if timeout_seconds is not None and _remaining_budget_seconds(start, timeout_seconds) <= 0:
+                    mark_budget_exhausted()
                 transport_attempts = getattr(search_provider, "last_transport_attempts", [])
                 if _append_openai_transport_attempts(provider_attempts, search_provider, candidate_config):
                     transport_fallback_used = transport_fallback_used or any(
@@ -2490,46 +2829,91 @@ async def search(
     effective_model = successful_main_config["model"]
 
     coros: list[Any] = []
+    extra_provider_names: list[str] = []
     if tavily_count:
-        coros.append(call_tavily_search(query, tavily_count))
-    if firecrawl_count:
-        coros.append(call_firecrawl_search(query, firecrawl_count))
+        async def tavily_source_factory() -> list[dict]:
+            add_request()
+            return _normalize_source_results(await call_tavily_search(query, tavily_count), "tavily")
 
-    gathered = await asyncio.gather(*coros, return_exceptions=True)
-    primary_result = primary_result or ""
-    tavily_results: list[dict] | None = None
-    firecrawl_results: list[dict] | None = None
-    idx = 0
-    if tavily_count:
-        tavily_results = None if isinstance(gathered[idx], BaseException) else gathered[idx]
-        idx += 1
+        extra_provider_names.append("tavily")
+        coros.append(
+            _cached_source_provider(
+                "web_search",
+                "tavily",
+                query,
+                {"count": tavily_count},
+                tavily_source_factory,
+            )
+        )
     if firecrawl_count:
-        firecrawl_results = None if isinstance(gathered[idx], BaseException) else gathered[idx]
+        async def firecrawl_source_factory() -> list[dict]:
+            add_request()
+            return _normalize_source_results(await call_firecrawl_search(query, firecrawl_count), "firecrawl")
+
+        extra_provider_names.append("firecrawl")
+        coros.append(
+            _cached_source_provider(
+                "web_search",
+                "firecrawl",
+                query,
+                {"count": firecrawl_count},
+                firecrawl_source_factory,
+            )
+        )
+
+    with observe_stage("search.extra_sources"):
+        gathered = await asyncio.gather(*coros, return_exceptions=True)
+    primary_result = primary_result or ""
+    extra_provider_sources: dict[str, list[dict]] = {"tavily": [], "firecrawl": []}
+    extra_provider_executions: dict[str, CacheExecution] = {}
+    for provider_name, execution in zip(extra_provider_names, gathered):
+        if isinstance(execution, BaseException):
+            continue
+        extra_provider_executions[provider_name] = execution
+        extra_provider_sources[provider_name] = execution.value if isinstance(execution.value, list) else []
 
     answer, primary_sources = split_answer_and_sources(primary_result)
-    extra_source_items = extra_results_to_sources(tavily_results, firecrawl_results)
-    for item_provider, results in (("tavily", tavily_results), ("firecrawl", firecrawl_results)):
-        if results:
-            provider_attempts.append(_attempt("web_search", item_provider, "ok", start, result_count=len(results)))
+    extra_source_items = merge_sources(
+        extra_provider_sources["firecrawl"],
+        extra_provider_sources["tavily"],
+    )
+    for item_provider in ("tavily", "firecrawl"):
+        results = extra_provider_sources[item_provider]
+        execution = extra_provider_executions.get(item_provider)
+        if results and execution is not None:
+            provider_attempts.append(
+                _attempt(
+                    "web_search",
+                    item_provider,
+                    "ok",
+                    start,
+                    result_count=len(results),
+                    extra=_cache_attempt_extra(execution),
+                )
+            )
 
     supplemental_sources: list[dict] = []
     if validation_level in {"balanced", "strict"}:
         if "docs_search" in supplemental_paths:
-            docs_sources, docs_attempts = await _run_docs_search_fallback(query, providers=providers, fallback=fallback_mode)
+            with observe_stage("search.supplemental_docs"):
+                docs_sources, docs_attempts = await _run_docs_search_fallback(query, providers=providers, fallback=fallback_mode)
             provider_attempts.extend(docs_attempts)
             supplemental_sources.extend(docs_sources)
         if "web_search" in supplemental_paths:
-            web_sources, web_attempts = await _run_web_search_fallback(query, count=max(1, extra_sources or 3), providers=providers, fallback=fallback_mode)
+            with observe_stage("search.supplemental_web"):
+                web_sources, web_attempts = await _run_web_search_fallback(query, count=max(1, extra_sources or 3), providers=providers, fallback=fallback_mode)
             provider_attempts.extend(web_attempts)
             supplemental_sources.extend(web_sources)
         if "web_fetch" in supplemental_paths:
             fetch_url = fetch_urls[0] if fetch_urls else query.strip()
-            fetch_result, fetch_attempts = await _run_web_fetch_fallback(fetch_url, fallback=fallback_mode)
+            with observe_stage("search.supplemental_fetch"):
+                fetch_result, fetch_attempts = await _run_web_fetch_fallback(fetch_url, fallback=fallback_mode)
             provider_attempts.extend(fetch_attempts)
             if fetch_result:
                 supplemental_sources.append({"url": fetch_result["url"], "provider": fetch_result["provider"], "description": fetch_result["content"][:300]})
         if "vertical_search" in supplemental_paths:
-            vertical_sources, vertical_attempts = await _run_vertical_search_fallback(query, providers=providers, fallback=fallback_mode)
+            with observe_stage("search.supplemental_vertical"):
+                vertical_sources, vertical_attempts = await _run_vertical_search_fallback(query, providers=providers, fallback=fallback_mode)
             provider_attempts.extend(vertical_attempts)
             supplemental_sources.extend(vertical_sources)
 
@@ -3165,9 +3549,11 @@ def _primary_search_error_result(
     }
 
 
+@observe_command
 async def fetch(url: str) -> dict[str, Any]:
     start = time.time()
-    fetch_result, attempts = await _run_web_fetch_fallback(url)
+    with observe_stage("fetch.providers"):
+        fetch_result, attempts = await _run_web_fetch_fallback(url)
     if fetch_result:
         return {
             **fetch_result,

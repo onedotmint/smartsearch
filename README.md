@@ -163,7 +163,7 @@ AnySearch is intentionally not part of the `web_search` fallback chain and is no
 
 Jina Reader is a `web_fetch` provider only. `JINA_API_KEY` is required before Jina satisfies `SMART_SEARCH_MINIMUM_PROFILE=standard`; anonymous `r.jina.ai` behavior is treated as explicit/experimental fetch behavior and must not weaken fail-closed setup checks.
 
-The CLI exposes observability fields such as `routing_decision`, `provider_attempts`, `providers_used`, `fallback_used`, `primary_sources`, `extra_sources`, and `source_warning`.
+The CLI exposes observability fields such as `routing_decision`, `provider_attempts`, `providers_used`, `fallback_used`, `primary_sources`, `extra_sources`, and `source_warning`. `search`, `fetch`, and `research` also report `request_count`, `cache_hit`, `inflight_joined`, `remote_router_calls`, `retry_count`, `budget_exhausted`, and `stage_elapsed_ms` for one command.
 
 `routing_decision` keeps backward-compatible booleans such as `docs_intent`, `zh_current_intent`, `web_current_intent`, `fetch_intent`, and `supplemental_paths`, and also includes the unified router fields: `intent_router_mode`, `required_capabilities`, `intent_signals`, `confidence`, `router_engines_used`, and `degraded_reason`.
 
@@ -271,6 +271,17 @@ Intent router configuration:
 | `INTENT_CLASSIFIER_MODEL` | Classifier model name |
 | `INTENT_ROUTER_TIMEOUT_SECONDS` | Timeout for optional remote router calls, default `8` |
 
+Runtime cache configuration:
+
+| Key | Purpose |
+| --- | --- |
+| `SMART_SEARCH_CACHE_ENABLED` | Process-local source/content cache switch; default `false` |
+| `SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS` | Search/discovery cache TTL; default `30`, allowed range `1..604800` |
+| `SMART_SEARCH_FETCH_CACHE_TTL_SECONDS` | Fetch/content cache TTL; default `300`, allowed range `1..604800` |
+| `SMART_SEARCH_CACHE_MAX_SIZE` | Shared per-process LRU capacity; default `256`, allowed range `1..10000` |
+
+The cache stores only cleaned successful source/content results. It is process-local, disabled by default, and does not cache synthesis answers, errors, empty results, credentials, prompts, or research artifacts. Repeated requests in one event loop can share an in-flight provider task; canceling a waiter does not cancel the owner.
+
 Default `hybrid` is fail-open: if embeddings or classifier settings are missing or fail, routing records `degraded_reason` and falls back to local rules. Semantic routing may add a capability only when the top similarity score is at least `INTENT_EMBEDDING_THRESHOLD` and the top-vs-second score gap is at least `INTENT_EMBEDDING_MARGIN`; otherwise it records an ambiguous signal without adding a capability. The classifier may add capabilities, but unknown capability names and provider names are ignored. Providers are still selected only by capability.
 
 For normal setup, use the Qwen3-Embedding-8B preset: `INTENT_EMBEDDING_API_URL=https://api.siliconflow.cn/v1/embeddings`, `INTENT_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B`, `INTENT_EMBEDDING_THRESHOLD=0.475`, and `INTENT_EMBEDDING_MARGIN=0.053`. `smart-search setup` automatically fills the 8B threshold/margin when the 8B model is selected and those values are not already configured.
@@ -298,6 +309,7 @@ Important boundaries:
 - `FIRECRAWL_API_URL` defaults to `https://api.firecrawl.dev/v2`.
 - AnySearch uses JSON-RPC 2.0 `tools/call` at `https://api.anysearch.com/mcp` by default. It allows anonymous calls when no key is configured, but authenticated calls send `Authorization: Bearer ...`. HTTP 200 responses with `result.isError=true` are treated as provider errors, not as successful evidence.
 - `doctor` and `route` report intent router status, embedding model, threshold, margin, their config source, timeout, and degradation behavior. They do not expose router API keys.
+- The runtime cache is opt-in through `SMART_SEARCH_CACHE_ENABLED=true`. Search uses a `30` second TTL, fetch uses `300` seconds, and the LRU capacity defaults to `256`; changing provider behavior configuration or credentials invalidates old entries.
 
 Non-interactive setup example:
 
