@@ -62,6 +62,7 @@ Intent router rules:
 - `fetch` and known-URL `search "https://..."` use the same fetch fallback chain.
 - `fetch` tries Tavily first, then Jina with `JINA_API_KEY`, then Zhipu Coding Plan MCP Reader, then Firecrawl.
 - `map` currently uses Tavily only.
+- `TAVILY_ENABLED=false` keeps a configured Tavily key visible as disabled in diagnostics, but removes Tavily from eligible search, fetch, and map calls; skipped fallback attempts include the disabled reason.
 - `exa-search` and `exa-similar` use Exa only.
 - `context7-library` and `context7-docs` use Context7 only.
 - `anysearch-domains`, `anysearch-search`, `anysearch-extract`, and `anysearch-batch` use AnySearch only. Treat results as acceptance evidence until the target vertical domain is reviewed.

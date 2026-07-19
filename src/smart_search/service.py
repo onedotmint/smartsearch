@@ -172,18 +172,11 @@ RESEARCH_JS_HEAVY_KEYWORDS = {
     "扫描",
 }
 RESEARCH_PDF_KEYWORDS = {"pdf", "arxiv", "论文", "paper", ".pdf"}
-RESEARCH_PROFILE_ORDER = {
-    "main_search": ["xai-responses", "openai-compatible"],
-    "web_search": ["zhipu", "zhipu-mcp", "tavily", "firecrawl"],
-    "docs_search": ["context7", "exa"],
-    "web_fetch": ["tavily", "jina", "zhipu-mcp-reader", "firecrawl"],
-    "vertical_search": ["anysearch"],
-    "site_map": ["tavily"],
-    "synthesis": ["main-search"],
-}
 PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
     "xai-responses": {
         "capability": "main_search",
+        "config_attrs": ("xai_api_key",),
+        "fallback_order": {"main_search": 0},
         "strengths": ["broad synthesis", "web_search", "x_search"],
         "exclusions": ["evidence proof without fetch"],
         "fallback_group": "main_search",
@@ -193,6 +186,8 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
     },
     "openai-compatible": {
         "capability": "main_search",
+        "config_attrs": ("openai_compatible_api_url", "openai_compatible_api_key"),
+        "fallback_order": {"main_search": 1},
         "strengths": ["broad synthesis", "relay compatibility"],
         "exclusions": ["xAI server tools"],
         "fallback_group": "main_search",
@@ -202,6 +197,8 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
     },
     "context7": {
         "capability": "docs_search",
+        "config_attrs": ("context7_api_key",),
+        "fallback_order": {"docs_search": 0},
         "strengths": ["library docs", "API docs", "framework docs", "versioned snippets"],
         "exclusions": ["general news", "generic web facts"],
         "fallback_group": "docs_search",
@@ -211,6 +208,8 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
     },
     "exa": {
         "capability": "docs_search",
+        "config_attrs": ("exa_api_key",),
+        "fallback_order": {"docs_search": 1},
         "strengths": ["official domains", "papers", "product pages", "trusted low-noise discovery", "similar pages"],
         "exclusions": ["default second hop for every high-risk claim"],
         "fallback_group": "docs_search",
@@ -220,6 +219,8 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
     },
     "zhipu": {
         "capability": "web_search",
+        "config_attrs": ("zhipu_api_key",),
+        "fallback_order": {"web_search": 0},
         "strengths": ["Chinese", "domestic China", "current", "policy", "announcements", "recency filters"],
         "exclusions": ["web_fetch", "chat model selection"],
         "fallback_group": "web_search",
@@ -229,6 +230,8 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
     },
     "zhipu-mcp": {
         "capability": "web_search",
+        "config_attrs": ("zhipu_mcp_api_key",),
+        "fallback_order": {"web_search": 1},
         "strengths": ["Coding Plan quota", "remote MCP web_search_prime"],
         "exclusions": ["Zhipu REST Web Search API"],
         "fallback_group": "web_search",
@@ -239,6 +242,10 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
     "tavily": {
         "capability": "web_search",
         "capabilities": ["web_search", "web_fetch", "site_map"],
+        "config_attrs": ("tavily_api_key",),
+        "enabled_attr": "tavily_enabled",
+        "enabled_key": "TAVILY_ENABLED",
+        "fallback_order": {"web_search": 2, "web_fetch": 0, "site_map": 0},
         "strengths": ["broad source discovery", "site map", "URL extract"],
         "exclusions": ["docs semantic replacement"],
         "fallback_group": "web_search/web_fetch/site_map",
@@ -248,6 +255,8 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
     },
     "jina": {
         "capability": "web_fetch",
+        "config_attrs": ("jina_api_key",),
+        "fallback_order": {"web_fetch": 1},
         "strengths": ["known public URL", "PDF", "arXiv", "clean markdown", "ReaderLM-v2 with key"],
         "exclusions": ["general search provider", "anonymous standard minimum profile"],
         "fallback_group": "web_fetch",
@@ -257,6 +266,8 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
     },
     "zhipu-mcp-reader": {
         "capability": "web_fetch",
+        "config_attrs": ("zhipu_mcp_api_key",),
+        "fallback_order": {"web_fetch": 2},
         "strengths": ["Coding Plan quota", "remote MCP webReader"],
         "exclusions": ["Zhipu REST Web Search API"],
         "fallback_group": "web_fetch",
@@ -267,6 +278,8 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
     "firecrawl": {
         "capability": "web_fetch",
         "capabilities": ["web_search", "web_fetch"],
+        "config_attrs": ("firecrawl_api_key",),
+        "fallback_order": {"web_search": 3, "web_fetch": 3},
         "strengths": ["robust scrape fallback", "JS-heavy pages", "dynamic pages", "OCR/PDF/structured extraction"],
         "exclusions": ["docs semantic replacement"],
         "fallback_group": "web_search/web_fetch",
@@ -276,6 +289,8 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
     },
     "anysearch": {
         "capability": "vertical_search",
+        "config_attrs": ("anysearch_api_key",),
+        "fallback_order": {"vertical_search": 0},
         "strengths": ["CVE", "finance", "legal", "academic", "code/docs", "structured vertical domains"],
         "exclusions": ["generic default fallback", "standard minimum profile"],
         "fallback_group": "vertical_search",
@@ -286,6 +301,8 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
     },
     "main-search": {
         "capability": "synthesis",
+        "config_attrs": (),
+        "fallback_order": {"synthesis": 0},
         "strengths": ["evidence-only final synthesis"],
         "exclusions": ["live source discovery during research synthesis"],
         "fallback_group": "synthesis",
@@ -294,7 +311,54 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
         "route_reasons": ["evidence-only synthesis"],
     },
 }
-MAIN_SEARCH_FALLBACK_CHAIN = ["xai-responses", "openai-compatible"]
+
+
+"""
+================================================================================
+步骤1：构建 provider 注册表
+================================================================================
+目标：让能力归属、配置来源和同能力 fallback 顺序只从 PROVIDER_PROFILES 读取。
+数据源：各 provider 的 capability、config_attrs 和 fallback_order 元数据。
+操作：
+1) 按 provider profile 生成每条 capability 的稳定 fallback 链。
+2) 保留旧的 PROVIDER_PROFILES 名称，同时提供 registry 别名供诊断和路由使用。
+"""
+PROVIDER_REGISTRY = PROVIDER_PROFILES
+
+
+def _provider_capabilities(provider: str) -> tuple[str, ...]:
+    profile = PROVIDER_REGISTRY.get(provider, {})
+    capabilities = profile.get("capabilities") or [profile.get("capability", "")]
+    return tuple(capability for capability in capabilities if capability)
+
+
+def _provider_chain(capability: str) -> list[str]:
+    return [
+        provider
+        for provider, _profile in sorted(
+            (
+                (provider, profile)
+                for provider, profile in PROVIDER_REGISTRY.items()
+                if capability in _provider_capabilities(provider)
+            ),
+            key=lambda item: item[1].get("fallback_order", {}).get(capability, 999),
+        )
+    ]
+
+
+RESEARCH_PROFILE_ORDER = {
+    capability: _provider_chain(capability)
+    for capability in (
+        "main_search",
+        "web_search",
+        "docs_search",
+        "web_fetch",
+        "vertical_search",
+        "site_map",
+        "synthesis",
+    )
+}
+MAIN_SEARCH_FALLBACK_CHAIN = _provider_chain("main_search")
 MAIN_SEARCH_PROVIDER_ALIASES = {
     "xai-responses": {"xai-responses", "xai", "grok", "grok-web-tools"},
     "openai-compatible": {"openai-compatible", "openai", "chat-completions", "primary"},
@@ -756,37 +820,124 @@ def intent_router_status() -> dict[str, Any]:
 
 
 def _provider_supports_capability(provider: str, capability: str) -> bool:
-    profile = PROVIDER_PROFILES.get(provider, {})
-    capabilities = set(profile.get("capabilities") or [profile.get("capability", "")])
-    return capability in capabilities
+    return capability in _provider_capabilities(provider)
+
+
+def _provider_availability(provider: str, capability: str = "") -> dict[str, Any]:
+    """
+    =================================================================================
+    步骤2：计算 provider 可用性
+    =================================================================================
+    目标：统一区分 configured、enabled 和 eligible，避免关闭的 provider 进入调用链。
+    数据源：PROVIDER_REGISTRY 中的 config_attrs、enabled_attr 和 capability 元数据。
+    操作：
+    1) 检查 provider 所需配置是否完整。
+    2) 检查显式 enabled gate，并生成不含 secret 的诊断原因。
+    3) 只有配置完整且已启用的 provider 才标记为 eligible。
+    """
+    logger.info("开始计算 provider 可用性: provider=%s capability=%s", provider, capability or "*")
+    profile = PROVIDER_REGISTRY.get(provider)
+    if not profile:
+        result = {
+            "provider": provider,
+            "capabilities": [],
+            "configured": False,
+            "enabled": False,
+            "eligible": False,
+            "reason": "unknown_provider",
+        }
+        logger.info("provider 可用性计算完成: provider=%s reason=%s", provider, result["reason"])
+        return result
+
+    capabilities = _provider_capabilities(provider)
+    if capability and capability not in capabilities:
+        result = {
+            "provider": provider,
+            "capabilities": list(capabilities),
+            "configured": False,
+            "enabled": False,
+            "eligible": False,
+            "reason": f"unsupported_capability:{capability}",
+        }
+        logger.info("provider 可用性计算完成: provider=%s reason=%s", provider, result["reason"])
+        return result
+
+    config_attrs = tuple(profile.get("config_attrs") or ())
+    config_keys = [attribute.upper() for attribute in config_attrs]
+    missing_keys: list[str] = []
+    configured = True
+    for attribute, key in zip(config_attrs, config_keys):
+        try:
+            value = getattr(config, attribute, None)
+        except (TypeError, ValueError):
+            value = None
+        if not value:
+            configured = False
+            missing_keys.append(key)
+
+    enabled_attr = str(profile.get("enabled_attr") or "")
+    enabled_key = str(profile.get("enabled_key") or (enabled_attr.upper() if enabled_attr else ""))
+    if enabled_key and enabled_key not in config_keys:
+        config_keys.append(enabled_key)
+    enabled = True
+    if enabled_attr:
+        try:
+            enabled = bool(getattr(config, enabled_attr, False))
+        except (TypeError, ValueError):
+            enabled = False
+
+    if not configured:
+        reason = f"missing_config:{','.join(missing_keys)}"
+    elif not enabled:
+        reason = f"disabled:{enabled_key}=false"
+    else:
+        reason = "ready"
+    eligible = configured and enabled
+    result = {
+        "provider": provider,
+        "capabilities": list(capabilities),
+        "config_keys": config_keys,
+        "configured": configured,
+        "enabled": enabled,
+        "eligible": eligible,
+        "reason": reason,
+    }
+    logger.info(
+        "provider 可用性计算完成: provider=%s configured=%s enabled=%s eligible=%s reason=%s",
+        provider,
+        configured,
+        enabled,
+        eligible,
+        reason,
+    )
+    return result
 
 
 def _provider_configured(provider: str) -> bool:
-    if provider == "xai-responses":
-        return bool(config.xai_api_key)
-    if provider == "openai-compatible":
-        return bool(config.openai_compatible_api_url and config.openai_compatible_api_key)
-    if provider == "context7":
-        return bool(config.context7_api_key)
-    if provider == "exa":
-        return bool(config.exa_api_key)
-    if provider == "zhipu":
-        return bool(config.zhipu_api_key)
-    if provider == "zhipu-mcp":
-        return bool(config.zhipu_mcp_api_key)
-    if provider == "tavily":
-        return bool(config.tavily_api_key)
-    if provider == "jina":
-        return bool(config.jina_api_key)
-    if provider == "zhipu-mcp-reader":
-        return bool(config.zhipu_mcp_api_key)
-    if provider == "firecrawl":
-        return bool(config.firecrawl_api_key)
-    if provider == "anysearch":
-        return bool(config.anysearch_api_key)
-    if provider == "main-search":
-        return bool(config.xai_api_key or (config.openai_compatible_api_url and config.openai_compatible_api_key))
-    return False
+    return bool(_provider_availability(provider).get("eligible"))
+
+
+def _provider_status_for_capability(capability: str) -> list[dict[str, Any]]:
+    return [_provider_availability(provider, capability) for provider in _provider_chain(capability)]
+
+
+def _skipped_provider_attempt(capability: str, status: dict[str, Any]) -> dict[str, Any]:
+    reason = str(status.get("reason") or "provider_not_eligible")
+    return _attempt(
+        capability,
+        str(status.get("provider") or ""),
+        "skipped",
+        time.time(),
+        error_type="config_error",
+        error=reason,
+        retryable=False,
+        extra={
+            "configured": bool(status.get("configured")),
+            "enabled": bool(status.get("enabled")),
+            "eligible": bool(status.get("eligible")),
+            "reason": reason,
+        },
+    )
 
 
 def _configured_for_capability(capability: str, capability_status: dict[str, Any] | None = None) -> list[str]:
@@ -1713,64 +1864,41 @@ async def research(
 
 
 def get_capability_status() -> dict[str, Any]:
-    main_configured = _configured_main_search_provider_ids()
-    status = {
-        "main_search": {
-            "configured": main_configured,
-            "fallback_chain": MAIN_SEARCH_FALLBACK_CHAIN,
-            "ok": bool(main_configured),
-        },
-        "web_search": {
-            "configured": [
-                name
-                for name, enabled in [
-                    ("zhipu", bool(config.zhipu_api_key)),
-                    ("zhipu-mcp", bool(config.zhipu_mcp_api_key)),
-                    ("tavily", bool(config.tavily_api_key)),
-                    ("firecrawl", bool(config.firecrawl_api_key)),
-                ]
-                if enabled
-            ],
-            "fallback_chain": ["zhipu", "zhipu-mcp", "tavily", "firecrawl"],
-        },
-        "docs_search": {
-            "configured": [
-                name
-                for name, enabled in [
-                    ("context7", bool(config.context7_api_key)),
-                    ("exa", bool(config.exa_api_key)),
-                ]
-                if enabled
-            ],
-            "fallback_chain": ["context7", "exa"],
-        },
-        "web_fetch": {
-            "configured": [
-                name
-                for name, enabled in [
-                    ("tavily", bool(config.tavily_api_key)),
-                    ("jina", bool(config.jina_api_key)),
-                    ("zhipu-mcp-reader", bool(config.zhipu_mcp_api_key)),
-                    ("firecrawl", bool(config.firecrawl_api_key)),
-                ]
-                if enabled
-            ],
-            "fallback_chain": ["tavily", "jina", "zhipu-mcp-reader", "firecrawl"],
-        },
-        "site_map": {
-            "configured": ["tavily"] if config.tavily_api_key else [],
-            "fallback_chain": ["tavily"],
-        },
-        "vertical_search": {
-            "configured": ["anysearch"] if config.anysearch_api_key else [],
-            "fallback_chain": ["anysearch"],
-            "experimental": True,
-        },
-    }
+    """
+    =================================================================================
+    步骤3：生成 capability 状态
+    =================================================================================
+    目标：让 doctor、capabilities、minimum profile 和 fallback 共享同一份 provider 状态。
+    数据源：PROVIDER_REGISTRY 的能力链和 _provider_availability 结果。
+    操作：
+    1) 生成 configured、disabled 和 provider_status，保留旧 configured/fallback_chain 字段。
+    2) 只把 eligible provider 放入能力调用链，禁用 provider 保留诊断原因。
+    3) 用同一状态计算 deep_research 和 minimum profile 的可用性。
+    """
+    logger.info("开始生成 capability 状态")
+    status: dict[str, Any] = {}
+    for capability in ("main_search", "web_search", "docs_search", "web_fetch", "site_map", "vertical_search"):
+        provider_status = _provider_status_for_capability(capability)
+        configured = [item["provider"] for item in provider_status if item.get("eligible")]
+        disabled = [
+            item["provider"]
+            for item in provider_status
+            if item.get("configured") and not item.get("eligible")
+        ]
+        status[capability] = {
+            "configured": configured,
+            "fallback_chain": _provider_chain(capability),
+            "provider_status": provider_status,
+            "disabled": disabled,
+            "ok": bool(configured),
+        }
+    status["vertical_search"]["experimental"] = True
+
+    main_configured = status["main_search"]["configured"]
     deep_research_providers = (
         main_configured
         if main_configured
-        and (config.tavily_api_key or config.jina_api_key or config.zhipu_mcp_api_key or config.firecrawl_api_key)
+        and status["web_fetch"]["configured"]
         and (status["web_search"]["configured"] or status["docs_search"]["configured"])
         else []
     )
@@ -1779,8 +1907,7 @@ def get_capability_status() -> dict[str, Any]:
         "fallback_chain": deep_research_providers,
         "ok": bool(deep_research_providers),
     }
-    for capability in ("web_search", "docs_search", "web_fetch", "site_map", "vertical_search"):
-        status[capability]["ok"] = bool(status[capability]["configured"])
+    logger.info("capability 状态生成完成: main=%s disabled=%s", main_configured, sum(len(item.get("disabled", [])) for item in status.values()))
     return status
 
 
@@ -1874,6 +2001,8 @@ def capabilities() -> dict[str, Any]:
             "configured": bool(configured),
             "providers": configured,
             "fallback_providers": list(item.get("fallback_chain") or []),
+            "provider_status": list(item.get("provider_status") or []),
+            "disabled_providers": list(item.get("disabled") or []),
             "experimental": bool(item.get("experimental", False)),
         }
     return {
@@ -1909,14 +2038,7 @@ def _provider_allowed(provider_id: str, provider_filter: set[str] | None) -> boo
 
 
 def _configured_main_search_provider_ids() -> list[str]:
-    configured: set[str] = set()
-
-    if config.xai_api_key:
-        configured.add("xai-responses")
-    if config.openai_compatible_api_url and config.openai_compatible_api_key:
-        configured.add("openai-compatible")
-
-    return [provider for provider in MAIN_SEARCH_FALLBACK_CHAIN if provider in configured]
+    return [provider for provider in _provider_chain("main_search") if _provider_configured(provider)]
 
 
 def _main_search_provider_configs(model_override: str = "", providers: str = "auto") -> list[dict[str, Any]]:
@@ -2061,15 +2183,13 @@ async def _run_web_fetch_fallback(
     preferred_order: list[str] | None = None,
 ) -> tuple[dict[str, Any] | None, list[dict]]:
     attempts: list[dict] = []
-    providers = []
-    if config.tavily_api_key:
-        providers.append("tavily")
-    if config.jina_api_key:
-        providers.append("jina")
-    if config.zhipu_mcp_api_key:
-        providers.append("zhipu-mcp-reader")
-    if config.firecrawl_api_key:
-        providers.append("firecrawl")
+    provider_status = _provider_status_for_capability("web_fetch")
+    attempts.extend(
+        _skipped_provider_attempt("web_fetch", item)
+        for item in provider_status
+        if item.get("configured") and not item.get("eligible")
+    )
+    providers = [item["provider"] for item in provider_status if item.get("eligible")]
     if preferred_order:
         allowed = {provider for provider in providers}
         ordered = [provider for provider in preferred_order if provider in allowed]
@@ -2163,15 +2283,13 @@ async def _run_web_search_fallback(
 ) -> tuple[list[dict], list[dict]]:
     provider_filter = _parse_provider_filter(providers)
     attempts: list[dict] = []
-    configured: list[str] = []
-    if config.zhipu_api_key:
-        configured.append("zhipu")
-    if config.zhipu_mcp_api_key:
-        configured.append("zhipu-mcp")
-    if config.tavily_api_key:
-        configured.append("tavily")
-    if config.firecrawl_api_key:
-        configured.append("firecrawl")
+    provider_status = _provider_status_for_capability("web_search")
+    attempts.extend(
+        _skipped_provider_attempt("web_search", item)
+        for item in provider_status
+        if item.get("configured") and not item.get("eligible")
+    )
+    configured = [item["provider"] for item in provider_status if item.get("eligible")]
     if provider_filter is not None:
         configured = [p for p in configured if p in provider_filter]
     if fallback == "off":
@@ -2354,9 +2472,10 @@ async def _run_vertical_search_fallback(
 
 
 async def call_tavily_extract(url: str) -> str | None:
-    api_key = config.tavily_api_key
-    if not api_key:
+    availability = _provider_availability("tavily", "web_fetch")
+    if not availability.get("eligible"):
         return None
+    api_key = config.tavily_api_key
     endpoint = f"{config.tavily_api_url.rstrip('/')}/extract"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     body = {"urls": [url], "format": "markdown"}
@@ -2468,9 +2587,10 @@ async def _search_without_synthesis(
 
 
 async def call_tavily_search(query: str, max_results: int = 6) -> list[dict] | None:
-    api_key = config.tavily_api_key
-    if not api_key:
+    availability = _provider_availability("tavily", "web_search")
+    if not availability.get("eligible"):
         return None
+    api_key = config.tavily_api_key
     endpoint = f"{config.tavily_api_url.rstrip('/')}/search"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     body = {
@@ -2572,13 +2692,18 @@ async def call_tavily_map(
     limit: int = 50,
     timeout: int = 150,
 ) -> dict[str, Any]:
-    api_key = config.tavily_api_key
-    if not api_key:
+    availability = _provider_availability("tavily", "site_map")
+    if not availability.get("eligible"):
+        reason = str(availability.get("reason") or "provider_not_eligible")
         return {
             "ok": False,
             "error_type": "config_error",
-            "error": "TAVILY_API_KEY 未配置。请运行 `smart-search setup`，或使用 `smart-search config set TAVILY_API_KEY <key>`。",
+            "error": (
+                "Tavily provider unavailable: "
+                f"{reason}. 请运行 `smart-search setup`，或使用 `smart-search config set TAVILY_API_KEY <key>`。"
+            ),
         }
+    api_key = config.tavily_api_key
 
     endpoint = f"{config.tavily_api_url.rstrip('/')}/map"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -2698,8 +2823,8 @@ async def search(
             if provider_config["provider"] == "openai-compatible":
                 provider_config["stream"] = stream
 
-    has_tavily = bool(config.tavily_api_key)
-    has_firecrawl = bool(config.firecrawl_api_key)
+    has_tavily = _provider_configured("tavily")
+    has_firecrawl = _provider_configured("firecrawl")
     tavily_count = 0
     firecrawl_count = 0
     if extra_sources > 0:
@@ -3637,8 +3762,18 @@ async def fetch(url: str) -> dict[str, Any]:
             "elapsed_ms": _elapsed_ms(start),
         }
 
-    if not (config.tavily_api_key or config.jina_api_key or config.zhipu_mcp_api_key or config.firecrawl_api_key):
-        error = "TAVILY_API_KEY、JINA_API_KEY、ZHIPU_MCP_API_KEY 和 FIRECRAWL_API_KEY 均未配置"
+    fetch_capability = get_capability_status()["web_fetch"]
+    if not fetch_capability.get("configured"):
+        disabled_reasons = [
+            str(item.get("reason"))
+            for item in fetch_capability.get("provider_status", [])
+            if item.get("configured") and not item.get("eligible")
+        ]
+        error = (
+            "web_fetch provider unavailable: " + ", ".join(disabled_reasons)
+            if disabled_reasons
+            else "TAVILY_API_KEY、JINA_API_KEY、ZHIPU_MCP_API_KEY 和 FIRECRAWL_API_KEY 均未配置"
+        )
         error_type = "config_error"
     else:
         error = "所有提取服务均未能获取内容"
@@ -4348,9 +4483,12 @@ async def _test_exa_connection() -> dict[str, Any]:
 
 
 async def _test_tavily_connection() -> dict[str, Any]:
-    tavily_key = config.tavily_api_key
-    if not tavily_key:
+    availability = _provider_availability("tavily")
+    if not availability.get("configured"):
         return {"status": "not_configured", "message": "TAVILY_API_KEY 未设置，Tavily 功能不可用"}
+    if not availability.get("enabled"):
+        return {"status": "disabled", "message": str(availability.get("reason") or "TAVILY_ENABLED=false")}
+    tavily_key = config.tavily_api_key
     start = time.time()
     timeout = httpx.Timeout(connect=6.0, read=config.tavily_timeout, write=10.0, pool=None)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=config.ssl_verify_enabled) as client:
@@ -4969,7 +5107,7 @@ async def _smoke_live(start: float) -> dict[str, Any]:
     else:
         cases.append(_case("context7 library", True, {"skipped": "CONTEXT7_API_KEY not configured"}))
 
-    if config.tavily_api_key or config.firecrawl_api_key:
+    if _provider_configured("tavily") or _provider_configured("firecrawl"):
         fetch_result = await fetch("https://example.com")
         cases.append(_case("web fetch fallback chain", bool(fetch_result.get("ok")), {"provider": fetch_result.get("provider", ""), "provider_attempts": fetch_result.get("provider_attempts", [])}))
     else:

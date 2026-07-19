@@ -51,6 +51,7 @@ def _reset_config(monkeypatch, tmp_path):
         "JINA_TIMEOUT_SECONDS",
         "TAVILY_API_KEY",
         "TAVILY_API_URL",
+        "TAVILY_ENABLED",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
     ]:
@@ -519,6 +520,75 @@ def test_research_provider_profiles_are_registered_with_capability_boundaries():
     assert "challenge page rejection" in profiles["jina"]["quality_filters"]
     assert "known URL extraction" in profiles["jina"]["route_reasons"]
     assert profiles["anysearch"]["experimental"] is True
+
+
+@pytest.mark.parametrize(("enabled", "expected_eligible"), [("false", False), ("true", True)])
+def test_tavily_registry_status_respects_enabled_gate(monkeypatch, enabled, expected_eligible):
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-test-secret")
+    monkeypatch.setenv("TAVILY_ENABLED", enabled)
+
+    status = service.get_capability_status()
+
+    for capability in ("web_search", "web_fetch", "site_map"):
+        tavily = next(item for item in status[capability]["provider_status"] if item["provider"] == "tavily")
+        assert tavily["configured"] is True
+        assert tavily["config_keys"] == ["TAVILY_API_KEY", "TAVILY_ENABLED"]
+        assert tavily["enabled"] is expected_eligible
+        assert tavily["eligible"] is expected_eligible
+        assert ("tavily" in status[capability]["configured"]) is expected_eligible
+        assert ("tavily" in status[capability]["disabled"]) is not expected_eligible
+
+    if expected_eligible:
+        assert status["web_fetch"]["configured"][0] == "tavily"
+    else:
+        assert status["web_fetch"]["provider_status"][0]["reason"] == "disabled:TAVILY_ENABLED=false"
+
+
+@pytest.mark.asyncio
+async def test_disabled_tavily_is_skipped_without_network(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-test-secret")
+    monkeypatch.setenv("TAVILY_ENABLED", "false")
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "firecrawl-test-secret")
+
+    async def should_not_run_tavily(*args, **kwargs):
+        raise AssertionError("disabled Tavily must not receive a request")
+
+    async def fake_firecrawl_search(query, limit=14):
+        return [{"url": "https://fallback.example.com", "title": "Fallback"}]
+
+    async def fake_firecrawl_scrape(url, ctx=None):
+        return "# Fallback page"
+
+    monkeypatch.setattr(service, "call_tavily_search", should_not_run_tavily)
+    monkeypatch.setattr(service, "call_tavily_extract", should_not_run_tavily)
+    monkeypatch.setattr(service, "call_firecrawl_search", fake_firecrawl_search)
+    monkeypatch.setattr(service, "call_firecrawl_scrape", fake_firecrawl_scrape)
+
+    sources, search_attempts = await service._run_web_search_fallback("query")
+    fetched, fetch_attempts = await service._run_web_fetch_fallback("https://example.com")
+
+    assert sources[0]["provider"] == "firecrawl"
+    assert fetched["provider"] == "firecrawl"
+    assert search_attempts[0]["provider"] == "tavily"
+    assert search_attempts[0]["status"] == "skipped"
+    assert search_attempts[0]["reason"] == "disabled:TAVILY_ENABLED=false"
+    assert fetch_attempts[0]["provider"] == "tavily"
+    assert fetch_attempts[0]["status"] == "skipped"
+    assert fetch_attempts[0]["reason"] == "disabled:TAVILY_ENABLED=false"
+
+
+@pytest.mark.asyncio
+async def test_disabled_tavily_map_and_doctor_fail_before_network(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-test-secret")
+    monkeypatch.setenv("TAVILY_ENABLED", "false")
+
+    result = await service.map_site("https://example.com")
+    doctor_result = await service._test_tavily_connection()
+
+    assert result["ok"] is False
+    assert result["error_type"] == "config_error"
+    assert "disabled:TAVILY_ENABLED=false" in result["error"]
+    assert doctor_result == {"status": "disabled", "message": "disabled:TAVILY_ENABLED=false"}
 
 
 def test_research_router_prefers_context7_for_docs_and_keeps_anysearch_out(monkeypatch):
