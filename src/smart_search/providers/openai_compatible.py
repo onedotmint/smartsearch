@@ -18,7 +18,14 @@ from .base import (
 from ..utils import get_prompt
 from ..logger import log_info
 from ..config import config
-from ..runtime_cache import add_retry
+from ..runtime_cache import (
+    RequestBudgetExceeded,
+    add_retry,
+    bounded_retry_delay,
+    current_context,
+    request_client,
+    request_timeout_kwargs,
+)
 
 _logger = logging.getLogger(__name__)
 _ssl_warning_emitted = False
@@ -84,9 +91,10 @@ def reset_openai_compatible_breakers() -> None:
 
 class _WaitWithRetryAfter(wait_base):
 
-    def __init__(self, multiplier: float, max_wait: int):
+    def __init__(self, multiplier: float, max_wait: int, ctx=None):
         self._base_wait = wait_random_exponential(multiplier=multiplier, max=max_wait)
         self._protocol_error_base = 3.0
+        self._ctx = ctx
 
     def __call__(self, retry_state):
         if retry_state.outcome and retry_state.outcome.failed:
@@ -94,10 +102,10 @@ class _WaitWithRetryAfter(wait_base):
             if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
                 retry_after = self._parse_retry_after(exc.response)
                 if retry_after is not None:
-                    return retry_after
+                    return bounded_retry_delay(retry_after, self._ctx)
             if isinstance(exc, httpx.RemoteProtocolError):
-                return self._base_wait(retry_state) + self._protocol_error_base
-        return self._base_wait(retry_state)
+                return bounded_retry_delay(self._base_wait(retry_state) + self._protocol_error_base, self._ctx)
+        return bounded_retry_delay(self._base_wait(retry_state), self._ctx)
 
     def _parse_retry_after(self, response: httpx.Response) -> Optional[float]:
         header = response.headers.get("Retry-After")
@@ -148,6 +156,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
         return verify
 
     async def search(self, query: str, platform: str = "", ctx=None) -> ProviderResult:
+        ctx = ctx or current_context()
         start = time.time()
         headers = self._build_api_headers()
         platform_prompt = ""
@@ -202,6 +211,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
             )
 
     async def fetch(self, url: str, ctx=None) -> ProviderResult:
+        ctx = ctx or current_context()
         start = time.time()
         headers = self._build_api_headers()
         payload = {
@@ -445,21 +455,24 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
     async def _execute_stream_with_retry(self, headers: dict, payload: dict, ctx=None) -> str:
         timeout = httpx.Timeout(connect=6.0, read=120.0, write=10.0, pool=None)
 
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=self._get_ssl_verify()) as client:
+        ctx = ctx or current_context()
+        async with request_client(ctx, timeout=timeout, follow_redirects=True, verify=self._get_ssl_verify()) as client:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(config.retry_max_attempts + 1),
-                wait=_WaitWithRetryAfter(config.retry_multiplier, config.retry_max_wait),
+                wait=_WaitWithRetryAfter(config.retry_multiplier, config.retry_max_wait, ctx),
                 retry=retry_if_exception(_is_retryable_exception),
                 reraise=True,
             ):
                 if attempt.retry_state.attempt_number > 1:
-                    add_retry()
+                    if not add_retry():
+                        raise RequestBudgetExceeded()
                 with attempt:
                     async with client.stream(
                         "POST",
                         f"{self.api_url}/chat/completions",
                         headers=headers,
                         json=payload,
+                        **request_timeout_kwargs(120.0, ctx),
                     ) as response:
                         response.raise_for_status()
                         return await self._parse_streaming_response(response, ctx)
@@ -573,20 +586,23 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
         """执行带重试机制的非流式 HTTP 请求，兼容上游返回 JSON 或 SSE 文本"""
         timeout = httpx.Timeout(connect=6.0, read=120.0, write=10.0, pool=None)
 
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=self._get_ssl_verify()) as client:
+        ctx = ctx or current_context()
+        async with request_client(ctx, timeout=timeout, follow_redirects=True, verify=self._get_ssl_verify()) as client:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(config.retry_max_attempts + 1),
-                wait=_WaitWithRetryAfter(config.retry_multiplier, config.retry_max_wait),
+                wait=_WaitWithRetryAfter(config.retry_multiplier, config.retry_max_wait, ctx),
                 retry=retry_if_exception(_is_retryable_exception),
                 reraise=True,
             ):
                 if attempt.retry_state.attempt_number > 1:
-                    add_retry()
+                    if not add_retry():
+                        raise RequestBudgetExceeded()
                 with attempt:
                     response = await client.post(
                         f"{self.api_url}/chat/completions",
                         headers=headers,
                         json=payload,
+                        **request_timeout_kwargs(120.0, ctx),
                     )
                     response.raise_for_status()
                     return await self._parse_completion_response(response, ctx)

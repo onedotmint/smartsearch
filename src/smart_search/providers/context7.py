@@ -9,7 +9,14 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 from .base import BaseSearchProvider, ProviderError, ProviderResult, classify_provider_exception
 from ..config import config
 from ..logger import log_info
-from ..runtime_cache import add_retry
+from ..runtime_cache import (
+    RequestBudgetExceeded,
+    add_retry,
+    bounded_retry_delay,
+    current_context,
+    request_client,
+    request_timeout_kwargs,
+)
 
 
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
@@ -47,8 +54,9 @@ class Context7Provider(BaseSearchProvider):
     def get_provider_name(self) -> str:
         return "Context7"
 
-    async def search(self, query: str, max_results: int = 5) -> ProviderResult:
-        return await self.library(query)
+    async def search(self, query: str, max_results: int = 5, ctx=None) -> ProviderResult:
+        del max_results
+        return await self.library(query, ctx=ctx)
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -60,12 +68,13 @@ class Context7Provider(BaseSearchProvider):
         return headers
 
     async def library(self, name: str, query: str = "", ctx=None) -> ProviderResult:
+        ctx = ctx or current_context()
         request_query = f"{name} {query}".strip()
         endpoint = f"{self.api_url}/api/v2/search?query={quote(request_query)}"
         await log_info(ctx, f"Context7 library: {request_query}", config.debug_enabled)
         start_time = time.time()
         try:
-            data = await self._get_with_retry(endpoint)
+            data = await self._get_with_retry(endpoint, ctx)
             elapsed_ms = round((time.time() - start_time) * 1000, 2)
             raw_results = data if isinstance(data, list) else data.get("results", [])
             results = [_normalize_library(item) for item in raw_results or []]
@@ -92,11 +101,12 @@ class Context7Provider(BaseSearchProvider):
         return self.result(output)
 
     async def docs(self, library_id: str, query: str, ctx=None) -> ProviderResult:
+        ctx = ctx or current_context()
         endpoint = f"{self.api_url}/api/v2/context?libraryId={quote(library_id, safe='')}&query={quote(query)}"
         await log_info(ctx, f"Context7 docs: {library_id} {query}", config.debug_enabled)
         start_time = time.time()
         try:
-            data = await self._get_with_retry(endpoint)
+            data = await self._get_with_retry(endpoint, ctx)
             elapsed_ms = round((time.time() - start_time) * 1000, 2)
             snippets = data.get("codeSnippets", []) if isinstance(data, dict) else []
             info = data.get("infoSnippets", []) if isinstance(data, dict) else []
@@ -128,19 +138,26 @@ class Context7Provider(BaseSearchProvider):
             }
         return self.result(output)
 
-    async def _get_with_retry(self, endpoint: str) -> Any:
+    async def _get_with_retry(self, endpoint: str, ctx=None) -> Any:
         timeout = httpx.Timeout(connect=6.0, read=self.timeout, write=10.0, pool=None)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        ctx = ctx or current_context()
+        base_wait = wait_random_exponential(multiplier=config.retry_multiplier, max=config.retry_max_wait)
+        async with request_client(ctx, timeout=timeout, follow_redirects=True) as client:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(config.retry_max_attempts + 1),
-                wait=wait_random_exponential(multiplier=config.retry_multiplier, max=config.retry_max_wait),
+                wait=lambda retry_state: bounded_retry_delay(base_wait(retry_state), ctx),
                 retry=retry_if_exception(_is_retryable_exception),
                 reraise=True,
             ):
                 if attempt.retry_state.attempt_number > 1:
-                    add_retry()
+                    if not add_retry():
+                        raise RequestBudgetExceeded()
                 with attempt:
-                    response = await client.get(endpoint, headers=self._headers())
+                    response = await client.get(
+                        endpoint,
+                        headers=self._headers(),
+                        **request_timeout_kwargs(self.timeout, ctx),
+                    )
                     response.raise_for_status()
                     content_type = response.headers.get("content-type", "")
                     if "application/json" in content_type:

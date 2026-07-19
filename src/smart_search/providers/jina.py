@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 
 from .base import ProviderResult, classify_provider_exception
+from ..runtime_cache import current_context, request_client, request_timeout_kwargs
 
 
 CHALLENGE_MARKERS = (
@@ -54,7 +55,8 @@ class JinaReaderProvider:
         self.respond_with = respond_with.strip()
         self.timeout = timeout
 
-    async def fetch(self, url: str) -> ProviderResult:
+    async def fetch(self, url: str, ctx=None) -> ProviderResult:
+        ctx = ctx or current_context()
         start = time.time()
         if self.respond_with and not self.api_key:
             return ProviderResult.from_error(
@@ -75,8 +77,12 @@ class JinaReaderProvider:
         endpoint = f"{self.reader_api_url}/{url}"
         try:
             timeout = httpx.Timeout(connect=6.0, read=self.timeout, write=10.0, pool=None)
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                response = await client.get(endpoint, headers=headers)
+            async with request_client(ctx, timeout=timeout, follow_redirects=True) as client:
+                response = await client.get(
+                    endpoint,
+                    headers=headers,
+                    **request_timeout_kwargs(self.timeout, ctx),
+                )
                 response.raise_for_status()
             content = response.text.strip()
             quality_error = _quality_error(content)

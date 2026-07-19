@@ -10,7 +10,13 @@ from .base import BaseSearchProvider, ProviderResult, classify_provider_exceptio
 from .openai_compatible import _WaitWithRetryAfter, _is_retryable_exception, get_local_time_info
 from ..config import config
 from ..logger import log_info
-from ..runtime_cache import add_retry
+from ..runtime_cache import (
+    RequestBudgetExceeded,
+    add_retry,
+    current_context,
+    request_client,
+    request_timeout_kwargs,
+)
 from ..utils import get_prompt
 
 
@@ -61,6 +67,7 @@ class XAIResponsesSearchProvider(BaseSearchProvider):
         return payload
 
     async def search(self, query: str, platform: str = "", ctx=None) -> ProviderResult:
+        ctx = ctx or current_context()
         start = time.time()
         payload = self._build_search_payload(query, platform)
         await log_info(ctx, f"platform_prompt: {query}", config.debug_enabled)
@@ -83,20 +90,23 @@ class XAIResponsesSearchProvider(BaseSearchProvider):
 
     async def _execute_response_with_retry(self, headers: dict, payload: dict, ctx=None) -> str:
         timeout = httpx.Timeout(connect=6.0, read=120.0, write=10.0, pool=None)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=self._get_ssl_verify()) as client:
+        ctx = ctx or current_context()
+        async with request_client(ctx, timeout=timeout, follow_redirects=True, verify=self._get_ssl_verify()) as client:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(config.retry_max_attempts + 1),
-                wait=_WaitWithRetryAfter(config.retry_multiplier, config.retry_max_wait),
+                wait=_WaitWithRetryAfter(config.retry_multiplier, config.retry_max_wait, ctx),
                 retry=retry_if_exception(_is_retryable_exception),
                 reraise=True,
             ):
                 if attempt.retry_state.attempt_number > 1:
-                    add_retry()
+                    if not add_retry():
+                        raise RequestBudgetExceeded()
                 with attempt:
                     response = await client.post(
                         f"{self.api_url}/responses",
                         headers=headers,
                         json=payload,
+                        **request_timeout_kwargs(120.0, ctx),
                     )
                     response.raise_for_status()
                     return await self._parse_response(response, ctx)

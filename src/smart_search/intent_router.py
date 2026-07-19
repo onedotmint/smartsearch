@@ -7,7 +7,14 @@ from typing import Any
 import httpx
 
 from .embedding_presets import embedding_preset_for_model, embedding_threshold_commands
-from .runtime_cache import add_remote_router_call, add_request
+from .runtime_cache import (
+    RequestBudgetExceeded,
+    add_remote_router_call,
+    add_request,
+    current_context,
+    request_client,
+    request_timeout_kwargs,
+)
 
 
 ALLOWED_INTENT_ROUTER_MODES = {"hybrid", "rules", "off"}
@@ -726,16 +733,23 @@ class IntentRouter:
         }
 
     async def _embed(self, inputs: list[str]) -> list[list[float]]:
+        ctx = current_context()
         headers = {
             "Authorization": f"Bearer {self.config.intent_embedding_api_key}",
             "Content-Type": "application/json",
         }
         payload = {"model": self.config.intent_embedding_model, "input": inputs}
         timeout = httpx.Timeout(self.config.intent_router_timeout)
-        add_request()
+        if not add_request():
+            raise RequestBudgetExceeded()
         add_remote_router_call()
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(self.config.intent_embedding_api_url, headers=headers, json=payload)
+        async with request_client(ctx, timeout=timeout) as client:
+            response = await client.post(
+                self.config.intent_embedding_api_url,
+                headers=headers,
+                json=payload,
+                **request_timeout_kwargs(self.config.intent_router_timeout, ctx),
+            )
             response.raise_for_status()
             data = response.json()
         rows = data.get("data") if isinstance(data, dict) else None
@@ -750,6 +764,7 @@ class IntentRouter:
         return embeddings
 
     async def _classifier_route(self, query: str, rules: dict[str, Any], semantic: dict[str, Any]) -> dict[str, Any]:
+        ctx = current_context()
         prompt = {
             "query": query,
             "rules_result": rules,
@@ -777,10 +792,16 @@ class IntentRouter:
             "response_format": {"type": "json_object"},
         }
         timeout = httpx.Timeout(self.config.intent_router_timeout)
-        add_request()
+        if not add_request():
+            raise RequestBudgetExceeded()
         add_remote_router_call()
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(self.config.intent_classifier_api_url, headers=headers, json=payload)
+        async with request_client(ctx, timeout=timeout) as client:
+            response = await client.post(
+                self.config.intent_classifier_api_url,
+                headers=headers,
+                json=payload,
+                **request_timeout_kwargs(self.config.intent_router_timeout, ctx),
+            )
             response.raise_for_status()
             data = response.json()
         content = self._extract_classifier_content(data)

@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 
 from .base import BaseSearchProvider, ProviderResult, classify_provider_exception
+from ..runtime_cache import current_context, request_client, request_timeout_kwargs
 
 
 def _error_payload(exc: Exception) -> dict[str, str]:
@@ -75,12 +76,12 @@ class AnySearchProvider(BaseSearchProvider):
     def get_provider_name(self) -> str:
         return "AnySearch"
 
-    async def search(self, query: str, max_results: int = 5) -> ProviderResult:
-        return await self.call_tool("search", {"query": query, "max_results": max_results})
+    async def search(self, query: str, max_results: int = 5, ctx=None) -> ProviderResult:
+        return await self.call_tool("search", {"query": query, "max_results": max_results}, ctx=ctx)
 
-    async def list_domains(self, domain: str = "") -> ProviderResult:
+    async def list_domains(self, domain: str = "", ctx=None) -> ProviderResult:
         arguments = {"domain": domain} if domain else {}
-        return await self.call_tool("list_domains", arguments)
+        return await self.call_tool("list_domains", arguments, ctx=ctx)
 
     async def vertical_search(
         self,
@@ -88,6 +89,7 @@ class AnySearchProvider(BaseSearchProvider):
         domain: str = "",
         sub_domain: str = "",
         max_results: int = 5,
+        ctx=None,
     ) -> ProviderResult:
         arguments: dict[str, Any] = {"query": query, "max_results": max_results}
         domain, sub_domain = _split_domain(domain, sub_domain)
@@ -95,12 +97,12 @@ class AnySearchProvider(BaseSearchProvider):
             arguments["domain"] = domain
         if sub_domain:
             arguments["sub_domain"] = sub_domain
-        return await self.call_tool("search", arguments)
+        return await self.call_tool("search", arguments, ctx=ctx)
 
-    async def extract(self, url: str, max_length: int = 20000) -> ProviderResult:
-        return await self.call_tool("extract", {"url": url, "max_length": max_length})
+    async def extract(self, url: str, max_length: int = 20000, ctx=None) -> ProviderResult:
+        return await self.call_tool("extract", {"url": url, "max_length": max_length}, ctx=ctx)
 
-    async def batch_search(self, queries: list[str], max_results: int = 3) -> ProviderResult:
+    async def batch_search(self, queries: list[str], max_results: int = 3, ctx=None) -> ProviderResult:
         if len(queries) > 5:
             return self.error_result(
                 "parameter_error",
@@ -111,9 +113,11 @@ class AnySearchProvider(BaseSearchProvider):
         return await self.call_tool(
             "batch_search",
             {"queries": [_batch_query_object(query, max_results) for query in queries]},
+            ctx=ctx,
         )
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> ProviderResult:
+    async def call_tool(self, name: str, arguments: dict[str, Any], ctx=None) -> ProviderResult:
+        ctx = ctx or current_context()
         start = time.time()
         payload = {
             "jsonrpc": "2.0",
@@ -127,8 +131,13 @@ class AnySearchProvider(BaseSearchProvider):
 
         try:
             timeout = httpx.Timeout(connect=6.0, read=self.timeout, write=10.0, pool=None)
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                response = await client.post(self.api_url, headers=headers, json=payload)
+            async with request_client(ctx, timeout=timeout, follow_redirects=True) as client:
+                response = await client.post(
+                    self.api_url,
+                    headers=headers,
+                    json=payload,
+                    **request_timeout_kwargs(self.timeout, ctx),
+                )
                 response.raise_for_status()
                 data = response.json()
             output = self._normalize_response(name, arguments, data, start)

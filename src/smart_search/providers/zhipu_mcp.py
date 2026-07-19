@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 
 from .base import ProviderResult, classify_provider_exception
+from ..runtime_cache import current_context, request_client, request_timeout_kwargs
 
 
 def _elapsed_ms(start: float) -> float:
@@ -117,7 +118,8 @@ class ZhipuMCPProvider:
     def capability(self) -> str:
         return self.capability_by_provider.get(self.provider_id, "web_search")
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> ProviderResult:
+    async def call_tool(self, name: str, arguments: dict[str, Any], ctx=None) -> ProviderResult:
+        ctx = ctx or current_context()
         start = time.time()
         if not self.api_key:
             return ProviderResult.from_error(
@@ -143,8 +145,13 @@ class ZhipuMCPProvider:
 
         try:
             timeout = httpx.Timeout(connect=6.0, read=self.timeout, write=10.0, pool=None)
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                response = await client.post(self.api_url, headers=headers, json=payload)
+            async with request_client(ctx, timeout=timeout, follow_redirects=True) as client:
+                response = await client.post(
+                    self.api_url,
+                    headers=headers,
+                    json=payload,
+                    **request_timeout_kwargs(self.timeout, ctx),
+                )
                 response.raise_for_status()
                 data = _parse_sse_or_json(response)
             output = self._normalize_response(name, arguments, data, start)
@@ -206,24 +213,24 @@ class ZhipuMCPProvider:
             output["error"] = content_error[1] if content_error else (text or "Zhipu MCP tool returned isError=true")
         return output
 
-    async def web_search(self, query: str, count: int = 5) -> ProviderResult:
+    async def web_search(self, query: str, count: int = 5, ctx=None) -> ProviderResult:
         del count
-        return await self.call_tool("web_search_prime", {"search_query": query})
+        return await self.call_tool("web_search_prime", {"search_query": query}, ctx=ctx)
 
-    async def web_reader(self, url: str) -> ProviderResult:
-        return await self.call_tool("webReader", {"url": url})
+    async def web_reader(self, url: str, ctx=None) -> ProviderResult:
+        return await self.call_tool("webReader", {"url": url}, ctx=ctx)
 
-    async def search_doc(self, repo: str, query: str, max_results: int = 5) -> ProviderResult:
+    async def search_doc(self, repo: str, query: str, max_results: int = 5, ctx=None) -> ProviderResult:
         del max_results
-        return await self.call_tool("search_doc", {"repo_name": repo, "query": query})
+        return await self.call_tool("search_doc", {"repo_name": repo, "query": query}, ctx=ctx)
 
-    async def get_repo_structure(self, repo: str, ref: str = "") -> ProviderResult:
+    async def get_repo_structure(self, repo: str, ref: str = "", ctx=None) -> ProviderResult:
         arguments = {"repo_name": repo}
         if ref:
             arguments["dir_path"] = ref
-        return await self.call_tool("get_repo_structure", arguments)
+        return await self.call_tool("get_repo_structure", arguments, ctx=ctx)
 
-    async def read_file(self, repo: str, path: str, ref: str = "") -> ProviderResult:
+    async def read_file(self, repo: str, path: str, ref: str = "", ctx=None) -> ProviderResult:
         del ref
         arguments = {"repo_name": repo, "file_path": path}
-        return await self.call_tool("read_file", arguments)
+        return await self.call_tool("read_file", arguments, ctx=ctx)

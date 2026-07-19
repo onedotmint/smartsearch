@@ -21,6 +21,7 @@ PROVIDER_ERROR_TYPES = frozenset(
         "quality_error",
         "empty",
         "provider_error",
+        "budget_exhausted",
     }
 )
 
@@ -50,6 +51,10 @@ def classify_provider_exception(exc: BaseException) -> tuple[str, str, bool]:
      */
     """
     _logger.info("provider error classification started")
+    if getattr(exc, "error_type", "") == "budget_exhausted":
+        result = ("budget_exhausted", str(exc) or "request budget exhausted", False)
+        _logger.info("provider error classification finished")
+        return result
     if isinstance(exc, ProviderError):
         result = (exc.error_type, str(exc), exc.retryable)
         _logger.info("provider error classification finished")

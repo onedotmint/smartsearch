@@ -8,7 +8,14 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait
 from .base import BaseSearchProvider, ProviderResult, classify_provider_exception
 from ..config import config
 from ..logger import log_info
-from ..runtime_cache import add_retry
+from ..runtime_cache import (
+    RequestBudgetExceeded,
+    add_retry,
+    bounded_retry_delay,
+    current_context,
+    request_client,
+    request_timeout_kwargs,
+)
 
 
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
@@ -71,6 +78,7 @@ class ExaSearchProvider(BaseSearchProvider):
         category: str | None = None,
         ctx=None,
     ) -> ProviderResult:
+        ctx = ctx or current_context()
         endpoint = f"{self.api_url.rstrip('/')}/search"
         headers = {
             "accept": "application/json",
@@ -133,6 +141,7 @@ class ExaSearchProvider(BaseSearchProvider):
         return self.result(output)
 
     async def find_similar(self, url: str, num_results: int = 5, ctx=None) -> ProviderResult:
+        ctx = ctx or current_context()
         endpoint = f"{self.api_url.rstrip('/')}/findSimilar"
         headers = {
             "accept": "application/json",
@@ -183,16 +192,24 @@ class ExaSearchProvider(BaseSearchProvider):
     ) -> dict[str, Any]:
         timeout = httpx.Timeout(connect=6.0, read=self.timeout, write=10.0, pool=None)
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        ctx = ctx or current_context()
+        base_wait = wait_random_exponential(multiplier=config.retry_multiplier, max=config.retry_max_wait)
+        async with request_client(ctx, timeout=timeout) as client:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(config.retry_max_attempts + 1),
-                wait=wait_random_exponential(multiplier=config.retry_multiplier, max=config.retry_max_wait),
+                wait=lambda retry_state: bounded_retry_delay(base_wait(retry_state), ctx),
                 retry=retry_if_exception(_is_retryable_exception),
                 reraise=True,
             ):
                 if attempt.retry_state.attempt_number > 1:
-                    add_retry()
+                    if not add_retry():
+                        raise RequestBudgetExceeded()
                 with attempt:
-                    response = await client.post(endpoint, headers=headers, json=payload)
+                    response = await client.post(
+                        endpoint,
+                        headers=headers,
+                        json=payload,
+                        **request_timeout_kwargs(self.timeout, ctx),
+                    )
                     response.raise_for_status()
                     return response.json()

@@ -46,13 +46,18 @@ from .sources import merge_sources, new_session_id, split_answer_and_sources
 from .runtime_cache import (
     CacheExecution,
     RuntimeTTLCache,
+    add_fetch,
     add_request,
     add_retry,
     attach_metrics,
+    allow_synthesis,
     cache_input,
+    current_context,
     mark_budget_exhausted,
     observe_command,
     observe_stage,
+    request_client,
+    request_timeout_kwargs,
 )
 from .security import sanitize_text
 from .utils import PromptConfigurationError, get_prompt
@@ -686,6 +691,23 @@ def _attempt(
     return data
 
 
+def _budget_exhausted_attempt(capability: str, provider: str = "request-budget") -> dict[str, Any]:
+    context = current_context()
+    reason = "request budget exhausted"
+    if context is not None and context.budget.exhausted_reason:
+        reason = f"request budget exhausted: {context.budget.exhausted_reason}"
+    return _attempt(
+        capability,
+        provider,
+        "skipped",
+        time.time(),
+        error_type="budget_exhausted",
+        error=reason,
+        retryable=False,
+        extra={"budget_exhausted": True},
+    )
+
+
 def _openai_model_breaker_key(api_url: str, model: str) -> tuple[str, str]:
     return (api_url.rstrip("/"), model)
 
@@ -751,6 +773,9 @@ def _openai_model_candidates(provider_config: dict[str, Any], *, fallback_mode: 
 
 
 def _remaining_budget_seconds(start: float, timeout_seconds: float | None) -> float | None:
+    context = current_context()
+    if context is not None and context.deadline is not None:
+        return context.remaining_seconds()
     if timeout_seconds is None:
         return None
     return max(0.0, float(timeout_seconds) - (time.time() - start))
@@ -1707,7 +1732,9 @@ async def research(
                 library_outcome: dict[str, Any] = {}
 
                 async def library_factory() -> list[dict]:
-                    add_request()
+                    if not add_request():
+                        library_outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted"})
+                        return []
                     data = await context7_library(question, question)
                     library_outcome.update(data if isinstance(data, dict) else {})
                     return [
@@ -1738,7 +1765,9 @@ async def research(
                         docs_outcome: dict[str, Any] = {}
 
                         async def docs_factory() -> dict[str, Any]:
-                            add_request()
+                            if not add_request():
+                                docs_outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted"})
+                                return {"content": "", "library_id": library_id, "error_type": "budget_exhausted"}
                             data = await context7_docs(library_id, question)
                             docs_outcome.update(data if isinstance(data, dict) else {})
                             return {
@@ -1818,7 +1847,9 @@ async def research(
         exa_outcome: dict[str, Any] = {}
 
         async def exa_factory() -> list[dict]:
-            add_request()
+            if not add_request():
+                exa_outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted"})
+                return []
             data = await exa_search(question, num_results=5, include_highlights=True)
             exa_outcome.update(data if isinstance(data, dict) else {})
             return _normalize_source_results(data.get("results"), "exa") if data.get("ok") else []
@@ -1842,7 +1873,9 @@ async def research(
         vertical_outcome: dict[str, Any] = {}
 
         async def vertical_factory() -> list[dict]:
-            add_request()
+            if not add_request():
+                vertical_outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted"})
+                return []
             data = await anysearch_search(question, max_results=5)
             vertical_outcome.update(data if isinstance(data, dict) else {})
             return _normalize_source_results(data.get("results"), "anysearch") if data.get("ok") else []
@@ -1898,8 +1931,13 @@ async def research(
     covered = bool(evidence_items)
     gap_status = "closed" if covered and not gaps else ("degraded" if evidence_items else "failed")
     citations = _citation_items(evidence_items)
-    with observe_stage("research.synthesis"):
-        final_answer = _evidence_only_synthesis(question, evidence_items, gaps)
+    if allow_synthesis():
+        with observe_stage("research.synthesis"):
+            final_answer = _evidence_only_synthesis(question, evidence_items, gaps)
+    else:
+        gaps.append({"subquestion_id": "", "reason": "request budget exhausted before synthesis"})
+        gap_status = "degraded" if evidence_items else "failed"
+        final_answer = ""
     result = {
         "ok": bool(evidence_items),
         "error_type": "" if evidence_items else "evidence_error",
@@ -2572,6 +2610,8 @@ async def _run_web_fetch_fallback(
     preferred_order: list[str] | None = None,
 ) -> tuple[dict[str, Any] | None, list[dict]]:
     attempts: list[dict] = []
+    if not add_fetch():
+        return None, [_budget_exhausted_attempt("web_fetch")]
     provider_status = _provider_status_for_capability("web_fetch")
     attempts.extend(
         _skipped_provider_attempt("web_fetch", item)
@@ -2592,7 +2632,15 @@ async def _run_web_fetch_fallback(
         outcome: dict[str, Any] = {}
         try:
             async def fetch_factory() -> dict[str, Any]:
-                add_request()
+                if not add_request():
+                    outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted", "retryable": False})
+                    return {
+                        "content": "",
+                        "url": url,
+                        "provider": provider,
+                        "error_type": "budget_exhausted",
+                        "error": "request budget exhausted",
+                    }
                 if provider == "tavily":
                     content = await call_tavily_extract(url)
                     return {
@@ -2646,7 +2694,7 @@ async def _run_web_fetch_fallback(
                     "provider": provider,
                     "content": content,
                 }, attempts
-            status = "error" if error_type in {"auth_error", "config_error", "parameter_error", "quality_error", "provider_error", "rate_limited", "timeout", "network_error", "runtime_error"} else "empty"
+            status = "error" if error_type in {"auth_error", "config_error", "parameter_error", "quality_error", "provider_error", "rate_limited", "timeout", "network_error", "runtime_error", "budget_exhausted"} else "empty"
             attempts.append(
                 _attempt(
                     "web_fetch",
@@ -2689,7 +2737,9 @@ async def _run_web_search_fallback(
         outcome: dict[str, Any] = {}
         try:
             async def source_factory() -> list[dict]:
-                add_request()
+                if not add_request():
+                    outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted", "retryable": False})
+                    return []
                 if provider == "zhipu":
                     data = await zhipu_search(query, count=count)
                     outcome.update(data if isinstance(data, dict) else {})
@@ -2715,7 +2765,7 @@ async def _run_web_search_fallback(
                 attempts.append(_attempt("web_search", provider, "ok", start, result_count=len(sources), extra=attempt_extra))
                 return sources, attempts
             error_type = outcome.get("error_type", "")
-            status = "error" if error_type in {"rate_limited", "auth_error", "timeout", "network_error", "runtime_error", "provider_error"} else "empty"
+            status = "error" if error_type in {"rate_limited", "auth_error", "timeout", "network_error", "runtime_error", "provider_error", "budget_exhausted"} else "empty"
             attempts.append(
                 _attempt(
                     "web_search",
@@ -2755,7 +2805,9 @@ async def _run_docs_search_fallback(
         outcome: dict[str, Any] = {}
         try:
             async def source_factory() -> list[dict]:
-                add_request()
+                if not add_request():
+                    outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted", "retryable": False})
+                    return []
                 if provider == "exa":
                     data = await exa_search(query, num_results=5, include_highlights=True)
                     outcome.update(data if isinstance(data, dict) else {})
@@ -2786,7 +2838,7 @@ async def _run_docs_search_fallback(
                 attempts.append(_attempt("docs_search", provider, "ok", start, result_count=len(sources), extra=attempt_extra))
                 return sources, attempts
             error_type = outcome.get("error_type", "")
-            status = "error" if error_type in {"auth_error", "parameter_error", "rate_limited", "timeout", "network_error", "runtime_error", "provider_error"} else "empty"
+            status = "error" if error_type in {"auth_error", "parameter_error", "rate_limited", "timeout", "network_error", "runtime_error", "provider_error", "budget_exhausted"} else "empty"
             attempts.append(
                 _attempt(
                     "docs_search",
@@ -2824,7 +2876,9 @@ async def _run_vertical_search_fallback(
         outcome: dict[str, Any] = {}
         try:
             async def source_factory() -> list[dict]:
-                add_request()
+                if not add_request():
+                    outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted", "retryable": False})
+                    return []
                 data = await anysearch_search(query, max_results=5)
                 outcome.update(data if isinstance(data, dict) else {})
                 return _normalize_source_results(data.get("results"), provider) if data.get("ok") else []
@@ -2842,7 +2896,7 @@ async def _run_vertical_search_fallback(
                 attempts.append(_attempt("vertical_search", provider, "ok", start, result_count=len(sources), extra=attempt_extra))
                 return sources, attempts
             error_type = outcome.get("error_type", "")
-            status = "error" if error_type in {"auth_error", "provider_error", "rate_limited", "timeout", "network_error", "runtime_error"} else "empty"
+            status = "error" if error_type in {"auth_error", "provider_error", "rate_limited", "timeout", "network_error", "runtime_error", "budget_exhausted"} else "empty"
             attempts.append(
                 _attempt(
                     "vertical_search",
@@ -2869,8 +2923,14 @@ async def call_tavily_extract(url: str) -> str | None:
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     body = {"urls": [url], "format": "markdown"}
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(endpoint, headers=headers, json=body)
+        ctx = current_context()
+        async with request_client(ctx, timeout=60.0) as client:
+            response = await client.post(
+                endpoint,
+                headers=headers,
+                json=body,
+                **request_timeout_kwargs(60.0, ctx),
+            )
             response.raise_for_status()
             data = response.json()
             if data.get("results") and len(data["results"]) > 0:
@@ -3002,8 +3062,14 @@ async def call_tavily_search(query: str, max_results: int = 6) -> list[dict] | N
         "include_answer": False,
     }
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            response = await client.post(endpoint, headers=headers, json=body)
+        ctx = current_context()
+        async with request_client(ctx, timeout=90.0) as client:
+            response = await client.post(
+                endpoint,
+                headers=headers,
+                json=body,
+                **request_timeout_kwargs(90.0, ctx),
+            )
             response.raise_for_status()
             data = response.json()
             results = data.get("results", [])
@@ -3028,8 +3094,14 @@ async def call_firecrawl_search(query: str, limit: int = 14) -> list[dict] | Non
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     body = {"query": query, "limit": limit}
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            response = await client.post(endpoint, headers=headers, json=body)
+        ctx = current_context()
+        async with request_client(ctx, timeout=90.0) as client:
+            response = await client.post(
+                endpoint,
+                headers=headers,
+                json=body,
+                **request_timeout_kwargs(90.0, ctx),
+            )
             response.raise_for_status()
             data = response.json()
             results = data.get("data", {}).get("web", [])
@@ -3046,6 +3118,7 @@ async def call_firecrawl_search(query: str, limit: int = 14) -> list[dict] | Non
 
 
 async def call_firecrawl_scrape(url: str, ctx=None) -> str | None:
+    ctx = ctx or current_context()
     api_key = config.firecrawl_api_key
     if not api_key:
         return None
@@ -3053,7 +3126,8 @@ async def call_firecrawl_scrape(url: str, ctx=None) -> str | None:
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     for attempt in range(config.retry_max_attempts):
         if attempt > 0:
-            add_retry()
+            if not add_retry():
+                return None
         body = {
             "url": url,
             "formats": ["markdown"],
@@ -3061,8 +3135,13 @@ async def call_firecrawl_scrape(url: str, ctx=None) -> str | None:
             "waitFor": (attempt + 1) * 1500,
         }
         try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                response = await client.post(endpoint, headers=headers, json=body)
+            async with request_client(ctx, timeout=90.0) as client:
+                response = await client.post(
+                    endpoint,
+                    headers=headers,
+                    json=body,
+                    **request_timeout_kwargs(90.0, ctx),
+                )
                 response.raise_for_status()
                 data = response.json()
                 markdown = data.get("data", {}).get("markdown", "")
@@ -3145,7 +3224,8 @@ async def search(
     response_mode: str = "concise",
 ) -> dict[str, Any]:
     start = time.time()
-    session_id = new_session_id()
+    context = current_context()
+    session_id = context.session_id if context is not None else new_session_id()
     try:
         profile_name, profile_validation, profile_extra_sources = _resolve_search_profile(profile, validation, extra_sources)
         validation_level = (profile_validation or config.validation_level).strip().lower()
@@ -3346,7 +3426,20 @@ async def search(
             if timeout_seconds is not None and _remaining_budget_seconds(start, timeout_seconds) <= 0:
                 mark_budget_exhausted()
             try:
-                add_request()
+                if not add_request():
+                    provider_attempts.append(
+                        _attempt(
+                            "main_search",
+                            search_provider.get_provider_name(),
+                            "skipped",
+                            primary_start,
+                            error_type="budget_exhausted",
+                            error="request budget exhausted",
+                            retryable=False,
+                            extra={**attempt_extra, "budget_exhausted": True},
+                        )
+                    )
+                    continue
                 with observe_stage("search.primary"):
                     if attempt_timeout is not None:
                         candidate_result = await asyncio.wait_for(search_provider.search(query, provider_platform), timeout=attempt_timeout)
@@ -3433,6 +3526,9 @@ async def search(
             break
     if primary_result is None:
         result = last_primary_error or _primary_search_error_result(start, session_id, query, primary_api_mode, "network_error", "搜索失败或无结果")
+        if any(attempt.get("error_type") == "budget_exhausted" for attempt in provider_attempts):
+            result["error_type"] = "budget_exhausted"
+            result["error"] = "request budget exhausted"
         result["provider_attempts"] = provider_attempts
         result["providers_used"] = _provider_names_from_attempts(provider_attempts)
         result["fallback_used"] = _fallback_used(provider_attempts)
@@ -3451,7 +3547,8 @@ async def search(
     extra_provider_names: list[str] = []
     if tavily_count:
         async def tavily_source_factory() -> list[dict]:
-            add_request()
+            if not add_request():
+                return []
             return _normalize_source_results(await call_tavily_search(query, tavily_count), "tavily")
 
         extra_provider_names.append("tavily")
@@ -3466,7 +3563,8 @@ async def search(
         )
     if firecrawl_count:
         async def firecrawl_source_factory() -> list[dict]:
-            add_request()
+            if not add_request():
+                return []
             return _normalize_source_results(await call_firecrawl_search(query, firecrawl_count), "firecrawl")
 
         extra_provider_names.append("firecrawl")
@@ -4272,6 +4370,9 @@ async def fetch(url: str) -> dict[str, Any]:
     else:
         error = "所有提取服务均未能获取内容"
         error_type = "network_error"
+    if any(attempt.get("error_type") == "budget_exhausted" for attempt in attempts):
+        error = "request budget exhausted"
+        error_type = "budget_exhausted"
     result = {
         "ok": False,
         "url": url,
