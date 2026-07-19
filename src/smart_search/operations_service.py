@@ -1,10 +1,54 @@
 """Diagnostics, configuration, smoke, and output operations."""
 
-from .service_support import *
-from .capability_service import *
-from .provider_commands import *
-from .search_service import *
-from .research_service import *
+import json
+import os
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from .capability_service import (
+    MAIN_SEARCH_FALLBACK_CHAIN,
+    _capability_available,
+    _main_search_provider_configs,
+    _minimum_profile_result,
+    _provider_configured,
+    get_capability_status,
+    intent_router_status,
+    validate_minimum_profile,
+)
+from .config import ConfigStorageError, config
+from .logger import logger
+from .provider_diagnostics import (
+    _test_context7_connection,
+    _test_exa_connection,
+    _test_jina_connection,
+    _test_tavily_connection,
+    _test_zhipu_connection,
+    _test_zhipu_mcp_connection,
+)
+from .provider_fetch_commands import fetch
+from .providers.openai_compatible import OpenAICompatibleSearchProvider, get_local_time_info
+from .research_service import (
+    _research_capability_routes,
+    _research_fetch_order,
+    build_deep_research_plan,
+)
+from .service_support import (
+    COMMAND_CAPABILITY_MATRIX,
+    MINIMUM_PROFILE_ERROR,
+    OPENAI_COMPATIBLE_DIAGNOSE_COMMAND,
+    _attempt,
+    _elapsed_ms,
+    _fallback_used,
+    _is_docs_intent,
+    _is_web_current_intent,
+    _is_zh_current_intent,
+    _provider_names_from_attempts,
+)
+from .utils import get_prompt
 
 async def _test_primary_chat_completion(api_url: str, api_key: str, model: str) -> dict[str, Any]:
     chat_url = f"{api_url.rstrip('/')}/chat/completions"
@@ -384,82 +428,6 @@ async def _safe_test_main_provider_connection(provider_config: dict[str, Any]) -
         return {"status": "error", "message": f"{provider_config['provider']} 网络错误: {str(e)}"}
     except Exception as e:
         return {"status": "error", "message": f"{provider_config['provider']} 未知错误: {str(e)}"}
-
-async def _test_exa_connection() -> dict[str, Any]:
-    exa_key = config.exa_api_key
-    if not exa_key:
-        return {"status": "not_configured", "message": "EXA_API_KEY 未设置，Exa 搜索功能不可用"}
-    start = time.time()
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(
-            f"{config.exa_base_url.rstrip('/')}/search",
-            headers={"x-api-key": exa_key, "content-type": "application/json"},
-            json={"query": "test", "numResults": 1, "type": "keyword"},
-        )
-        response_time = _elapsed_ms(start)
-        if resp.status_code == 200:
-            return {"status": "ok", "message": "Exa API 可用 (HTTP 200)", "response_time_ms": response_time}
-        return {"status": "warning", "message": f"HTTP {resp.status_code}: {resp.text[:100]}", "response_time_ms": response_time}
-
-async def _test_tavily_connection() -> dict[str, Any]:
-    availability = _provider_availability("tavily")
-    if not availability.get("configured"):
-        return {"status": "not_configured", "message": "TAVILY_API_KEY 未设置，Tavily 功能不可用"}
-    if not availability.get("enabled"):
-        return {"status": "disabled", "message": str(availability.get("reason") or "TAVILY_ENABLED=false")}
-    tavily_key = config.tavily_api_key
-    start = time.time()
-    timeout = httpx.Timeout(connect=6.0, read=config.tavily_timeout, write=10.0, pool=None)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=config.ssl_verify_enabled) as client:
-        resp = await client.post(
-            f"{config.tavily_api_url.rstrip('/')}/search",
-            headers={"Authorization": f"Bearer {tavily_key}", "Content-Type": "application/json"},
-            json={"query": "test", "max_results": 1, "search_depth": "basic"},
-        )
-        response_time = _elapsed_ms(start)
-        if resp.status_code == 200:
-            return {"status": "ok", "message": "Tavily API 可用 (HTTP 200)", "response_time_ms": response_time}
-        return {"status": "warning", "message": f"HTTP {resp.status_code}: {resp.text[:100]}", "response_time_ms": response_time}
-
-async def _test_jina_connection() -> dict[str, Any]:
-    if config.jina_respond_with and not config.jina_api_key:
-        return {"status": "config_error", "message": "JINA_RESPOND_WITH requires JINA_API_KEY"}
-    if not config.jina_api_key:
-        return {"status": "not_configured", "message": "JINA_API_KEY 未设置，Jina 不满足 standard web_fetch；匿名 Reader 只能作为显式实验使用"}
-    start = time.time()
-    data = await jina_fetch("https://example.com")
-    response_time = _elapsed_ms(start)
-    if data.get("ok"):
-        return {"status": "ok", "message": "Jina Reader 可用", "response_time_ms": response_time}
-    error_type = data.get("error_type", "")
-    status = error_type if error_type in {"auth_error", "config_error", "parameter_error", "rate_limited", "timeout"} else "warning"
-    return {"status": status, "message": data.get("error", "Jina Reader 不可用"), "response_time_ms": response_time}
-
-async def _test_zhipu_connection() -> dict[str, Any]:
-    if not config.zhipu_api_key:
-        return {"status": "not_configured", "message": "ZHIPU_API_KEY 未设置，智谱搜索功能不可用"}
-    result = await zhipu_search("test", count=1)
-    if result.get("ok"):
-        return {"status": "ok", "message": "智谱 Web Search 可用", "response_time_ms": result.get("elapsed_ms", 0)}
-    return {"status": "warning", "message": result.get("error", "智谱 Web Search 不可用"), "response_time_ms": result.get("elapsed_ms", 0)}
-
-async def _test_zhipu_mcp_connection() -> dict[str, Any]:
-    if not config.zhipu_mcp_api_key:
-        return {"status": "not_configured", "message": "ZHIPU_MCP_API_KEY 未设置，智谱 Coding Plan MCP 功能不可用"}
-    result = await zhipu_mcp_search("test", count=1)
-    if result.get("ok"):
-        return {"status": "ok", "message": "智谱 Coding Plan MCP 可用", "response_time_ms": result.get("elapsed_ms", 0)}
-    error_type = result.get("error_type", "")
-    status = error_type if error_type in {"auth_error", "config_error", "provider_error", "rate_limited", "timeout"} else "warning"
-    return {"status": status, "message": result.get("error", "智谱 Coding Plan MCP 不可用"), "response_time_ms": result.get("elapsed_ms", 0)}
-
-async def _test_context7_connection() -> dict[str, Any]:
-    if not config.context7_api_key:
-        return {"status": "not_configured", "message": "CONTEXT7_API_KEY 未设置，Context7 功能不可用"}
-    result = await context7_library("react", "hooks")
-    if result.get("ok"):
-        return {"status": "ok", "message": "Context7 API 可用", "response_time_ms": result.get("elapsed_ms", 0)}
-    return {"status": "warning", "message": result.get("error", "Context7 API 不可用"), "response_time_ms": result.get("elapsed_ms", 0)}
 
 async def doctor() -> dict[str, Any]:
     # ================================================================================
@@ -1125,4 +1093,15 @@ def write_output(path: str | Path, content: str, *, force: bool = False) -> None
         raise
     logger.info("CLI 输出写入完成: path=%s", target)
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = [
+    "config_list",
+    "config_path",
+    "config_set",
+    "config_unset",
+    "current_model",
+    "diagnose_openai_compatible",
+    "doctor",
+    "set_model",
+    "smoke",
+    "write_output",
+]

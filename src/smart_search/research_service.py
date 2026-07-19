@@ -23,12 +23,8 @@ from .config import config
 from .evidence import EvidenceBundle
 from .intent_router import IntentRouteResult, IntentRouter, build_rules_route
 from .logger import logger
-from .provider_commands import (
-    anysearch_search,
-    context7_docs,
-    context7_library,
-    exa_search,
-)
+from .provider_search_commands import context7_docs, context7_library, exa_search
+from .provider_vertical_commands import anysearch_search
 from .runtime_cache import allow_synthesis, attach_metrics, observe_command, observe_stage
 from .search_service import _run_web_fetch_fallback, _run_web_search_fallback
 from .security import sanitize_text

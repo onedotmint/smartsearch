@@ -23,30 +23,31 @@ from .operations_service import (
     smoke,
     write_output,
 )
-from .provider_commands import (
-    anysearch_batch,
-    anysearch_domains,
-    anysearch_extract,
-    anysearch_search,
+from .provider_fetch_commands import (
     call_firecrawl_scrape,
-    call_firecrawl_search,
     call_jina_reader,
     call_tavily_extract,
     call_tavily_map,
-    call_tavily_search,
-    context7_docs,
-    context7_library,
-    exa_find_similar,
-    exa_search,
     fetch,
     map_site,
+)
+from .provider_mcp_commands import (
     zhipu_mcp_read_file,
     zhipu_mcp_reader,
     zhipu_mcp_repo_structure,
     zhipu_mcp_search,
     zhipu_mcp_search_doc,
+)
+from .provider_search_commands import (
+    call_firecrawl_search,
+    call_tavily_search,
+    context7_docs,
+    context7_library,
+    exa_find_similar,
+    exa_search,
     zhipu_search,
 )
+from .provider_vertical_commands import anysearch_batch, anysearch_domains, anysearch_extract, anysearch_search
 from .research_service import build_deep_research_plan, research
 from .search_service import extra_results_to_sources, fetch_available_models, get_available_models_cached, search
 from .service_support import DEEP_ALLOWED_TOOLS, RESEARCH_ROUTE_POLICY_VERSION

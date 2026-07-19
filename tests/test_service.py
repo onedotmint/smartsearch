@@ -5,7 +5,17 @@ import httpx
 import pytest
 
 from smart_search import service
-from smart_search import capability_service, operations_service, provider_commands, research_service, search_service, service_support
+from smart_search import (
+    capability_service,
+    operations_service,
+    provider_fetch_commands,
+    provider_mcp_commands,
+    provider_search_commands,
+    provider_vertical_commands,
+    research_service,
+    search_service,
+    service_support,
+)
 
 
 def _reset_config(monkeypatch, tmp_path):
@@ -387,9 +397,9 @@ def test_deep_research_plan_current_market_is_offline_and_fetch_before_claim(mon
         raise AssertionError("build_deep_research_plan must not call live providers")
 
     monkeypatch.setattr(search_service, "search", should_not_run_provider)
-    monkeypatch.setattr(provider_commands, "fetch", should_not_run_provider)
+    monkeypatch.setattr(provider_fetch_commands, "fetch", should_not_run_provider)
     monkeypatch.setattr(research_service, "exa_search", should_not_run_provider)
-    monkeypatch.setattr(provider_commands, "zhipu_search", should_not_run_provider)
+    monkeypatch.setattr(provider_search_commands, "zhipu_search", should_not_run_provider)
 
     result = service.build_deep_research_plan(
         "深度搜索一下最近的比特币行情",
@@ -846,7 +856,7 @@ async def test_zhipu_search_uses_configured_engine_and_command_override(monkeypa
             engine = kwargs.get("search_engine") or self.search_engine
             return json.dumps({"ok": True, "search_engine": engine, "results": [], "elapsed_ms": 1})
 
-    monkeypatch.setattr(provider_commands, "ZhipuWebSearchProvider", FakeZhipuProvider)
+    monkeypatch.setattr(provider_search_commands, "ZhipuWebSearchProvider", FakeZhipuProvider)
 
     configured_result = await service.zhipu_search("test")
     override_result = await service.zhipu_search("test", search_engine="search_pro_quark")
@@ -1370,7 +1380,7 @@ async def test_provider_specific_command_reports_missing_named_provider(monkeypa
     async def should_not_run(*args, **kwargs):
         raise AssertionError("provider must not run when its key is missing")
 
-    monkeypatch.setattr(provider_commands.ExaSearchProvider, "search", should_not_run)
+    monkeypatch.setattr(provider_search_commands.ExaSearchProvider, "search", should_not_run)
 
     result = await service.exa_search("python docs")
 
@@ -1863,7 +1873,7 @@ async def test_tavily_custom_base_is_used_for_search_extract_and_map(monkeypatch
                 payload = {}
             return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(provider_commands.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(provider_fetch_commands.httpx, "AsyncClient", FakeAsyncClient)
 
     search_result = await service.call_tavily_search("query", max_results=1)
     extract_result = await service.call_tavily_extract("https://example.com")
@@ -1906,7 +1916,7 @@ async def test_firecrawl_custom_base_is_used_for_search_and_scrape(monkeypatch):
                 payload = {}
             return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(provider_commands.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(provider_fetch_commands.httpx, "AsyncClient", FakeAsyncClient)
 
     search_result = await service.call_firecrawl_search("query", limit=1)
     scrape_result = await service.call_firecrawl_scrape("https://example.com")
@@ -1928,7 +1938,7 @@ async def test_exa_search_passes_parameters(monkeypatch):
         captured.update(kwargs)
         return json.dumps({"ok": True, "results": [], "total": 0})
 
-    monkeypatch.setattr(provider_commands.ExaSearchProvider, "search", fake_search)
+    monkeypatch.setattr(provider_search_commands.ExaSearchProvider, "search", fake_search)
 
     result = await service.exa_search(
         "python docs",
@@ -1952,7 +1962,7 @@ async def test_exa_search_accepts_powershell_split_domain_filter(monkeypatch):
         captured.update(kwargs)
         return json.dumps({"ok": True, "results": [], "total": 0})
 
-    monkeypatch.setattr(provider_commands.ExaSearchProvider, "search", fake_search)
+    monkeypatch.setattr(provider_search_commands.ExaSearchProvider, "search", fake_search)
 
     result = await service.exa_search(
         "freertos release",
@@ -1972,7 +1982,7 @@ async def test_exa_search_normalizes_error_json(monkeypatch):
     async def fake_search(self, **kwargs):
         return json.dumps({"ok": False, "error": "exa failed"})
 
-    monkeypatch.setattr(provider_commands.ExaSearchProvider, "search", fake_search)
+    monkeypatch.setattr(provider_search_commands.ExaSearchProvider, "search", fake_search)
 
     result = await service.exa_search("python docs")
 
@@ -1988,7 +1998,7 @@ async def test_exa_search_preserves_provider_error_type(monkeypatch):
     async def fake_search(self, **kwargs):
         return json.dumps({"ok": False, "error_type": "parameter_error", "error": "HTTP 400: Bad Request"})
 
-    monkeypatch.setattr(provider_commands.ExaSearchProvider, "search", fake_search)
+    monkeypatch.setattr(provider_search_commands.ExaSearchProvider, "search", fake_search)
 
     result = await service.exa_search("python docs")
 
@@ -2024,7 +2034,7 @@ async def test_anysearch_service_wrappers_decode_provider_json(monkeypatch):
     monkeypatch.setenv("ANYSEARCH_API_URL", "https://anysearch.example.com/mcp")
     monkeypatch.setenv("ANYSEARCH_API_KEY", "as-test-secret")
     monkeypatch.setenv("ANYSEARCH_TIMEOUT_SECONDS", "7")
-    monkeypatch.setattr(provider_commands, "AnySearchProvider", FakeAnySearchProvider)
+    monkeypatch.setattr(provider_vertical_commands, "AnySearchProvider", FakeAnySearchProvider)
 
     domains = await service.anysearch_domains("security")
     search = await service.anysearch_search("CVE-2024-3094", domain="security.cve", sub_domain="xz", max_results=2)
@@ -2056,7 +2066,7 @@ async def test_anysearch_service_parse_error(monkeypatch):
         async def list_domains(self, domain=""):
             return "not json"
 
-    monkeypatch.setattr(provider_commands, "AnySearchProvider", FakeAnySearchProvider)
+    monkeypatch.setattr(provider_vertical_commands, "AnySearchProvider", FakeAnySearchProvider)
     monkeypatch.setenv("ANYSEARCH_API_KEY", "anysearch-test-secret")
 
     result = await service.anysearch_domains()
@@ -2453,7 +2463,7 @@ async def test_call_jina_reader_decodes_provider_json(monkeypatch):
         async def fetch(self, url):
             return json.dumps({"ok": True, "provider": "jina", "url": url, "content": "# Page"})
 
-    monkeypatch.setattr(provider_commands, "JinaReaderProvider", FakeJinaReaderProvider)
+    monkeypatch.setattr(provider_fetch_commands, "JinaReaderProvider", FakeJinaReaderProvider)
 
     result = await service.call_jina_reader("https://example.com")
 
@@ -2491,7 +2501,7 @@ async def test_zhipu_mcp_service_wrappers_decode_provider_json(monkeypatch):
 
     monkeypatch.setenv("ZHIPU_MCP_API_KEY", "zmcp-test-secret")
     monkeypatch.setenv("ZHIPU_MCP_TIMEOUT_SECONDS", "7")
-    monkeypatch.setattr(provider_commands, "ZhipuMCPProvider", FakeZhipuMCPProvider)
+    monkeypatch.setattr(provider_mcp_commands, "ZhipuMCPProvider", FakeZhipuMCPProvider)
 
     search = await service.zhipu_mcp_search("query", count=2)
     reader = await service.zhipu_mcp_reader("https://example.com")

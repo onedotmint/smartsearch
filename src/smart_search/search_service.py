@@ -19,19 +19,23 @@ from .config import config
 from .evidence import EvidenceBundle
 from .intent_router import IntentRouter
 from .logger import logger
-from .provider_commands import (
-    anysearch_search,
+from .provider_fetch_commands import (
     call_firecrawl_scrape,
-    call_firecrawl_search,
     call_tavily_extract,
+    jina_fetch,
+)
+from .provider_mcp_commands import (
+    zhipu_mcp_reader,
+    zhipu_mcp_search,
+)
+from .provider_search_commands import (
+    call_firecrawl_search,
     call_tavily_search,
     context7_library,
     exa_search,
-    jina_fetch,
-    zhipu_mcp_reader,
-    zhipu_mcp_search,
     zhipu_search,
 )
+from .provider_vertical_commands import anysearch_search
 from .providers.base import ProviderError, coerce_provider_result
 from .providers.openai_compatible import OpenAICompatibleSearchProvider
 from .providers.xai_responses import XAIResponsesSearchProvider
