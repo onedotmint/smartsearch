@@ -5,25 +5,12 @@ from typing import Any
 
 import httpx
 
-from .base import BaseSearchProvider
+from .base import BaseSearchProvider, ProviderResult, classify_provider_exception
 
 
 def _error_payload(exc: Exception) -> dict[str, str]:
-    if isinstance(exc, httpx.HTTPStatusError):
-        status_code = exc.response.status_code
-        if status_code in {401, 403}:
-            error_type = "auth_error"
-        elif status_code == 429:
-            error_type = "rate_limited"
-        else:
-            error_type = "network_error"
-        body = (exc.response.text or exc.response.reason_phrase or "")[:300]
-        return {"error_type": error_type, "error": f"HTTP {status_code}: {body}"}
-    if isinstance(exc, httpx.TimeoutException):
-        return {"error_type": "timeout", "error": "request timed out"}
-    if isinstance(exc, httpx.RequestError):
-        return {"error_type": "network_error", "error": str(exc)}
-    return {"error_type": "runtime_error", "error": str(exc)}
+    error_type, error, _retryable = classify_provider_exception(exc)
+    return {"error_type": error_type, "error": error}
 
 
 def _extract_text(result: dict[str, Any]) -> str:
@@ -78,6 +65,9 @@ def _batch_query_object(query: str, max_results: int) -> dict[str, Any]:
 
 
 class AnySearchProvider(BaseSearchProvider):
+    provider_id = "anysearch"
+    capability = "vertical_search"
+
     def __init__(self, api_url: str, api_key: str | None = None, timeout: float = 30.0):
         super().__init__(api_url.rstrip("/"), api_key or "")
         self.timeout = timeout
@@ -85,10 +75,10 @@ class AnySearchProvider(BaseSearchProvider):
     def get_provider_name(self) -> str:
         return "AnySearch"
 
-    async def search(self, query: str, max_results: int = 5) -> str:
+    async def search(self, query: str, max_results: int = 5) -> ProviderResult:
         return await self.call_tool("search", {"query": query, "max_results": max_results})
 
-    async def list_domains(self, domain: str = "") -> str:
+    async def list_domains(self, domain: str = "") -> ProviderResult:
         arguments = {"domain": domain} if domain else {}
         return await self.call_tool("list_domains", arguments)
 
@@ -98,7 +88,7 @@ class AnySearchProvider(BaseSearchProvider):
         domain: str = "",
         sub_domain: str = "",
         max_results: int = 5,
-    ) -> str:
+    ) -> ProviderResult:
         arguments: dict[str, Any] = {"query": query, "max_results": max_results}
         domain, sub_domain = _split_domain(domain, sub_domain)
         if domain:
@@ -107,29 +97,23 @@ class AnySearchProvider(BaseSearchProvider):
             arguments["sub_domain"] = sub_domain
         return await self.call_tool("search", arguments)
 
-    async def extract(self, url: str, max_length: int = 20000) -> str:
+    async def extract(self, url: str, max_length: int = 20000) -> ProviderResult:
         return await self.call_tool("extract", {"url": url, "max_length": max_length})
 
-    async def batch_search(self, queries: list[str], max_results: int = 3) -> str:
+    async def batch_search(self, queries: list[str], max_results: int = 3) -> ProviderResult:
         if len(queries) > 5:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "provider": "anysearch",
-                    "tool": "batch_search",
-                    "error_type": "parameter_error",
-                    "error": f"too many queries: {len(queries)} (max 5)",
-                    "elapsed_ms": 0,
-                },
-                ensure_ascii=False,
-                indent=2,
+            return self.error_result(
+                "parameter_error",
+                f"too many queries: {len(queries)} (max 5)",
+                elapsed_ms=0,
+                data={"tool": "batch_search"},
             )
         return await self.call_tool(
             "batch_search",
             {"queries": [_batch_query_object(query, max_results) for query in queries]},
         )
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> ProviderResult:
         start = time.time()
         payload = {
             "jsonrpc": "2.0",
@@ -148,17 +132,16 @@ class AnySearchProvider(BaseSearchProvider):
                 response.raise_for_status()
                 data = response.json()
             output = self._normalize_response(name, arguments, data, start)
+            return self.result(output)
         except Exception as e:
-            error = _error_payload(e)
-            output = {
-                "ok": False,
-                "provider": "anysearch",
-                "tool": name,
-                "error_type": error["error_type"],
-                "error": error["error"],
-                "elapsed_ms": round((time.time() - start) * 1000, 2),
-            }
-        return json.dumps(output, ensure_ascii=False, indent=2)
+            error_type, error, retryable = classify_provider_exception(e)
+            return self.error_result(
+                error_type,
+                error,
+                retryable=retryable,
+                elapsed_ms=round((time.time() - start) * 1000, 2),
+                data={"tool": name},
+            )
 
     def _normalize_response(self, name: str, arguments: dict[str, Any], data: dict[str, Any], start: float) -> dict[str, Any]:
         if "error" in data:

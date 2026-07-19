@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_random_exponential
 
-from .base import BaseSearchProvider
+from .base import BaseSearchProvider, ProviderResult, classify_provider_exception
 from ..config import config
 from ..logger import log_info
 from ..runtime_cache import add_retry
@@ -43,27 +43,14 @@ def _normalize_result(item: dict[str, Any], *, include_text: bool, include_highl
 
 
 def _error_payload(exc: Exception) -> dict[str, Any]:
-    if isinstance(exc, httpx.HTTPStatusError):
-        status_code = exc.response.status_code
-        body = exc.response.text.strip()
-        detail = f" - {body[:500]}" if body else ""
-        if status_code == 429:
-            error_type = "rate_limited"
-        elif status_code in {400, 422}:
-            error_type = "parameter_error"
-        elif status_code in {401, 403}:
-            error_type = "auth_error"
-        else:
-            error_type = "network_error"
-        return {"error_type": error_type, "error": f"HTTP {status_code}: {exc.response.reason_phrase}{detail}"}
-    if isinstance(exc, httpx.TimeoutException):
-        return {"error_type": "timeout", "error": "request timed out"}
-    if isinstance(exc, httpx.RequestError):
-        return {"error_type": "network_error", "error": str(exc)}
-    return {"error_type": "runtime_error", "error": str(exc)}
+    error_type, error, _retryable = classify_provider_exception(exc)
+    return {"error_type": error_type, "error": error}
 
 
 class ExaSearchProvider(BaseSearchProvider):
+    provider_id = "exa"
+    capability = "docs_search"
+
     def __init__(self, api_url: str, api_key: str, timeout: float = 30.0):
         super().__init__(api_url, api_key)
         self.timeout = timeout
@@ -83,7 +70,7 @@ class ExaSearchProvider(BaseSearchProvider):
         exclude_domains: list[str] | None = None,
         category: str | None = None,
         ctx=None,
-    ) -> str:
+    ) -> ProviderResult:
         endpoint = f"{self.api_url.rstrip('/')}/search"
         headers = {
             "accept": "application/json",
@@ -132,19 +119,20 @@ class ExaSearchProvider(BaseSearchProvider):
             }
         except Exception as e:
             elapsed_ms = round((time.time() - start_time) * 1000, 2)
-            error = _error_payload(e)
+            error_type, error_message, retryable = classify_provider_exception(e)
             output = {
                 "ok": False,
                 "query": query,
-                "error_type": error["error_type"],
-                "error": error["error"],
+                "error_type": error_type,
+                "error": error_message,
+                "retryable": retryable,
                 "elapsed_ms": elapsed_ms,
             }
 
         await log_info(ctx, "Exa search finished!", config.debug_enabled)
-        return json.dumps(output, ensure_ascii=False, indent=2)
+        return self.result(output)
 
-    async def find_similar(self, url: str, num_results: int = 5, ctx=None) -> str:
+    async def find_similar(self, url: str, num_results: int = 5, ctx=None) -> ProviderResult:
         endpoint = f"{self.api_url.rstrip('/')}/findSimilar"
         headers = {
             "accept": "application/json",
@@ -177,17 +165,18 @@ class ExaSearchProvider(BaseSearchProvider):
             }
         except Exception as e:
             elapsed_ms = round((time.time() - start_time) * 1000, 2)
-            error = _error_payload(e)
+            error_type, error_message, retryable = classify_provider_exception(e)
             output = {
                 "ok": False,
                 "url": url,
-                "error_type": error["error_type"],
-                "error": error["error"],
+                "error_type": error_type,
+                "error": error_message,
+                "retryable": retryable,
                 "elapsed_ms": elapsed_ms,
             }
 
         await log_info(ctx, "Exa find_similar finished!", config.debug_enabled)
-        return json.dumps(output, ensure_ascii=False, indent=2)
+        return self.result(output)
 
     async def _request_with_retry(
         self, endpoint: str, headers: dict, payload: dict, ctx=None

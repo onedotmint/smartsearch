@@ -1,11 +1,12 @@
 import json
 import logging
+import time
 from typing import Any
 
 import httpx
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt
 
-from .base import BaseSearchProvider
+from .base import BaseSearchProvider, ProviderResult, classify_provider_exception
 from .openai_compatible import _WaitWithRetryAfter, _is_retryable_exception, get_local_time_info
 from ..config import config
 from ..logger import log_info
@@ -18,6 +19,9 @@ _ssl_warning_emitted = False
 
 
 class XAIResponsesSearchProvider(BaseSearchProvider):
+    provider_id = "xai-responses"
+    capability = "main_search"
+
     def __init__(self, api_url: str, api_key: str, model: str = "grok-4-fast", tools: list[str] | None = None):
         super().__init__(api_url.rstrip("/"), api_key)
         self.model = model
@@ -56,10 +60,26 @@ class XAIResponsesSearchProvider(BaseSearchProvider):
         }
         return payload
 
-    async def search(self, query: str, platform: str = "", ctx=None) -> str:
+    async def search(self, query: str, platform: str = "", ctx=None) -> ProviderResult:
+        start = time.time()
         payload = self._build_search_payload(query, platform)
         await log_info(ctx, f"platform_prompt: {query}", config.debug_enabled)
-        return await self._execute_response_with_retry(self._build_api_headers(), payload, ctx)
+        try:
+            content = await self._execute_response_with_retry(self._build_api_headers(), payload, ctx)
+            return self.content_result(
+                content,
+                elapsed_ms=round((time.time() - start) * 1000, 2),
+                data={"model": self.model},
+            )
+        except Exception as exc:
+            error_type, error, retryable = classify_provider_exception(exc)
+            return self.error_result(
+                error_type,
+                error,
+                elapsed_ms=round((time.time() - start) * 1000, 2),
+                retryable=retryable,
+                data={"model": self.model},
+            )
 
     async def _execute_response_with_retry(self, headers: dict, payload: dict, ctx=None) -> str:
         timeout = httpx.Timeout(connect=6.0, read=120.0, write=10.0, pool=None)

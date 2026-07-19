@@ -6,7 +6,7 @@ from urllib.parse import quote
 import httpx
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_random_exponential
 
-from .base import BaseSearchProvider
+from .base import BaseSearchProvider, ProviderError, ProviderResult, classify_provider_exception
 from ..config import config
 from ..logger import log_info
 from ..runtime_cache import add_retry
@@ -37,6 +37,9 @@ def _normalize_library(item: dict[str, Any]) -> dict[str, Any]:
 
 
 class Context7Provider(BaseSearchProvider):
+    provider_id = "context7"
+    capability = "docs_search"
+
     def __init__(self, api_url: str, api_key: str, timeout: float = 30.0):
         super().__init__(api_url.rstrip("/"), api_key)
         self.timeout = timeout
@@ -44,7 +47,7 @@ class Context7Provider(BaseSearchProvider):
     def get_provider_name(self) -> str:
         return "Context7"
 
-    async def search(self, query: str, max_results: int = 5) -> str:
+    async def search(self, query: str, max_results: int = 5) -> ProviderResult:
         return await self.library(query)
 
     def _headers(self) -> dict[str, str]:
@@ -56,7 +59,7 @@ class Context7Provider(BaseSearchProvider):
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
-    async def library(self, name: str, query: str = "", ctx=None) -> str:
+    async def library(self, name: str, query: str = "", ctx=None) -> ProviderResult:
         request_query = f"{name} {query}".strip()
         endpoint = f"{self.api_url}/api/v2/search?query={quote(request_query)}"
         await log_info(ctx, f"Context7 library: {request_query}", config.debug_enabled)
@@ -76,16 +79,19 @@ class Context7Provider(BaseSearchProvider):
             }
         except Exception as e:
             elapsed_ms = round((time.time() - start_time) * 1000, 2)
+            error_type, error, retryable = classify_provider_exception(e)
             output = {
                 "ok": False,
                 "query": request_query,
                 "provider": "context7",
-                "error": str(e),
+                "error_type": error_type,
+                "error": error,
+                "retryable": retryable,
                 "elapsed_ms": elapsed_ms,
             }
-        return json.dumps(output, ensure_ascii=False, indent=2)
+        return self.result(output)
 
-    async def docs(self, library_id: str, query: str, ctx=None) -> str:
+    async def docs(self, library_id: str, query: str, ctx=None) -> ProviderResult:
         endpoint = f"{self.api_url}/api/v2/context?libraryId={quote(library_id, safe='')}&query={quote(query)}"
         await log_info(ctx, f"Context7 docs: {library_id} {query}", config.debug_enabled)
         start_time = time.time()
@@ -109,15 +115,18 @@ class Context7Provider(BaseSearchProvider):
             }
         except Exception as e:
             elapsed_ms = round((time.time() - start_time) * 1000, 2)
+            error_type, error, retryable = classify_provider_exception(e)
             output = {
                 "ok": False,
                 "library_id": library_id,
                 "query": query,
                 "provider": "context7",
-                "error": str(e),
+                "error_type": error_type,
+                "error": error,
+                "retryable": retryable,
                 "elapsed_ms": elapsed_ms,
             }
-        return json.dumps(output, ensure_ascii=False, indent=2)
+        return self.result(output)
 
     async def _get_with_retry(self, endpoint: str) -> Any:
         timeout = httpx.Timeout(connect=6.0, read=self.timeout, write=10.0, pool=None)
@@ -139,6 +148,11 @@ class Context7Provider(BaseSearchProvider):
                     text = response.text
                     try:
                         return json.loads(text)
-                    except json.JSONDecodeError:
-                        return {"content": text, "results": []}
+                    except json.JSONDecodeError as exc:
+                        raise ProviderError(
+                            "parse_error",
+                            "Context7 response was not valid JSON",
+                            provider=self.provider_id,
+                            capability=self.capability,
+                        ) from exc
         return {}

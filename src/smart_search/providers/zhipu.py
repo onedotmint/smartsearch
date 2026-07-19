@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_random_exponential
 
-from .base import BaseSearchProvider
+from .base import BaseSearchProvider, ProviderResult, classify_provider_exception
 from ..config import config
 from ..logger import log_info
 from ..runtime_cache import add_retry
@@ -36,23 +36,14 @@ def _normalize_result(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _error_payload(exc: Exception) -> dict[str, Any]:
-    if isinstance(exc, httpx.HTTPStatusError):
-        status_code = exc.response.status_code
-        if status_code == 429:
-            error_type = "rate_limited"
-        elif status_code in {401, 403}:
-            error_type = "auth_error"
-        else:
-            error_type = "network_error"
-        return {"error_type": error_type, "error": f"HTTP {status_code}: {exc.response.reason_phrase}"}
-    if isinstance(exc, httpx.TimeoutException):
-        return {"error_type": "timeout", "error": "request timed out"}
-    if isinstance(exc, httpx.RequestError):
-        return {"error_type": "network_error", "error": str(exc)}
-    return {"error_type": "runtime_error", "error": str(exc)}
+    error_type, error, _retryable = classify_provider_exception(exc)
+    return {"error_type": error_type, "error": error}
 
 
 class ZhipuWebSearchProvider(BaseSearchProvider):
+    provider_id = "zhipu"
+    capability = "web_search"
+
     def __init__(
         self,
         api_url: str,
@@ -78,7 +69,7 @@ class ZhipuWebSearchProvider(BaseSearchProvider):
         content_size: str = "medium",
         user_id: str = "",
         ctx=None,
-    ) -> str:
+    ) -> ProviderResult:
         endpoint = f"{self.api_url}/paas/v4/web_search"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -117,16 +108,17 @@ class ZhipuWebSearchProvider(BaseSearchProvider):
             }
         except Exception as e:
             elapsed_ms = round((time.time() - start_time) * 1000, 2)
-            error = _error_payload(e)
+            error_type, error_message, retryable = classify_provider_exception(e)
             output = {
                 "ok": False,
                 "query": query,
                 "provider": "zhipu",
-                "error_type": error["error_type"],
-                "error": error["error"],
+                "error_type": error_type,
+                "error": error_message,
+                "retryable": retryable,
                 "elapsed_ms": elapsed_ms,
             }
-        return json.dumps(output, ensure_ascii=False, indent=2)
+        return self.result(output)
 
     async def _request_with_retry(self, endpoint: str, headers: dict, payload: dict) -> dict[str, Any]:
         timeout = httpx.Timeout(connect=6.0, read=self.timeout, write=10.0, pool=None)

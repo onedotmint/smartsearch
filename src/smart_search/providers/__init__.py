@@ -1,4 +1,12 @@
-from .base import BaseSearchProvider, SearchResult
+from .base import (
+    BaseSearchProvider,
+    ProviderError,
+    ProviderResult,
+    ProviderTimeoutError,
+    SearchResult,
+    classify_provider_exception,
+    coerce_provider_result,
+)
 from .anysearch import AnySearchProvider
 from .context7 import Context7Provider
 from .openai_compatible import OpenAICompatibleSearchProvider
@@ -10,7 +18,12 @@ from .zhipu_mcp import ZhipuMCPProvider
 
 __all__ = [
     "BaseSearchProvider",
+    "ProviderError",
+    "ProviderResult",
+    "ProviderTimeoutError",
     "SearchResult",
+    "classify_provider_exception",
+    "coerce_provider_result",
     "AnySearchProvider",
     "Context7Provider",
     "OpenAICompatibleSearchProvider",

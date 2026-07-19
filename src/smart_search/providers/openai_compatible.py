@@ -7,7 +7,14 @@ from email.utils import parsedate_to_datetime
 from typing import Any, List, Optional
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_random_exponential
 from tenacity.wait import wait_base
-from .base import BaseSearchProvider, SearchResult
+from .base import (
+    BaseSearchProvider,
+    ProviderError,
+    ProviderResult,
+    ProviderTimeoutError,
+    SearchResult,
+    classify_provider_exception,
+)
 from ..utils import get_prompt
 from ..logger import log_info
 from ..config import config
@@ -54,14 +61,12 @@ def _elapsed_ms(start: float) -> float:
 
 
 def _transport_error_type(exc: BaseException) -> str:
-    if isinstance(exc, httpx.TimeoutException):
-        return "timeout"
-    if isinstance(exc, (httpx.HTTPStatusError, httpx.RequestError)):
-        return "network_error"
-    return "runtime_error"
+    return classify_provider_exception(exc)[0]
 
 
 def _transport_error_message(exc: BaseException) -> str:
+    if isinstance(exc, ProviderError):
+        return str(exc)
     if isinstance(exc, httpx.HTTPStatusError):
         body = exc.response.text[:300] if exc.response is not None else str(exc)
         status = exc.response.status_code if exc.response is not None else "unknown"
@@ -114,6 +119,9 @@ class _WaitWithRetryAfter(wait_base):
 
 
 class OpenAICompatibleSearchProvider(BaseSearchProvider):
+    provider_id = "openai-compatible"
+    capability = "main_search"
+
     def __init__(self, api_url: str, api_key: str, model: str = "grok-4-fast", stream: bool = False):
         super().__init__(api_url.rstrip("/"), api_key)
         self.model = model
@@ -139,7 +147,8 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
             _logger.warning("SSL_VERIFY=false: OpenAI-compatible API 请求已禁用 SSL 证书验证，存在安全风险")
         return verify
 
-    async def search(self, query: str, platform: str = "", ctx=None) -> List[SearchResult]:
+    async def search(self, query: str, platform: str = "", ctx=None) -> ProviderResult:
+        start = time.time()
         headers = self._build_api_headers()
         platform_prompt = ""
 
@@ -162,9 +171,38 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
 
         await log_info(ctx, f"platform_prompt: { query + platform_prompt}", config.debug_enabled)
 
-        return await self._execute_with_transport_fallback(headers, payload, ctx)
+        try:
+            content = await self._execute_with_transport_fallback(headers, payload, ctx)
+            return self.content_result(
+                content,
+                elapsed_ms=round((time.time() - start) * 1000, 2),
+                attempts=self.last_transport_attempts,
+                data={"model": self.model},
+            )
+        except Exception as exc:
+            error_type, error, retryable = classify_provider_exception(exc)
+            if error_type == "timeout":
+                raise ProviderTimeoutError(
+                    error_type,
+                    error,
+                    provider=self.provider_id,
+                    capability="main_search",
+                    retryable=retryable,
+                    elapsed_ms=round((time.time() - start) * 1000, 2),
+                    attempts=self.last_transport_attempts,
+                    data={"model": self.model},
+                ) from exc
+            return self.error_result(
+                error_type,
+                error,
+                elapsed_ms=round((time.time() - start) * 1000, 2),
+                retryable=retryable,
+                attempts=self.last_transport_attempts,
+                data={"model": self.model},
+            )
 
-    async def fetch(self, url: str, ctx=None) -> str:
+    async def fetch(self, url: str, ctx=None) -> ProviderResult:
+        start = time.time()
         headers = self._build_api_headers()
         payload = {
             "model": self.model,
@@ -177,7 +215,37 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
             ],
             "stream": self.stream,
         }
-        return await self._execute_with_transport_fallback(headers, payload, ctx)
+        try:
+            content = await self._execute_with_transport_fallback(headers, payload, ctx)
+            return self.content_result(
+                content,
+                capability="web_fetch",
+                elapsed_ms=round((time.time() - start) * 1000, 2),
+                attempts=self.last_transport_attempts,
+                data={"model": self.model, "url": url},
+            )
+        except Exception as exc:
+            error_type, error, retryable = classify_provider_exception(exc)
+            if error_type == "timeout":
+                raise ProviderTimeoutError(
+                    error_type,
+                    error,
+                    provider=self.provider_id,
+                    capability="web_fetch",
+                    retryable=retryable,
+                    elapsed_ms=round((time.time() - start) * 1000, 2),
+                    attempts=self.last_transport_attempts,
+                    data={"model": self.model, "url": url},
+                ) from exc
+            return self.error_result(
+                error_type,
+                error,
+                capability="web_fetch",
+                elapsed_ms=round((time.time() - start) * 1000, 2),
+                retryable=retryable,
+                attempts=self.last_transport_attempts,
+                data={"model": self.model, "url": url},
+            )
 
     def _breaker_state(self) -> dict[str, Any]:
         state = _STREAM_BREAKERS.get(_stream_breaker_key(self.api_url, self.model), {})
@@ -324,6 +392,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
     async def _parse_streaming_response(self, response, ctx=None) -> str:
         content = ""
         full_body_buffer = []
+        parse_failures = 0
 
         async for line in response.aiter_lines():
             line = line.strip()
@@ -344,6 +413,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
                         if "content" in delta:
                             content += delta["content"]
                 except (json.JSONDecodeError, IndexError):
+                    parse_failures += 1
                     continue
 
         if not content and full_body_buffer:
@@ -354,7 +424,19 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
                     message = data["choices"][0].get("message", {})
                     content = message.get("content", "")
             except json.JSONDecodeError:
-                pass
+                parse_failures += 1
+
+        has_non_terminal_stream_data = any(
+            line not in {"data: [DONE]", "data:[DONE]"}
+            for line in full_body_buffer
+        )
+        if not content and has_non_terminal_stream_data and parse_failures:
+            raise ProviderError(
+                "parse_error",
+                "OpenAI-compatible stream response could not be parsed",
+                provider=self.provider_id,
+                capability="main_search",
+            )
 
         await log_info(ctx, f"content: {content}", config.debug_enabled)
 
@@ -388,10 +470,12 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
         body_text = response.text or ""
         sources: list[dict] = []
 
+        parse_error: Exception | None = None
         try:
             data = response.json()
-        except Exception:
+        except Exception as exc:
             data = None
+            parse_error = exc
 
         if isinstance(data, dict):
             sources = self._extract_citations(data)
@@ -415,6 +499,14 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
                         yield line
 
             content = await self._parse_streaming_response(_LineResponse(body_text), ctx)
+
+        if not content and body_text.strip() and parse_error is not None and not body_text.lstrip().startswith("data:"):
+            raise ProviderError(
+                "parse_error",
+                "OpenAI-compatible response was not valid JSON",
+                provider=self.provider_id,
+                capability="main_search",
+            ) from parse_error
 
         if content and sources:
             content = f"{content.rstrip()}\n\nsources({json.dumps(sources, ensure_ascii=False)})"

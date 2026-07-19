@@ -5,27 +5,16 @@ from typing import Any
 
 import httpx
 
+from .base import ProviderResult, classify_provider_exception
+
 
 def _elapsed_ms(start: float) -> float:
     return round((time.time() - start) * 1000, 2)
 
 
 def _error_payload(exc: Exception) -> dict[str, str]:
-    if isinstance(exc, httpx.HTTPStatusError):
-        status_code = exc.response.status_code
-        if status_code in {401, 403}:
-            error_type = "auth_error"
-        elif status_code == 429:
-            error_type = "rate_limited"
-        else:
-            error_type = "network_error"
-        body = (exc.response.text or exc.response.reason_phrase or "")[:300]
-        return {"error_type": error_type, "error": f"HTTP {status_code}: {body}"}
-    if isinstance(exc, httpx.TimeoutException):
-        return {"error_type": "timeout", "error": "request timed out"}
-    if isinstance(exc, httpx.RequestError):
-        return {"error_type": "network_error", "error": str(exc)}
-    return {"error_type": "runtime_error", "error": str(exc)}
+    error_type, error, _retryable = classify_provider_exception(exc)
+    return {"error_type": error_type, "error": error}
 
 
 def _mask_secret(text: str, secret: str) -> str:
@@ -112,26 +101,32 @@ def _content_error(text: str) -> tuple[str, str] | None:
 
 
 class ZhipuMCPProvider:
+    capability_by_provider = {
+        "zhipu-mcp": "web_search",
+        "zhipu-mcp-reader": "web_fetch",
+        "zhipu-mcp-zread": "docs_search",
+    }
+
     def __init__(self, api_url: str, api_key: str, timeout: float = 30.0, provider_id: str = "zhipu-mcp"):
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
         self.provider_id = provider_id
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
+    @property
+    def capability(self) -> str:
+        return self.capability_by_provider.get(self.provider_id, "web_search")
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> ProviderResult:
         start = time.time()
         if not self.api_key:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "provider": self.provider_id,
-                    "tool": name,
-                    "error_type": "config_error",
-                    "error": "ZHIPU_MCP_API_KEY is not configured.",
-                    "elapsed_ms": _elapsed_ms(start),
-                },
-                ensure_ascii=False,
-                indent=2,
+            return ProviderResult.from_error(
+                provider=self.provider_id,
+                capability=self.capability,
+                error_type="config_error",
+                error="ZHIPU_MCP_API_KEY is not configured.",
+                elapsed_ms=_elapsed_ms(start),
+                data={"tool": name},
             )
 
         payload = {
@@ -153,17 +148,24 @@ class ZhipuMCPProvider:
                 response.raise_for_status()
                 data = _parse_sse_or_json(response)
             output = self._normalize_response(name, arguments, data, start)
+            if output.get("error"):
+                output["error"] = _mask_secret(str(output["error"]), self.api_key)
+            return ProviderResult.from_payload(
+                output,
+                provider=self.provider_id,
+                capability=self.capability,
+            )
         except Exception as e:
-            error = _error_payload(e)
-            output = {
-                "ok": False,
-                "provider": self.provider_id,
-                "tool": name,
-                "error_type": error["error_type"],
-                "error": _mask_secret(error["error"], self.api_key),
-                "elapsed_ms": _elapsed_ms(start),
-            }
-        return json.dumps(output, ensure_ascii=False, indent=2)
+            error_type, error, retryable = classify_provider_exception(e)
+            return ProviderResult.from_error(
+                provider=self.provider_id,
+                capability=self.capability,
+                error_type=error_type,
+                error=_mask_secret(error, self.api_key),
+                retryable=retryable,
+                elapsed_ms=_elapsed_ms(start),
+                data={"tool": name},
+            )
 
     def _normalize_response(self, name: str, arguments: dict[str, Any], data: dict[str, Any], start: float) -> dict[str, Any]:
         if "error" in data:
@@ -204,24 +206,24 @@ class ZhipuMCPProvider:
             output["error"] = content_error[1] if content_error else (text or "Zhipu MCP tool returned isError=true")
         return output
 
-    async def web_search(self, query: str, count: int = 5) -> str:
+    async def web_search(self, query: str, count: int = 5) -> ProviderResult:
         del count
         return await self.call_tool("web_search_prime", {"search_query": query})
 
-    async def web_reader(self, url: str) -> str:
+    async def web_reader(self, url: str) -> ProviderResult:
         return await self.call_tool("webReader", {"url": url})
 
-    async def search_doc(self, repo: str, query: str, max_results: int = 5) -> str:
+    async def search_doc(self, repo: str, query: str, max_results: int = 5) -> ProviderResult:
         del max_results
         return await self.call_tool("search_doc", {"repo_name": repo, "query": query})
 
-    async def get_repo_structure(self, repo: str, ref: str = "") -> str:
+    async def get_repo_structure(self, repo: str, ref: str = "") -> ProviderResult:
         arguments = {"repo_name": repo}
         if ref:
             arguments["dir_path"] = ref
         return await self.call_tool("get_repo_structure", arguments)
 
-    async def read_file(self, repo: str, path: str, ref: str = "") -> str:
+    async def read_file(self, repo: str, path: str, ref: str = "") -> ProviderResult:
         del ref
         arguments = {"repo_name": repo, "file_path": path}
         return await self.call_tool("read_file", arguments)

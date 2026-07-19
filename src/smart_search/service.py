@@ -34,6 +34,7 @@ from .intent_router import (
 )
 from .logger import log_info, logger
 from .providers.anysearch import AnySearchProvider
+from .providers.base import ProviderError, ProviderResult, coerce_provider_result
 from .providers.context7 import Context7Provider
 from .providers.exa import ExaSearchProvider
 from .providers.jina import JinaReaderProvider
@@ -551,6 +552,7 @@ def _attempt(
     result_count: int = 0,
     error_type: str = "",
     error: str = "",
+    retryable: bool | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     data = {
@@ -562,6 +564,8 @@ def _attempt(
         "elapsed_ms": _elapsed_ms(start),
         "result_count": result_count,
     }
+    if retryable is not None:
+        data["retryable"] = bool(retryable)
     if extra:
         data.update(extra)
         data["error"] = sanitize_text(str(data.get("error") or ""))
@@ -679,6 +683,7 @@ def _append_openai_transport_attempts(
                     result_count=int(transport_attempt.get("result_count") or 0),
                     error_type=transport_attempt.get("error_type", ""),
                     error=transport_attempt.get("error", ""),
+                    retryable=transport_attempt.get("retryable"),
                 ),
                 "elapsed_ms": transport_attempt.get("elapsed_ms", 0),
                 **transport_extra,
@@ -2133,7 +2138,18 @@ async def _run_web_fetch_fallback(
                     "content": content,
                 }, attempts
             status = "error" if error_type in {"auth_error", "config_error", "parameter_error", "quality_error", "provider_error", "rate_limited", "timeout", "network_error", "runtime_error"} else "empty"
-            attempts.append(_attempt("web_fetch", provider, status, start, error_type=error_type, error=error, extra=attempt_extra))
+            attempts.append(
+                _attempt(
+                    "web_fetch",
+                    provider,
+                    status,
+                    start,
+                    error_type=error_type,
+                    error=error,
+                    retryable=outcome.get("retryable"),
+                    extra=attempt_extra,
+                )
+            )
         except Exception as e:
             attempts.append(_attempt("web_fetch", provider, "error", start, error_type="runtime_error", error=str(e)))
     return None, attempts
@@ -2193,7 +2209,18 @@ async def _run_web_search_fallback(
                 return sources, attempts
             error_type = outcome.get("error_type", "")
             status = "error" if error_type in {"rate_limited", "auth_error", "timeout", "network_error", "runtime_error", "provider_error"} else "empty"
-            attempts.append(_attempt("web_search", provider, status, start, error_type=error_type, error=outcome.get("error", ""), extra=attempt_extra))
+            attempts.append(
+                _attempt(
+                    "web_search",
+                    provider,
+                    status,
+                    start,
+                    error_type=error_type,
+                    error=outcome.get("error", ""),
+                    retryable=outcome.get("retryable"),
+                    extra=attempt_extra,
+                )
+            )
         except Exception as e:
             attempts.append(_attempt("web_search", provider, "error", start, error_type="runtime_error", error=str(e)))
     return [], attempts
@@ -2253,7 +2280,18 @@ async def _run_docs_search_fallback(
                 return sources, attempts
             error_type = outcome.get("error_type", "")
             status = "error" if error_type in {"auth_error", "parameter_error", "rate_limited", "timeout", "network_error", "runtime_error", "provider_error"} else "empty"
-            attempts.append(_attempt("docs_search", provider, status, start, error_type=error_type, error=outcome.get("error", ""), extra=attempt_extra))
+            attempts.append(
+                _attempt(
+                    "docs_search",
+                    provider,
+                    status,
+                    start,
+                    error_type=error_type,
+                    error=outcome.get("error", ""),
+                    retryable=outcome.get("retryable"),
+                    extra=attempt_extra,
+                )
+            )
         except Exception as e:
             attempts.append(_attempt("docs_search", provider, "error", start, error_type="runtime_error", error=str(e)))
     return [], attempts
@@ -2298,7 +2336,18 @@ async def _run_vertical_search_fallback(
                 return sources, attempts
             error_type = outcome.get("error_type", "")
             status = "error" if error_type in {"auth_error", "provider_error", "rate_limited", "timeout", "network_error", "runtime_error"} else "empty"
-            attempts.append(_attempt("vertical_search", provider, status, start, error_type=error_type, error=outcome.get("error", ""), extra=attempt_extra))
+            attempts.append(
+                _attempt(
+                    "vertical_search",
+                    provider,
+                    status,
+                    start,
+                    error_type=error_type,
+                    error=outcome.get("error", ""),
+                    retryable=outcome.get("retryable"),
+                    extra=attempt_extra,
+                )
+            )
         except Exception as e:
             attempts.append(_attempt("vertical_search", provider, "error", start, error_type="runtime_error", error=str(e)))
     return [], attempts
@@ -2512,7 +2561,7 @@ async def call_jina_reader(url: str) -> dict[str, Any]:
         config.jina_respond_with,
         config.jina_timeout,
     ).fetch(url)
-    return await _decode_provider_json(raw, provider="jina")
+    return await _decode_provider_json(raw, provider="jina", capability="web_fetch")
 
 
 async def call_tavily_map(
@@ -2752,12 +2801,18 @@ async def search(
                 if timeout_seconds is not None and _remaining_budget_seconds(start, timeout_seconds) <= 0:
                     mark_budget_exhausted()
                 transport_attempts = getattr(search_provider, "last_transport_attempts", [])
+                candidate_provider_result = coerce_provider_result(
+                    candidate_result,
+                    provider=candidate_config["provider"],
+                    capability="main_search",
+                    wire_format="content",
+                )
                 if _append_openai_transport_attempts(provider_attempts, search_provider, candidate_config):
                     transport_fallback_used = transport_fallback_used or any(
                         attempt.get("fallback_from_transport") for attempt in transport_attempts
                     )
-                if candidate_result:
-                    primary_result = candidate_result
+                if candidate_provider_result.ok and candidate_provider_result.content.strip():
+                    primary_result = candidate_provider_result.content
                     successful_main_config = candidate_config
                     if candidate_config["provider"] != "openai-compatible" or not transport_attempts:
                         provider_attempts.append(
@@ -2775,17 +2830,28 @@ async def search(
                     break
                 if candidate_config["provider"] == "openai-compatible":
                     attempt_extra["breaker_state"] = _record_openai_model_failure(candidate_config["api_url"], candidate_config["model"])
+                error_type = candidate_provider_result.error_type or "empty"
+                top_level_error_type = "network_error" if error_type == "empty" else error_type
                 last_primary_error = _primary_search_error_result(
                     start,
                     session_id,
                     query,
                     candidate_config["mode"],
-                    "network_error",
-                    f"{search_provider.get_provider_name()} 返回空结果",
+                    top_level_error_type,
+                    candidate_provider_result.error or f"{search_provider.get_provider_name()} 返回空结果",
                 )
                 if candidate_config["provider"] != "openai-compatible" or not transport_attempts:
                     provider_attempts.append(
-                        _attempt("main_search", search_provider.get_provider_name(), "empty", primary_start, extra=attempt_extra)
+                        _attempt(
+                            "main_search",
+                            search_provider.get_provider_name(),
+                            "empty" if error_type == "empty" else "error",
+                            primary_start,
+                            error_type=error_type,
+                            error=candidate_provider_result.error,
+                            retryable=candidate_provider_result.retryable,
+                            extra=attempt_extra,
+                        )
                     )
             except Exception as e:
                 error_result = _primary_search_exception_result(start, session_id, query, candidate_config["mode"], search_provider.get_provider_name(), e)
@@ -3474,6 +3540,15 @@ def _primary_search_exception_result(
     provider_name: str,
     exc: BaseException,
 ) -> dict[str, Any]:
+    if isinstance(exc, ProviderError):
+        return _primary_search_error_result(
+            start,
+            session_id,
+            query,
+            primary_api_mode,
+            exc.error_type,
+            str(exc),
+        )
     if isinstance(exc, PromptConfigurationError):
         return _primary_search_error_result(
             start,
@@ -3630,28 +3705,69 @@ async def exa_search(
         exclude_domains=exclude_domain_list,
         category=category or None,
     )
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"ok": False, "error_type": "parse_error", "error": raw}
-    if not data.get("ok", False):
-        data.setdefault("error_type", "network_error")
-    return data
+    return await _decode_provider_json(raw, provider="exa", capability="docs_search")
 
 
 def _anysearch_provider() -> AnySearchProvider:
     return AnySearchProvider(config.anysearch_api_url, config.anysearch_api_key, config.anysearch_timeout)
 
 
-async def _decode_provider_json(raw: str, provider: str = "anysearch") -> dict[str, Any]:
+async def _decode_provider_json(
+    raw: Any,
+    provider: str = "anysearch",
+    capability: str = "vertical_search",
+) -> dict[str, Any]:
+    """
+    /*
+     * ================================================================================
+     * 步骤4：转换 provider 边界结果
+     * ================================================================================
+     * 目标：service 只消费统一结果，保留旧 provider JSON 的兼容入口。
+     * 数据源：ProviderResult、结构化 dict 和旧 JSON 字符串。
+     * 操作：
+     * 1) 统一结果直接读取结构化 payload。
+     * 2) legacy 字符串只在兼容边界解析一次。
+     * 3) 解析失败返回 parse_error，不把错误折叠为 empty。
+     * ================================================================================
+     */
+    """
+    if isinstance(raw, ProviderResult):
+        return raw.to_dict()
+    if isinstance(raw, dict):
+        return dict(raw)
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {"ok": False, "provider": provider, "error_type": "parse_error", "error": raw}
+        decoded = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        return {
+            "ok": False,
+            "provider": provider,
+            "capability": capability,
+            "error_type": "parse_error",
+            "error": str(exc) or str(raw),
+            "retryable": False,
+        }
+    if not isinstance(decoded, dict):
+        return {
+            "ok": False,
+            "provider": provider,
+            "capability": capability,
+            "error_type": "protocol_error",
+            "error": "provider response must be a JSON object",
+            "retryable": False,
+        }
+    data = dict(decoded)
+    data.setdefault("provider", provider)
+    if not data.get("ok", False):
+        data.setdefault("error_type", "network_error")
+    return data
 
 
 async def anysearch_domains(domain: str = "") -> dict[str, Any]:
-    return await _decode_provider_json(await _anysearch_provider().list_domains(domain))
+    return await _decode_provider_json(
+        await _anysearch_provider().list_domains(domain),
+        provider="anysearch",
+        capability="vertical_search",
+    )
 
 
 async def anysearch_search(query: str, domain: str = "", sub_domain: str = "", max_results: int = 5) -> dict[str, Any]:
@@ -3661,16 +3777,26 @@ async def anysearch_search(query: str, domain: str = "", sub_domain: str = "", m
             domain=domain,
             sub_domain=sub_domain,
             max_results=max_results,
-        )
+        ),
+        provider="anysearch",
+        capability="vertical_search",
     )
 
 
 async def anysearch_extract(url: str, max_length: int = 20000) -> dict[str, Any]:
-    return await _decode_provider_json(await _anysearch_provider().extract(url, max_length=max_length))
+    return await _decode_provider_json(
+        await _anysearch_provider().extract(url, max_length=max_length),
+        provider="anysearch",
+        capability="vertical_search",
+    )
 
 
 async def anysearch_batch(queries: list[str], max_results: int = 3) -> dict[str, Any]:
-    return await _decode_provider_json(await _anysearch_provider().batch_search(queries, max_results=max_results))
+    return await _decode_provider_json(
+        await _anysearch_provider().batch_search(queries, max_results=max_results),
+        provider="anysearch",
+        capability="vertical_search",
+    )
 
 
 def _zhipu_mcp_search_provider() -> ZhipuMCPProvider:
@@ -3705,23 +3831,43 @@ async def jina_fetch(url: str) -> dict[str, Any]:
 
 
 async def zhipu_mcp_search(query: str, count: int = 5) -> dict[str, Any]:
-    return await _decode_provider_json(await _zhipu_mcp_search_provider().web_search(query, count=count), provider="zhipu-mcp")
+    return await _decode_provider_json(
+        await _zhipu_mcp_search_provider().web_search(query, count=count),
+        provider="zhipu-mcp",
+        capability="web_search",
+    )
 
 
 async def zhipu_mcp_reader(url: str) -> dict[str, Any]:
-    return await _decode_provider_json(await _zhipu_mcp_reader_provider().web_reader(url), provider="zhipu-mcp-reader")
+    return await _decode_provider_json(
+        await _zhipu_mcp_reader_provider().web_reader(url),
+        provider="zhipu-mcp-reader",
+        capability="web_fetch",
+    )
 
 
 async def zhipu_mcp_search_doc(repo: str, query: str, max_results: int = 5) -> dict[str, Any]:
-    return await _decode_provider_json(await _zhipu_mcp_zread_provider().search_doc(repo, query, max_results=max_results), provider="zhipu-mcp-zread")
+    return await _decode_provider_json(
+        await _zhipu_mcp_zread_provider().search_doc(repo, query, max_results=max_results),
+        provider="zhipu-mcp-zread",
+        capability="docs_search",
+    )
 
 
 async def zhipu_mcp_repo_structure(repo: str, ref: str = "") -> dict[str, Any]:
-    return await _decode_provider_json(await _zhipu_mcp_zread_provider().get_repo_structure(repo, ref=ref), provider="zhipu-mcp-zread")
+    return await _decode_provider_json(
+        await _zhipu_mcp_zread_provider().get_repo_structure(repo, ref=ref),
+        provider="zhipu-mcp-zread",
+        capability="docs_search",
+    )
 
 
 async def zhipu_mcp_read_file(repo: str, path: str, ref: str = "") -> dict[str, Any]:
-    return await _decode_provider_json(await _zhipu_mcp_zread_provider().read_file(repo, path, ref=ref), provider="zhipu-mcp-zread")
+    return await _decode_provider_json(
+        await _zhipu_mcp_zread_provider().read_file(repo, path, ref=ref),
+        provider="zhipu-mcp-zread",
+        capability="docs_search",
+    )
 
 
 async def exa_find_similar(url: str, num_results: int = 5) -> dict[str, Any]:
@@ -3735,13 +3881,7 @@ async def exa_find_similar(url: str, num_results: int = 5) -> dict[str, Any]:
 
     provider = ExaSearchProvider(config.exa_base_url, api_key, config.exa_timeout)
     raw = await provider.find_similar(url=url, num_results=num_results)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"ok": False, "error_type": "parse_error", "error": raw}
-    if not data.get("ok", False):
-        data.setdefault("error_type", "network_error")
-    return data
+    return await _decode_provider_json(raw, provider="exa", capability="docs_search")
 
 
 async def zhipu_search(
@@ -3773,13 +3913,7 @@ async def zhipu_search(
         search_domain_filter=search_domain_filter,
         content_size=content_size,
     )
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"ok": False, "error_type": "parse_error", "error": raw}
-    if not data.get("ok", False):
-        data.setdefault("error_type", "network_error")
-    return data
+    return await _decode_provider_json(raw, provider="zhipu", capability="web_search")
 
 
 async def context7_library(name: str, query: str = "") -> dict[str, Any]:
@@ -3792,13 +3926,7 @@ async def context7_library(name: str, query: str = "") -> dict[str, Any]:
         }
     provider = Context7Provider(config.context7_base_url, api_key, config.context7_timeout)
     raw = await provider.library(name, query)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"ok": False, "error_type": "parse_error", "error": raw}
-    if not data.get("ok", False):
-        data.setdefault("error_type", "network_error")
-    return data
+    return await _decode_provider_json(raw, provider="context7", capability="docs_search")
 
 
 async def context7_docs(library_id: str, query: str) -> dict[str, Any]:
@@ -3811,13 +3939,7 @@ async def context7_docs(library_id: str, query: str) -> dict[str, Any]:
         }
     provider = Context7Provider(config.context7_base_url, api_key, config.context7_timeout)
     raw = await provider.docs(library_id, query)
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"ok": False, "error_type": "parse_error", "error": raw}
-    if not data.get("ok", False):
-        data.setdefault("error_type", "network_error")
-    return data
+    return await _decode_provider_json(raw, provider="context7", capability="docs_search")
 
 
 async def _test_primary_chat_completion(api_url: str, api_key: str, model: str) -> dict[str, Any]:
