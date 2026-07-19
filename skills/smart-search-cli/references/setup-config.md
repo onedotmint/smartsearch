@@ -39,7 +39,7 @@
 - Use `smart-search setup --lang en` for an English wizard.
 - Use `smart-search setup --advanced` only when low-level config keys must be shown one by one; normal intent router, embeddings, and classifier setup is available in the default wizard. `--advanced` does not show the skill prompt unless `--install-skills` is explicit.
 - `--non-interactive` keeps script behavior and only saves values passed as flags.
-- `SMART_SEARCH_MINIMUM_PROFILE` supports `lite`, `standard`, `full`, and `off`. `standard` keeps the fail-closed requirement for `main_search`, `docs_search`, and `web_fetch`; `lite` permits source-only search when a search provider is available, while missing optional capabilities remain visible.
+- `SMART_SEARCH_MINIMUM_PROFILE` supports `lite`, `standard`, `full`, and `off`. `standard` keeps the fail-closed profile diagnostic for `main_search`, `docs_search`, and `web_fetch`; command execution is capability-scoped. Explicit `lite`/`off` evidence search permits source-only results from `web_search` or `docs_search`, while `fetch`, `map`, and `research` validate only their own required capabilities.
 - Built-in search, fetch, and research Prompts can be overridden with local UTF-8 files through `--prompt-dir`, `--search-prompt-file`, `--fetch-prompt-file`, and `--research-prompt-file`, or their `SMART_SEARCH_*_PROMPT_FILE` environment/config keys. Remote Prompt URLs are rejected.
 - Required groups are `main_search`, `docs_search`, and `web_fetch`; `web_search` is optional reinforcement, followed by optional smart intent router configuration.
 - Unchecking a configured provider must not delete existing config values; use `smart-search config unset KEY` for deletion.

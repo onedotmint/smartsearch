@@ -2143,7 +2143,8 @@ def test_setup_guided_en_reports_missing_minimum(monkeypatch, capsys):
     assert "If unsure" in captured.err
     assert "main_search + docs_search + web_fetch" in captured.err
     assert "[MISSING] main_search primary search" in captured.err
-    assert "will fail closed" in captured.err
+    assert "doctor reports the profile gap" in captured.err
+    assert "normal commands validate their own required capabilities" in captured.err
     assert "your-relay.example.com" not in captured.out
 
 

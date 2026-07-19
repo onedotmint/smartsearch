@@ -138,6 +138,7 @@ async def test_fetch_concurrent_requests_share_one_owner_task(monkeypatch):
 async def test_search_source_cache_reuses_normalized_results(monkeypatch):
     monkeypatch.setenv("SMART_SEARCH_CACHE_ENABLED", "true")
     monkeypatch.setenv("SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS", "30")
+    monkeypatch.setenv("SMART_SEARCH_MINIMUM_PROFILE", "lite")
     monkeypatch.setenv("ZHIPU_API_KEY", "zhipu-key")
     calls = 0
 
@@ -151,8 +152,8 @@ async def test_search_source_cache_reuses_normalized_results(monkeypatch):
 
     monkeypatch.setattr(service, "zhipu_search", fake_search)
 
-    first = await service.search("same query")
-    second = await service.search("same   query")
+    first = await service.search("same query", response_mode="evidence")
+    second = await service.search("same   query", response_mode="evidence")
 
     assert calls == 1
     assert first["sources"] == second["sources"]

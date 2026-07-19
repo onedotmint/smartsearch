@@ -104,7 +104,7 @@ class ZhipuMCPProvider:
     capability_by_provider = {
         "zhipu-mcp": "web_search",
         "zhipu-mcp-reader": "web_fetch",
-        "zhipu-mcp-zread": "docs_search",
+        "zhipu-mcp-zread": "zread",
     }
 
     def __init__(self, api_url: str, api_key: str, timeout: float = 30.0, provider_id: str = "zhipu-mcp"):

@@ -48,11 +48,22 @@ def test_minimum_profile_modes_keep_standard_fail_closed():
             "web_fetch": {"ok": True},
         },
     )
+    lite_docs_only = service._minimum_profile_result(
+        "lite",
+        {
+            "main_search": {"ok": False},
+            "web_search": {"ok": False},
+            "docs_search": {"ok": True},
+            "web_fetch": {"ok": False},
+            "site_map": {"ok": False},
+        },
+    )
 
     assert standard["ok"] is False
     assert standard["missing_required"] == ["main_search", "docs_search", "web_fetch"]
     assert lite["ok"] is True
     assert lite["degraded"] is True
+    assert lite_docs_only["ok"] is True
     assert full["ok"] is True
 
 

@@ -349,12 +349,12 @@ Minimum profile defaults to `standard`, requiring at least:
 - one `docs_search` provider: Exa or Context7;
 - one `web_fetch` provider: Tavily, Jina with `JINA_API_KEY`, Zhipu Coding Plan MCP Reader, or Firecrawl.
 
-Missing required capabilities fail closed with a configuration error. Use `SMART_SEARCH_MINIMUM_PROFILE=off` only for local experiments.
+`standard` remains fail-closed for the profile diagnostic and `doctor`, but normal commands validate only the capabilities they need. `search` with concise or synthesized output requires `main_search`; `lite` or `off` with `--response-mode evidence` can return source-only candidates from `web_search` or `docs_search`. `fetch` requires only `web_fetch`, `map` only `site_map`, and `research` requires `web_fetch` while discovery capabilities are optional. Missing command capabilities return `config_error` with `required_capabilities` and `missing_capabilities`. Use `SMART_SEARCH_MINIMUM_PROFILE=off` only for local experiments.
 
 The minimum-profile modes are explicit:
 
 - `standard` keeps the default fail-closed requirement for `main_search`, `docs_search`, and `web_fetch`.
-- `lite` allows source-only search when a `main_search` or `web_search` provider is available; missing optional capabilities remain visible.
+- `lite` allows explicit source-only search with `--response-mode evidence` when a `main_search`, `web_search`, or `docs_search` provider is available; missing optional capabilities remain visible.
 - `full` requires the standard three capabilities plus `site_map`.
 - `off` disables the minimum gate for local experiments.
 

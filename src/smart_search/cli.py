@@ -1837,8 +1837,8 @@ def _run_setup(args: argparse.Namespace) -> int:
             _write_stderr(
                 _t(
                     lang,
-                    f"\n当前配置尚未满足 {configured_profile} 最低配置。\nsearch / doctor 会 fail closed，不会假装可用。\n",
-                    f"\nThe current config does not satisfy the {configured_profile} minimum profile.\nsearch / doctor will fail closed instead of pretending to work.\n",
+                    f"\n当前配置尚未满足 {configured_profile} 最低配置。\ndoctor 会报告 profile 缺口；普通命令仍按自身 required capability 校验。\n",
+                    f"\nThe current config does not satisfy the {configured_profile} minimum profile.\ndoctor reports the profile gap; normal commands validate their own required capabilities.\n",
                 )
             )
         else:

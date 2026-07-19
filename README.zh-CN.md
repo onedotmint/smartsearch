@@ -360,12 +360,12 @@ smart-search setup --non-interactive `
 - `docs_search`：Exa 或 Context7 二选一；
 - `web_fetch`：Tavily、带 `JINA_API_KEY` 的 Jina、智谱 Coding Plan MCP Reader、Firecrawl 四选一。
 
-缺少任一最低能力时，`doctor` 和 `search` 会 fail closed 并返回缺失 capability。`SMART_SEARCH_MINIMUM_PROFILE=off` 只建议本地实验使用。
+`standard` 仍让 profile 诊断和 `doctor` fail closed，但普通命令只校验自身需要的能力。`search` 的 concise/synthesized 模式需要 `main_search`；`lite` 或 `off` 配合 `--response-mode evidence` 时，可用 `web_search` 或 `docs_search` 返回 source-only 来源候选。`fetch` 只需要 `web_fetch`，`map` 只需要 `site_map`，`research` 需要 `web_fetch`，发现能力按意图可选。缺少命令能力时返回 `config_error`，并带 `required_capabilities`、`missing_capabilities`。`SMART_SEARCH_MINIMUM_PROFILE=off` 只建议本地实验使用。
 
 最低配置档位是显式选择：
 
 - `standard` 保留默认 fail-closed 门槛，要求 `main_search`、`docs_search`、`web_fetch`。
-- `lite` 只要求存在 `main_search` 或 `web_search`，允许返回来源候选；缺失的可选能力仍会在结果里显示。
+- `lite` 在显式使用 `--response-mode evidence` 时，只要求存在 `main_search`、`web_search` 或 `docs_search` 之一，允许返回 source-only 来源候选；缺失的可选能力仍会在结果里显示。
 - `full` 在 standard 三项之上再要求 `site_map`。
 - `off` 只用于本地实验，关闭最低配置门槛。
 

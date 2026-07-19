@@ -1241,6 +1241,196 @@ def test_zhipu_mcp_key_satisfies_web_search_and_reader_fetch_as_separate_provide
     assert result["capability_status"]["web_search"]["configured"] == ["zhipu-mcp"]
     assert result["capability_status"]["web_search"]["fallback_chain"] == ["zhipu", "zhipu-mcp", "tavily", "firecrawl"]
     assert result["capability_status"]["web_fetch"]["configured"] == ["zhipu-mcp-reader"]
+    assert result["capability_status"]["zread"]["configured"] == ["zhipu-mcp-zread"]
+    assert result["capability_status"]["zread"]["explicit"] is True
+
+
+def test_command_capability_matrix_keeps_profile_diagnostics_separate():
+    status = {
+        "main_search": {"ok": True},
+        "web_search": {"ok": False},
+        "docs_search": {"ok": False},
+        "web_fetch": {"ok": False},
+        "site_map": {"ok": False},
+    }
+
+    result = service.validate_command_capabilities(
+        "search",
+        minimum_profile="standard",
+        response_mode="concise",
+        capability_status=status,
+    )
+
+    assert result["ok"] is True
+    assert result["required_capabilities"] == ["main_search"]
+    assert result["missing_capabilities"] == []
+    assert set(result["optional_missing"]) == {"docs_search", "web_search", "web_fetch"}
+    assert result["degraded"] is True
+
+
+def test_provider_command_requires_named_provider(monkeypatch):
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    result = service.validate_command_capabilities(
+        "exa-search",
+        minimum_profile="standard",
+        capability_status={
+            "docs_search": {
+                "ok": True,
+                "configured": ["context7"],
+                "provider_status": [
+                    {"provider": "context7", "eligible": True, "configured": True},
+                ],
+            }
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["required_capabilities"] == ["docs_search"]
+    assert result["missing_capabilities"] == []
+    assert result["required_providers"] == ["exa"]
+    assert result["missing_providers"] == ["exa"]
+    assert result["error_type"] == "config_error"
+
+
+@pytest.mark.asyncio
+async def test_search_standard_runs_with_unrelated_capabilities_missing(monkeypatch):
+    monkeypatch.setenv("SMART_SEARCH_MINIMUM_PROFILE", "standard")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_URL", "https://relay.example.com/v1")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "relay-test-secret")
+
+    async def fake_search(self, query, platform="", ctx=None):
+        return "Answer."
+
+    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
+
+    result = await service.search("plain query")
+
+    assert result["ok"] is True
+    assert result["minimum_profile_ok"] is False
+    assert result["required_capabilities"] == ["main_search"]
+    assert result["missing_capabilities"] == []
+    assert result["degraded"] is True
+
+
+@pytest.mark.asyncio
+async def test_search_lite_evidence_uses_source_only_capabilities(monkeypatch):
+    monkeypatch.setenv("SMART_SEARCH_MINIMUM_PROFILE", "lite")
+    monkeypatch.setenv("ZHIPU_API_KEY", "zhipu-test-secret")
+
+    async def fake_web_search(query, count=5, providers="auto", fallback="auto"):
+        return (
+            [{"url": "https://source.example.com", "title": "Source", "provider": "zhipu"}],
+            [service._attempt("web_search", "zhipu", "ok", time.time(), result_count=1)],
+        )
+
+    monkeypatch.setattr(service, "_run_web_search_fallback", fake_web_search)
+
+    result = await service.search("source query", response_mode="evidence")
+
+    assert result["ok"] is True
+    assert result["primary_api_mode"] == "source-only"
+    assert result["minimum_profile_ok"] is True
+    assert result["required_capability_groups"] == [["web_search", "docs_search"]]
+    assert result["missing_capabilities"] == []
+    assert result["routing_decision"]["required_capabilities"] == ["web_search"]
+    assert result["degraded"] is True
+
+
+@pytest.mark.asyncio
+async def test_search_lite_concise_requires_main_search(monkeypatch):
+    monkeypatch.setenv("SMART_SEARCH_MINIMUM_PROFILE", "lite")
+    monkeypatch.setenv("ZHIPU_API_KEY", "zhipu-test-secret")
+
+    result = await service.search("source query")
+
+    assert result["ok"] is False
+    assert result["error_type"] == "config_error"
+    assert result["required_capabilities"] == ["main_search"]
+    assert result["missing_capabilities"] == ["main_search"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_map_report_only_their_missing_capability(monkeypatch):
+    fetch_result = await service.fetch("https://example.com")
+    map_result = await service.map_site("https://example.com")
+
+    assert fetch_result["error_type"] == "config_error"
+    assert fetch_result["required_capabilities"] == ["web_fetch"]
+    assert fetch_result["missing_capabilities"] == ["web_fetch"]
+    assert map_result["error_type"] == "config_error"
+    assert map_result["required_capabilities"] == ["site_map"]
+    assert map_result["missing_capabilities"] == ["site_map"]
+
+
+@pytest.mark.asyncio
+async def test_provider_specific_command_reports_missing_named_provider(monkeypatch):
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+
+    async def should_not_run(*args, **kwargs):
+        raise AssertionError("provider must not run when its key is missing")
+
+    monkeypatch.setattr(service.ExaSearchProvider, "search", should_not_run)
+
+    result = await service.exa_search("python docs")
+
+    assert result["ok"] is False
+    assert result["error_type"] == "config_error"
+    assert result["required_capabilities"] == ["docs_search"]
+    assert result["missing_capabilities"] == ["docs_search"]
+    assert result["required_providers"] == ["exa"]
+    assert result["missing_providers"] == ["exa"]
+
+
+@pytest.mark.asyncio
+async def test_research_missing_fetch_is_configuration_error(monkeypatch):
+    result = await service.research("https://example.com/source", fallback="off")
+
+    assert result["ok"] is False
+    assert result["error_type"] == "config_error"
+    assert result["required_capabilities"] == ["web_fetch"]
+    assert result["missing_capabilities"] == ["web_fetch"]
+    assert result["error_type"] != "evidence_error"
+
+
+@pytest.mark.asyncio
+async def test_route_reports_missing_optional_provider_without_blocking(monkeypatch):
+    result = await service.route("today AI news")
+
+    assert result["ok"] is True
+    assert result["executed_search"] is False
+    assert "web_search" in result["required_capabilities"]
+    assert "web_search" in result["missing_capabilities"]
+    assert result["degraded"] is True
+
+
+@pytest.mark.asyncio
+async def test_doctor_accepts_lite_source_profile_without_main_connection(monkeypatch):
+    monkeypatch.setenv("SMART_SEARCH_MINIMUM_PROFILE", "lite")
+    monkeypatch.setenv("ZHIPU_API_KEY", "zhipu-test-secret")
+
+    async def not_configured():
+        return {"status": "not_configured", "message": "not configured"}
+
+    async def zhipu_ok():
+        return {"status": "ok", "message": "ok"}
+
+    for name in (
+        "_test_exa_connection",
+        "_test_tavily_connection",
+        "_test_jina_connection",
+        "_test_zhipu_mcp_connection",
+        "_test_context7_connection",
+    ):
+        monkeypatch.setattr(service, name, not_configured)
+    monkeypatch.setattr(service, "_test_zhipu_connection", zhipu_ok)
+
+    result = await service.doctor()
+
+    assert result["ok"] is True
+    assert result["minimum_profile_ok"] is True
+    assert result["minimum_profile_missing"] == ["main_search", "docs_search", "web_fetch"]
+    assert result["degraded"] is True
+    assert result["primary_connection_test"]["status"] == "config_error"
 
 
 @pytest.mark.asyncio
@@ -1866,6 +2056,7 @@ async def test_anysearch_service_parse_error(monkeypatch):
             return "not json"
 
     monkeypatch.setattr(service, "AnySearchProvider", FakeAnySearchProvider)
+    monkeypatch.setenv("ANYSEARCH_API_KEY", "anysearch-test-secret")
 
     result = await service.anysearch_domains()
 

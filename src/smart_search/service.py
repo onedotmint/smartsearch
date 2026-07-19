@@ -69,6 +69,35 @@ SOURCE_PROVENANCE_WARNING = (
 MINIMUM_PROFILE_ERROR = "当前能力档位缺少可用的搜索或取证能力。"
 PROFILE_NAMES = ("fast", "balanced", "deep")
 CAPABILITY_PROFILE_NAMES = ("lite", "standard", "full", "off")
+COMMAND_CAPABILITY_MATRIX: dict[str, dict[str, tuple[str, ...]]] = {
+    "search": {
+        "required": ("main_search",),
+        "optional": ("docs_search", "web_search", "web_fetch"),
+    },
+    "fetch": {"required": ("web_fetch",), "optional": ()},
+    "map": {"required": ("site_map",), "optional": ()},
+    "research": {
+        "required": ("web_fetch",),
+        "optional": ("docs_search", "web_search"),
+    },
+    "route": {"required": (), "optional": ()},
+    "doctor": {"required": (), "optional": ()},
+    "capabilities": {"required": (), "optional": ()},
+    "exa-search": {"required": ("docs_search",), "required_providers": ("exa",), "optional": ()},
+    "exa-similar": {"required": ("docs_search",), "required_providers": ("exa",), "optional": ()},
+    "context7-library": {"required": ("docs_search",), "required_providers": ("context7",), "optional": ()},
+    "context7-docs": {"required": ("docs_search",), "required_providers": ("context7",), "optional": ()},
+    "zhipu-search": {"required": ("web_search",), "required_providers": ("zhipu",), "optional": ()},
+    "zhipu-mcp-search": {"required": ("web_search",), "required_providers": ("zhipu-mcp",), "optional": ()},
+    "zhipu-mcp-reader": {"required": ("web_fetch",), "required_providers": ("zhipu-mcp-reader",), "optional": ()},
+    "zhipu-mcp-search-doc": {"required": ("zread",), "required_providers": ("zhipu-mcp-zread",), "optional": ()},
+    "zhipu-mcp-repo-structure": {"required": ("zread",), "required_providers": ("zhipu-mcp-zread",), "optional": ()},
+    "zhipu-mcp-read-file": {"required": ("zread",), "required_providers": ("zhipu-mcp-zread",), "optional": ()},
+    "anysearch-domains": {"required": ("vertical_search",), "required_providers": ("anysearch",), "optional": ()},
+    "anysearch-search": {"required": ("vertical_search",), "required_providers": ("anysearch",), "optional": ()},
+    "anysearch-extract": {"required": ("vertical_search",), "required_providers": ("anysearch",), "optional": ()},
+    "anysearch-batch": {"required": ("vertical_search",), "required_providers": ("anysearch",), "optional": ()},
+}
 OPENAI_COMPATIBLE_DIAGNOSE_COMMAND = "smart-search diagnose openai-compatible --format markdown"
 DOCS_INTENT_KEYWORDS = ROUTER_DOCS_INTENT_KEYWORDS
 ZH_CURRENT_KEYWORDS = ROUTER_CURRENT_INTENT_KEYWORDS
@@ -274,6 +303,18 @@ PROVIDER_PROFILES: dict[str, dict[str, Any]] = {
         "minimum_profile_role": "",
         "quality_filters": ["non-empty reader content"],
         "route_reasons": ["Coding Plan quota page read"],
+    },
+    "zhipu-mcp-zread": {
+        "capability": "zread",
+        "config_attrs": ("zhipu_mcp_api_key",),
+        "fallback_order": {"zread": 0},
+        "strengths": ["repository docs", "repository structure", "repository file reads"],
+        "exclusions": ["general docs fallback", "standard minimum profile"],
+        "fallback_group": "zread",
+        "minimum_profile_role": "",
+        "quality_filters": ["repository target required", "Coding Plan entitlement required"],
+        "route_reasons": ["explicit repository/docs command"],
+        "experimental": True,
     },
     "firecrawl": {
         "capability": "web_fetch",
@@ -600,6 +641,15 @@ def _empty_search_result(
         "provider_attempts": [],
         "fallback_used": False,
         "validation_level": "",
+        "required_capabilities": [],
+        "required_capability_groups": [],
+        "missing_capabilities": [],
+        "required_providers": [],
+        "missing_providers": [],
+        "optional_missing": [],
+        "optional_missing_capabilities": [],
+        "degraded": False,
+        "degraded_reason": "",
         "elapsed_ms": _elapsed_ms(start),
     }
     if extra:
@@ -1547,16 +1597,39 @@ async def research(
             "elapsed_ms": _elapsed_ms(start),
         }
 
+    # ================================================================================
+    # 步骤1：执行 research 命令能力校验
+    # ================================================================================
+    # 目标：research 只要求 web_fetch，docs/web discovery 作为按意图选择的可选能力。
+    # 数据源：当前 capability status、minimum profile 和 research 命令矩阵。
+    # 操作：
+    # 1) 缺少 web_fetch 时返回 config_error，不伪装成 evidence_error。
+    # 2) 保留 minimum_profile_ok，供诊断和兼容调用方读取。
+    # 3) 将缺少的可选 discovery 能力记录为 degraded。
     minimum = validate_minimum_profile()
-    if not minimum.get("ok"):
+    if minimum.get("error_type") == "parameter_error":
         return {
             "ok": False,
-            "error_type": minimum.get("error_type", "config_error"),
-            "error": minimum.get("error", MINIMUM_PROFILE_ERROR),
+            "error_type": "parameter_error",
+            "error": minimum.get("error", "Invalid minimum profile"),
             "question": question,
             "mode": "deep_research_execution",
-            "minimum_profile_ok": False,
-            "capability_status": minimum.get("capability_status", {}),
+            "route_policy_version": RESEARCH_ROUTE_POLICY_VERSION,
+            "elapsed_ms": _elapsed_ms(start),
+        }
+    command_capabilities = validate_command_capabilities(
+        "research",
+        minimum_profile=minimum.get("profile", ""),
+        capability_status=minimum.get("capability_status", {}),
+    )
+    capability_metadata = _command_capability_metadata(command_capabilities, minimum)
+    if not command_capabilities.get("ok"):
+        return {
+            "ok": False,
+            "error_type": command_capabilities.get("error_type", "config_error"),
+            "error": command_capabilities.get("error", MINIMUM_PROFILE_ERROR),
+            "question": question,
+            "mode": "deep_research_execution",
             "final_answer": "",
             "citations": [],
             "evidence_items": [],
@@ -1566,9 +1639,9 @@ async def research(
             },
             "provider_attempts": [],
             "fallback_used": False,
-            "degraded": True,
             "route_policy_version": RESEARCH_ROUTE_POLICY_VERSION,
             "evidence_dir": evidence_dir,
+            **capability_metadata,
             "elapsed_ms": _elapsed_ms(start),
         }
 
@@ -1851,11 +1924,10 @@ async def research(
         "provider_attempts": provider_attempts,
         "providers_used": _provider_names_from_attempts(provider_attempts),
         "fallback_used": _fallback_used(provider_attempts),
-        "degraded": bool(gaps),
         "route_policy_version": RESEARCH_ROUTE_POLICY_VERSION,
         "evidence_dir": evidence_root,
-        "minimum_profile_ok": minimum.get("ok", False),
-        "capability_status": minimum.get("capability_status", {}),
+        **capability_metadata,
+        "degraded": bool(gaps) or bool(capability_metadata.get("degraded")),
         "elapsed_ms": _elapsed_ms(start),
     }
     attach_metrics(result)
@@ -1877,7 +1949,7 @@ def get_capability_status() -> dict[str, Any]:
     """
     logger.info("开始生成 capability 状态")
     status: dict[str, Any] = {}
-    for capability in ("main_search", "web_search", "docs_search", "web_fetch", "site_map", "vertical_search"):
+    for capability in ("main_search", "web_search", "docs_search", "web_fetch", "site_map", "vertical_search", "zread"):
         provider_status = _provider_status_for_capability(capability)
         configured = [item["provider"] for item in provider_status if item.get("eligible")]
         disabled = [
@@ -1893,6 +1965,8 @@ def get_capability_status() -> dict[str, Any]:
             "ok": bool(configured),
         }
     status["vertical_search"]["experimental"] = True
+    status["zread"]["experimental"] = True
+    status["zread"]["explicit"] = True
 
     main_configured = status["main_search"]["configured"]
     deep_research_providers = (
@@ -1926,7 +2000,7 @@ def _minimum_profile_result(profile: str, capability_status: dict[str, Any]) -> 
     legacy_required = [] if profile == "off" else ["main_search", "docs_search", "web_fetch"]
     available_search = any(
         capability_status.get(capability, {}).get("ok")
-        for capability in ("main_search", "web_search")
+        for capability in ("main_search", "web_search", "docs_search")
     )
     if profile == "off":
         enforced_required: list[str] = []
@@ -1964,12 +2038,311 @@ def _minimum_profile_result(profile: str, capability_status: dict[str, Any]) -> 
     }
 
 
+def _capability_available(capability_status: dict[str, Any], capability: str) -> bool:
+    status = capability_status.get(capability) or {}
+    return bool(status.get("ok") or status.get("configured"))
+
+
+def _required_capability_groups(
+    command: str,
+    *,
+    minimum_profile: str,
+    response_mode: str = "",
+) -> tuple[tuple[str, ...], bool]:
+    """
+    ================================================================================
+    步骤1：解析命令能力矩阵
+    ================================================================================
+    目标：把全局 minimum profile 诊断与命令级必需能力分开。
+    数据源：COMMAND_CAPABILITY_MATRIX、当前 minimum profile 和 response mode。
+    操作：
+    1) 读取命令的必需能力和可选能力边界。
+    2) 在显式 lite/off 的 evidence search 中允许 web_search/docs_search 二选一。
+    3) 返回能力组和是否使用 source-only 路径。
+    """
+    normalized_command = (command or "").strip().lower()
+    profile = (minimum_profile or "standard").strip().lower()
+    matrix = COMMAND_CAPABILITY_MATRIX.get(normalized_command, {})
+    required = tuple(matrix.get("required", ()))
+    source_only = (
+        normalized_command == "search"
+        and profile in {"lite", "off"}
+        and (response_mode or "").strip().lower() == "evidence"
+    )
+    if source_only:
+        return (("web_search", "docs_search"),), True
+    return tuple((capability,) for capability in required), False
+
+
+def validate_command_capabilities(
+    command: str,
+    *,
+    minimum_profile: str = "",
+    response_mode: str = "",
+    capability_status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    ================================================================================
+    步骤2：校验命令必需能力
+    ================================================================================
+    目标：只阻断当前命令缺失的能力，保留 profile 全局诊断结果。
+    数据源：当前 provider capability status 和命令能力矩阵。
+    操作：
+    1) 计算必需能力组，支持 source-only 的同能力替代组。
+    2) 生成缺失能力、可选能力和降级原因。
+    3) 返回稳定的 config_error 字段供 service、doctor 和 CLI 共用。
+    """
+    logger.info("开始校验命令能力: command=%s", command)
+    try:
+        profile = (minimum_profile or config.minimum_profile).strip().lower()
+    except ValueError as exc:
+        result = {
+            "ok": False,
+            "command": command,
+            "error_type": "parameter_error",
+            "error": str(exc),
+            "required_capabilities": [],
+            "required_capability_groups": [],
+            "missing_capabilities": [],
+            "required_providers": [],
+            "missing_providers": [],
+            "optional_missing": [],
+            "degraded": False,
+            "degraded_reason": "",
+            "capability_status": capability_status or {},
+        }
+        logger.info("命令能力校验完成: command=%s ok=false error_type=parameter_error", command)
+        return result
+
+    status = capability_status if capability_status is not None else get_capability_status()
+    groups, source_only = _required_capability_groups(
+        command,
+        minimum_profile=profile,
+        response_mode=response_mode,
+    )
+    required_capabilities: list[str] = []
+    missing_capabilities: list[str] = []
+    for group in groups:
+        for capability in group:
+            if capability not in required_capabilities:
+                required_capabilities.append(capability)
+        if not any(_capability_available(status, capability) for capability in group):
+            missing_capabilities.extend(capability for capability in group if capability not in missing_capabilities)
+
+    matrix = COMMAND_CAPABILITY_MATRIX.get((command or "").strip().lower(), {})
+    required_providers = tuple(matrix.get("required_providers", ()))
+    missing_providers: list[str] = []
+    for provider in required_providers:
+        provider_status = next(
+            (
+                item
+                for capability_data in status.values()
+                for item in capability_data.get("provider_status", [])
+                if item.get("provider") == provider
+            ),
+            _provider_availability(provider),
+        )
+        if not provider_status.get("eligible"):
+            missing_providers.append(provider)
+    optional_capabilities = tuple(matrix.get("optional", ()))
+    optional_missing = [
+        capability
+        for capability in optional_capabilities
+        if not _capability_available(status, capability)
+        and not bool((status.get(capability) or {}).get("experimental"))
+    ]
+    degraded_reasons: list[str] = []
+    if source_only:
+        degraded_reasons.append("main_search 未配置，当前返回 source-only 来源候选")
+    if optional_missing:
+        degraded_reasons.append(f"可选能力不可用: {', '.join(optional_missing)}")
+    missing_reasons = [
+        str(item.get("reason"))
+        for capability in missing_capabilities
+        for item in (status.get(capability, {}).get("provider_status") or [])
+        if item.get("configured") and item.get("reason")
+    ]
+    error_parts: list[str] = []
+    if missing_capabilities:
+        error_parts.append(f"{command} 缺少必需能力: {', '.join(missing_capabilities)}")
+    if missing_providers:
+        error_parts.append(f"{command} 缺少必需 provider: {', '.join(missing_providers)}")
+    error = "; ".join(error_parts)
+    if error and missing_reasons:
+        error += f" ({'; '.join(dict.fromkeys(missing_reasons))})"
+    result = {
+        "ok": not missing_capabilities and not missing_providers,
+        "command": command,
+        "error_type": "config_error" if error else "",
+        "error": error,
+        "required_capabilities": required_capabilities,
+        "required_capability_groups": [list(group) for group in groups],
+        "missing_capabilities": missing_capabilities,
+        "required_providers": list(required_providers),
+        "missing_providers": missing_providers,
+        "optional_capabilities": list(optional_capabilities),
+        "optional_missing": optional_missing,
+        "optional_missing_capabilities": optional_missing,
+        "source_only": source_only,
+        "degraded": bool(degraded_reasons),
+        "degraded_reason": "; ".join(degraded_reasons),
+        "capability_status": status,
+    }
+    logger.info(
+        "命令能力校验完成: command=%s ok=%s missing=%s degraded=%s",
+        command,
+        result["ok"],
+        result["missing_capabilities"],
+        result["degraded"],
+    )
+    return result
+
+
 def validate_minimum_profile() -> dict[str, Any]:
     try:
         profile = config.minimum_profile
     except ValueError as e:
         return {"ok": False, "error_type": "parameter_error", "error": str(e), "missing": []}
     return _minimum_profile_result(profile, get_capability_status())
+
+
+def _command_capability_metadata(
+    command_result: dict[str, Any],
+    minimum_result: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    ================================================================================
+    步骤3：组装能力观测字段
+    ================================================================================
+    目标：让命令结果同时表达命令级校验和 minimum profile 诊断。
+    数据源：validate_command_capabilities 和 validate_minimum_profile 的结果。
+    操作：
+    1) 保留 minimum_profile_ok 的旧含义。
+    2) 暴露 required/missing/degraded 的命令级字段。
+    3) 复用同一 capability_status，避免诊断与执行看到不同状态。
+    """
+    logger.info("开始组装命令能力观测字段: command=%s", command_result.get("command", ""))
+    metadata = {
+        "command": command_result.get("command", ""),
+        "minimum_profile": minimum_result.get("profile", ""),
+        "minimum_profile_ok": bool(minimum_result.get("ok", False)),
+        "required_capabilities": list(command_result.get("required_capabilities") or []),
+        "required_capability_groups": list(command_result.get("required_capability_groups") or []),
+        "missing_capabilities": list(command_result.get("missing_capabilities") or []),
+        "required_providers": list(command_result.get("required_providers") or []),
+        "missing_providers": list(command_result.get("missing_providers") or []),
+        "optional_missing": list(command_result.get("optional_missing") or []),
+        "optional_missing_capabilities": list(command_result.get("optional_missing_capabilities") or []),
+        "degraded": bool(command_result.get("degraded")),
+        "degraded_reason": command_result.get("degraded_reason", ""),
+        "capability_status": command_result.get("capability_status") or minimum_result.get("capability_status", {}),
+    }
+    logger.info(
+        "命令能力观测字段组装完成: command=%s missing=%s",
+        metadata["command"],
+        metadata["missing_capabilities"],
+    )
+    return metadata
+
+
+def _command_capability_preflight(command: str, *, response_mode: str = "") -> dict[str, Any]:
+    """
+    /*
+     * ==============================================================================
+     * 步骤4：执行命令能力预检
+     * ==============================================================================
+     * 目标：让 provider-specific 命令复用同一套 profile 诊断和能力错误契约。
+     * 数据源：minimum profile、capability status 和命令能力矩阵。
+     * 操作：
+     * 1) 读取一次当前 profile 诊断结果。
+     * 2) 校验命令能力和明确要求的 provider，不调用网络。
+     * 3) 返回可附加到成功结果或配置错误的稳定元数据。
+     * ==============================================================================
+     */
+    """
+    logger.info("开始执行命令能力预检: command=%s", command)
+    minimum = validate_minimum_profile()
+    if minimum.get("error_type") == "parameter_error":
+        result = {
+            "ok": False,
+            "command": command,
+            "error_type": "parameter_error",
+            "error": minimum.get("error", "Invalid minimum profile"),
+            "metadata": {
+                "command": command,
+                "minimum_profile": "",
+                "minimum_profile_ok": False,
+                "required_capabilities": [],
+                "required_capability_groups": [],
+                "missing_capabilities": [],
+                "required_providers": [],
+                "missing_providers": [],
+                "optional_missing": [],
+                "optional_missing_capabilities": [],
+                "degraded": False,
+                "degraded_reason": "",
+                "capability_status": {},
+            },
+        }
+        logger.info("命令能力预检完成: command=%s ok=false error_type=parameter_error", command)
+        return result
+
+    command_result = validate_command_capabilities(
+        command,
+        minimum_profile=minimum.get("profile", ""),
+        response_mode=response_mode,
+        capability_status=minimum.get("capability_status", {}),
+    )
+    result = {
+        **command_result,
+        "metadata": _command_capability_metadata(command_result, minimum),
+    }
+    logger.info(
+        "命令能力预检完成: command=%s ok=%s missing=%s providers=%s",
+        command,
+        result["ok"],
+        result.get("missing_capabilities", []),
+        result.get("missing_providers", []),
+    )
+    return result
+
+
+def _command_capability_failure(
+    preflight: dict[str, Any],
+    start: float,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    /*
+     * ==============================================================================
+     * 步骤5：构造命令能力错误
+     * ==============================================================================
+     * 目标：在 provider 调用前返回统一 config_error/parameter_error 结果。
+     * 数据源：_command_capability_preflight 的错误和元数据。
+     * 操作：
+     * 1) 保留 required/missing capability 和 provider 字段。
+     * 2) 写入稳定错误类型和错误文本。
+     * 3) 记录当前命令耗时，并允许补充 url 等命令参数。
+     * ==============================================================================
+     */
+    """
+    logger.info("开始构造命令能力错误: command=%s", preflight.get("command", ""))
+    result: dict[str, Any] = {
+        "ok": False,
+        "error_type": preflight.get("error_type", "config_error"),
+        "error": preflight.get("error", "命令缺少必需能力"),
+        **(preflight.get("metadata") or {}),
+        "elapsed_ms": _elapsed_ms(start),
+    }
+    if extra:
+        result.update(extra)
+    logger.info(
+        "命令能力错误构造完成: command=%s error_type=%s",
+        result.get("command", ""),
+        result.get("error_type", ""),
+    )
+    return result
 
 
 def capabilities() -> dict[str, Any]:
@@ -1984,16 +2357,19 @@ def capabilities() -> dict[str, Any]:
     2) 同时暴露可用命令、profile 和输出格式。
     3) 保留缺失能力，避免客户端误以为系统拥有未配置功能。
     """
+    logger.info("开始生成公共能力清单")
     status = get_capability_status()
     try:
         active_minimum_profile = config.minimum_profile
     except ValueError as exc:
-        return {
+        result = {
             "ok": False,
             "error_type": "parameter_error",
             "error": str(exc),
             "capabilities": {},
         }
+        logger.info("公共能力清单生成失败: error_type=parameter_error")
+        return result
     public_capabilities: dict[str, dict[str, Any]] = {}
     for name, item in status.items():
         configured = list(item.get("configured") or [])
@@ -2005,7 +2381,17 @@ def capabilities() -> dict[str, Any]:
             "disabled_providers": list(item.get("disabled") or []),
             "experimental": bool(item.get("experimental", False)),
         }
-    return {
+    command_capabilities = {
+        command: {
+            "required_capabilities": list(matrix.get("required", ())),
+            "required_providers": list(matrix.get("required_providers", ())),
+            "optional_capabilities": list(matrix.get("optional", ())),
+            "source_only_profiles": ["lite", "off"] if command == "search" else [],
+            "source_only_response_mode": "evidence" if command == "search" else "",
+        }
+        for command, matrix in COMMAND_CAPABILITY_MATRIX.items()
+    }
+    result = {
         "ok": True,
         "commands": {
             "search": True,
@@ -2020,8 +2406,11 @@ def capabilities() -> dict[str, Any]:
         "profiles": list(PROFILE_NAMES),
         "minimum_profiles": list(CAPABILITY_PROFILE_NAMES),
         "active_minimum_profile": active_minimum_profile,
+        "command_capabilities": command_capabilities,
         "output_formats": ["json", "markdown", "content"],
     }
+    logger.info("公共能力清单生成完成: profile=%s", active_minimum_profile)
+    return result
 
 
 def _parse_provider_filter(providers: str = "auto") -> set[str] | None:
@@ -2536,6 +2925,7 @@ async def _search_without_synthesis(
     response_mode: str,
     start: float,
     session_id: str,
+    capability_metadata: dict[str, Any],
 ) -> dict[str, Any]:
     """
     =================================================================================
@@ -2548,13 +2938,21 @@ async def _search_without_synthesis(
     2) 没有结果时尝试已配置 docs_search 来源。
     3) 返回证据候选，不伪造综合答案。
     """
+    logger.info("开始执行 source-only 搜索: query=%s", query)
     sources, attempts = await _run_web_search_fallback(query, count=count, providers=providers, fallback=fallback)
     if not sources:
         docs_sources, docs_attempts = await _run_docs_search_fallback(query, providers=providers, fallback=fallback)
         sources.extend(docs_sources)
         attempts.extend(docs_attempts)
     ok = bool(sources)
-    return {
+    source_capabilities = list(
+        dict.fromkeys(
+            attempt.get("capability")
+            for attempt in attempts
+            if attempt.get("capability") in {"web_search", "docs_search"}
+        )
+    )
+    result = {
         "ok": ok,
         "error_type": "" if ok else "network_error",
         "error": "" if ok else "搜索 provider 未返回来源",
@@ -2575,15 +2973,18 @@ async def _search_without_synthesis(
         "routing_decision": {
             "mode": "source-only",
             "reason": "No main_search provider configured; returned same-capability source discovery.",
-            "required_capabilities": ["web_search"],
+            "required_capabilities": source_capabilities or ["web_search", "docs_search"],
         },
         "providers_used": _provider_names_from_attempts(attempts),
         "provider_attempts": attempts,
         "fallback_used": _fallback_used(attempts),
         "validation_level": validation_level,
-        "minimum_profile_ok": True,
         "elapsed_ms": _elapsed_ms(start),
     }
+    result.update(capability_metadata)
+    result["minimum_profile_ok"] = bool(capability_metadata.get("minimum_profile_ok", False))
+    logger.info("source-only 搜索完成: ok=%s sources=%s", ok, len(sources))
+    return result
 
 
 async def call_tavily_search(query: str, max_results: int = 6) -> list[dict] | None:
@@ -2761,18 +3162,42 @@ async def search(
 
     extra_sources = profile_extra_sources
 
+    # ================================================================================
+    # 步骤4：执行搜索命令能力校验
+    # ================================================================================
+    # 目标：只校验 search 当前需要的能力，保留 minimum profile 作为诊断信息。
+    # 数据源：当前 capability status、minimum profile 和 response mode。
+    # 操作：
+    # 1) concise/synthesized 要求 main_search。
+    # 2) lite/off 的 evidence 模式允许 web_search/docs_search source-only。
+    # 3) 缺少命令必需能力时返回聚焦 config_error。
     minimum = validate_minimum_profile()
-    if not minimum.get("ok"):
+    if minimum.get("error_type") == "parameter_error":
         return _empty_search_result(
             start,
             session_id,
             query,
-            minimum.get("error_type", "config_error"),
-            minimum.get("error", MINIMUM_PROFILE_ERROR),
+            "parameter_error",
+            minimum.get("error", "Invalid minimum profile"),
+            extra={"validation_level": validation_level},
+        )
+    command_capabilities = validate_command_capabilities(
+        "search",
+        minimum_profile=minimum.get("profile", ""),
+        response_mode=response_mode,
+        capability_status=minimum.get("capability_status", {}),
+    )
+    capability_metadata = _command_capability_metadata(command_capabilities, minimum)
+    if not command_capabilities.get("ok"):
+        return _empty_search_result(
+            start,
+            session_id,
+            query,
+            command_capabilities.get("error_type", "config_error"),
+            command_capabilities.get("error", MINIMUM_PROFILE_ERROR),
             extra={
-                "capability_status": minimum.get("capability_status", {}),
-                "minimum_profile_ok": False,
                 "validation_level": validation_level,
+                **capability_metadata,
             },
         )
 
@@ -2787,7 +3212,7 @@ async def search(
             source_capabilities.get("web_search", {}).get("configured")
             or source_capabilities.get("docs_search", {}).get("configured")
         )
-        if has_source_search:
+        if has_source_search and command_capabilities.get("source_only"):
             return await _search_without_synthesis(
                 query,
                 count=max(3, min(6, extra_sources or 3)),
@@ -2798,6 +3223,7 @@ async def search(
                 response_mode=response_mode,
                 start=start,
                 session_id=session_id,
+                capability_metadata=capability_metadata,
             )
         return _empty_search_result(
             start,
@@ -2807,8 +3233,11 @@ async def search(
             "No configured main_search provider matches --providers.",
             extra={
                 "validation_level": validation_level,
-                "capability_status": minimum.get("capability_status", {}),
-                "minimum_profile_ok": minimum.get("ok", False),
+                **capability_metadata,
+                "required_capabilities": ["main_search"],
+                "missing_capabilities": ["main_search"],
+                "degraded": False,
+                "degraded_reason": "",
             },
         )
 
@@ -3011,8 +3440,7 @@ async def search(
         result["model_fallback_used"] = model_fallback_used
         result["routing_decision"] = routing_decision
         result["validation_level"] = validation_level
-        result["minimum_profile_ok"] = minimum.get("ok", False)
-        result["capability_status"] = minimum.get("capability_status", {})
+        result.update(capability_metadata)
         return result
 
     successful_main_config = successful_main_config or selected_main_provider_configs[0]
@@ -3140,8 +3568,7 @@ async def search(
         "transport_fallback_used": transport_fallback_used,
         "model_fallback_used": model_fallback_used,
         "validation_level": validation_level,
-        "minimum_profile_ok": minimum.get("ok", False),
-        "capability_status": minimum.get("capability_status", {}),
+        **capability_metadata,
         "elapsed_ms": _elapsed_ms(start),
     }
 
@@ -3172,6 +3599,27 @@ async def route(
             "elapsed_ms": _elapsed_ms(start),
         }
     data = route_result.to_dict()
+    # ================================================================================
+    # 步骤3：补充 route 能力诊断
+    # ================================================================================
+    # 目标：route 只做本地/可选远程路由，不因缺少 provider 阻断结果。
+    # 数据源：IntentRouter required_capabilities、provider registry 和 profile 诊断。
+    # 操作：
+    # 1) 计算路由建议能力当前是否可用。
+    # 2) 缺失能力写入 degraded_reason，不改变 route 的成功语义。
+    # 3) 保留 minimum_profile_ok 作为诊断字段，而不是 route 的执行门槛。
+    minimum = validate_minimum_profile()
+    capability_status = minimum.get("capability_status") or get_capability_status()
+    routed_capabilities = list(route_result.required_capabilities)
+    missing_capabilities = [
+        capability
+        for capability in routed_capabilities
+        if not _capability_available(capability_status, capability)
+    ]
+    degraded_reasons = [str(data.get("degraded_reason"))] if data.get("degraded_reason") else []
+    if missing_capabilities:
+        degraded_reasons.append(f"路由建议能力不可用: {', '.join(missing_capabilities)}")
+    logger.info("route 能力诊断完成: missing=%s", missing_capabilities)
     router_status = intent_router_status()
     preset_fields = {
         key: router_status.get(key)
@@ -3196,6 +3644,13 @@ async def route(
             "validation_level": validation_level,
             "executed_search": False,
             "provider_selection": "not_executed",
+            "required_capabilities": routed_capabilities,
+            "missing_capabilities": missing_capabilities,
+            "minimum_profile": minimum.get("profile", ""),
+            "minimum_profile_ok": bool(minimum.get("ok", False)),
+            "capability_status": capability_status,
+            "degraded": bool(data.get("degraded") or missing_capabilities),
+            "degraded_reason": "; ".join(degraded_reasons),
             "embedding_model": router_status.get("embedding_model", ""),
             "embedding_threshold": router_status.get("embedding_threshold", ""),
             "embedding_margin": router_status.get("embedding_margin", ""),
@@ -3752,15 +4207,54 @@ def _primary_search_error_result(
 @observe_command
 async def fetch(url: str) -> dict[str, Any]:
     start = time.time()
+    # ================================================================================
+    # 步骤1：校验 fetch 命令能力
+    # ================================================================================
+    # 目标：fetch 只依赖 web_fetch，不执行无关 minimum profile 预检。
+    # 数据源：provider registry 和当前 profile 诊断结果。
+    # 操作：
+    # 1) 缺少 web_fetch 时立即返回 config_error。
+    # 2) 保留 minimum profile 和 capability status 观测字段。
+    # 3) provider 网络失败继续沿用同能力 fallback。
+    minimum = validate_minimum_profile()
+    if minimum.get("error_type") == "parameter_error":
+        return {
+            "ok": False,
+            "url": url,
+            "content": "",
+            "error_type": "parameter_error",
+            "error": minimum.get("error", "Invalid minimum profile"),
+            "elapsed_ms": _elapsed_ms(start),
+        }
+    command_capabilities = validate_command_capabilities(
+        "fetch",
+        minimum_profile=minimum.get("profile", ""),
+        capability_status=minimum.get("capability_status", {}),
+    )
+    capability_metadata = _command_capability_metadata(command_capabilities, minimum)
+    if not command_capabilities.get("ok"):
+        return {
+            "ok": False,
+            "url": url,
+            "provider": "",
+            "content": "",
+            "error_type": command_capabilities.get("error_type", "config_error"),
+            "error": command_capabilities.get("error", "fetch 缺少 web_fetch 能力"),
+            **capability_metadata,
+            "elapsed_ms": _elapsed_ms(start),
+        }
+
     with observe_stage("fetch.providers"):
         fetch_result, attempts = await _run_web_fetch_fallback(url)
     if fetch_result:
-        return {
+        result = {
             **fetch_result,
             "provider_attempts": attempts,
             "fallback_used": _fallback_used(attempts),
             "elapsed_ms": _elapsed_ms(start),
         }
+        result.update(capability_metadata)
+        return result
 
     fetch_capability = get_capability_status()["web_fetch"]
     if not fetch_capability.get("configured"):
@@ -3778,7 +4272,7 @@ async def fetch(url: str) -> dict[str, Any]:
     else:
         error = "所有提取服务均未能获取内容"
         error_type = "network_error"
-    return {
+    result = {
         "ok": False,
         "url": url,
         "provider": "",
@@ -3787,8 +4281,10 @@ async def fetch(url: str) -> dict[str, Any]:
         "error": error,
         "provider_attempts": attempts,
         "fallback_used": _fallback_used(attempts),
+        **capability_metadata,
         "elapsed_ms": _elapsed_ms(start),
     }
+    return result
 
 
 async def map_site(
@@ -3800,8 +4296,43 @@ async def map_site(
     timeout: int = 150,
 ) -> dict[str, Any]:
     start = time.time()
+    # ================================================================================
+    # 步骤2：校验 map 命令能力
+    # ================================================================================
+    # 目标：site map 只依赖 site_map，缺失时给出聚焦配置错误。
+    # 数据源：provider registry 和当前 profile 诊断结果。
+    # 操作：
+    # 1) 不执行 main_search、docs_search 或 web_fetch 的全局预检。
+    # 2) 返回稳定 required/missing capability 字段。
+    # 3) 通过后调用既有 Tavily site-map 适配器。
+    minimum = validate_minimum_profile()
+    if minimum.get("error_type") == "parameter_error":
+        return {
+            "ok": False,
+            "url": url,
+            "error_type": "parameter_error",
+            "error": minimum.get("error", "Invalid minimum profile"),
+            "elapsed_ms": _elapsed_ms(start),
+        }
+    command_capabilities = validate_command_capabilities(
+        "map",
+        minimum_profile=minimum.get("profile", ""),
+        capability_status=minimum.get("capability_status", {}),
+    )
+    capability_metadata = _command_capability_metadata(command_capabilities, minimum)
+    if not command_capabilities.get("ok"):
+        return {
+            "ok": False,
+            "url": url,
+            "error_type": command_capabilities.get("error_type", "config_error"),
+            "error": command_capabilities.get("error", "map 缺少 site_map 能力"),
+            **capability_metadata,
+            "elapsed_ms": _elapsed_ms(start),
+        }
+
     result = await call_tavily_map(url, instructions, max_depth, max_breadth, limit, timeout)
     result.setdefault("url", url)
+    result.update(capability_metadata)
     result.setdefault("elapsed_ms", _elapsed_ms(start))
     return result
 
@@ -3817,6 +4348,10 @@ async def exa_search(
     exclude_domains: str | list[str] | tuple[str, ...] = "",
     category: str = "",
 ) -> dict[str, Any]:
+    start = time.time()
+    preflight = _command_capability_preflight("exa-search")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"query": query})
     api_key = config.exa_api_key
     if not api_key:
         return {
@@ -3840,7 +4375,9 @@ async def exa_search(
         exclude_domains=exclude_domain_list,
         category=category or None,
     )
-    return await _decode_provider_json(raw, provider="exa", capability="docs_search")
+    result = await _decode_provider_json(raw, provider="exa", capability="docs_search")
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 def _anysearch_provider() -> AnySearchProvider:
@@ -3898,15 +4435,25 @@ async def _decode_provider_json(
 
 
 async def anysearch_domains(domain: str = "") -> dict[str, Any]:
-    return await _decode_provider_json(
+    start = time.time()
+    preflight = _command_capability_preflight("anysearch-domains")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"domain": domain})
+    result = await _decode_provider_json(
         await _anysearch_provider().list_domains(domain),
         provider="anysearch",
         capability="vertical_search",
     )
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 async def anysearch_search(query: str, domain: str = "", sub_domain: str = "", max_results: int = 5) -> dict[str, Any]:
-    return await _decode_provider_json(
+    start = time.time()
+    preflight = _command_capability_preflight("anysearch-search")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"query": query})
+    result = await _decode_provider_json(
         await _anysearch_provider().vertical_search(
             query=query,
             domain=domain,
@@ -3916,22 +4463,36 @@ async def anysearch_search(query: str, domain: str = "", sub_domain: str = "", m
         provider="anysearch",
         capability="vertical_search",
     )
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 async def anysearch_extract(url: str, max_length: int = 20000) -> dict[str, Any]:
-    return await _decode_provider_json(
+    start = time.time()
+    preflight = _command_capability_preflight("anysearch-extract")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"url": url})
+    result = await _decode_provider_json(
         await _anysearch_provider().extract(url, max_length=max_length),
         provider="anysearch",
         capability="vertical_search",
     )
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 async def anysearch_batch(queries: list[str], max_results: int = 3) -> dict[str, Any]:
-    return await _decode_provider_json(
+    start = time.time()
+    preflight = _command_capability_preflight("anysearch-batch")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"queries": queries})
+    result = await _decode_provider_json(
         await _anysearch_provider().batch_search(queries, max_results=max_results),
         provider="anysearch",
         capability="vertical_search",
     )
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 def _zhipu_mcp_search_provider() -> ZhipuMCPProvider:
@@ -3966,46 +4527,80 @@ async def jina_fetch(url: str) -> dict[str, Any]:
 
 
 async def zhipu_mcp_search(query: str, count: int = 5) -> dict[str, Any]:
-    return await _decode_provider_json(
+    start = time.time()
+    preflight = _command_capability_preflight("zhipu-mcp-search")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"query": query})
+    result = await _decode_provider_json(
         await _zhipu_mcp_search_provider().web_search(query, count=count),
         provider="zhipu-mcp",
         capability="web_search",
     )
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 async def zhipu_mcp_reader(url: str) -> dict[str, Any]:
-    return await _decode_provider_json(
+    start = time.time()
+    preflight = _command_capability_preflight("zhipu-mcp-reader")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"url": url})
+    result = await _decode_provider_json(
         await _zhipu_mcp_reader_provider().web_reader(url),
         provider="zhipu-mcp-reader",
         capability="web_fetch",
     )
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 async def zhipu_mcp_search_doc(repo: str, query: str, max_results: int = 5) -> dict[str, Any]:
-    return await _decode_provider_json(
+    start = time.time()
+    preflight = _command_capability_preflight("zhipu-mcp-search-doc")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"repo": repo, "query": query})
+    result = await _decode_provider_json(
         await _zhipu_mcp_zread_provider().search_doc(repo, query, max_results=max_results),
         provider="zhipu-mcp-zread",
-        capability="docs_search",
+        capability="zread",
     )
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 async def zhipu_mcp_repo_structure(repo: str, ref: str = "") -> dict[str, Any]:
-    return await _decode_provider_json(
+    start = time.time()
+    preflight = _command_capability_preflight("zhipu-mcp-repo-structure")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"repo": repo, "ref": ref})
+    result = await _decode_provider_json(
         await _zhipu_mcp_zread_provider().get_repo_structure(repo, ref=ref),
         provider="zhipu-mcp-zread",
-        capability="docs_search",
+        capability="zread",
     )
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 async def zhipu_mcp_read_file(repo: str, path: str, ref: str = "") -> dict[str, Any]:
-    return await _decode_provider_json(
+    start = time.time()
+    preflight = _command_capability_preflight("zhipu-mcp-read-file")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"repo": repo, "path": path, "ref": ref})
+    result = await _decode_provider_json(
         await _zhipu_mcp_zread_provider().read_file(repo, path, ref=ref),
         provider="zhipu-mcp-zread",
-        capability="docs_search",
+        capability="zread",
     )
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 async def exa_find_similar(url: str, num_results: int = 5) -> dict[str, Any]:
+    start = time.time()
+    preflight = _command_capability_preflight("exa-similar")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"url": url})
     api_key = config.exa_api_key
     if not api_key:
         return {
@@ -4016,7 +4611,9 @@ async def exa_find_similar(url: str, num_results: int = 5) -> dict[str, Any]:
 
     provider = ExaSearchProvider(config.exa_base_url, api_key, config.exa_timeout)
     raw = await provider.find_similar(url=url, num_results=num_results)
-    return await _decode_provider_json(raw, provider="exa", capability="docs_search")
+    result = await _decode_provider_json(raw, provider="exa", capability="docs_search")
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 async def zhipu_search(
@@ -4027,6 +4624,10 @@ async def zhipu_search(
     search_domain_filter: str = "",
     content_size: str = "medium",
 ) -> dict[str, Any]:
+    start = time.time()
+    preflight = _command_capability_preflight("zhipu-search")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"query": query})
     api_key = config.zhipu_api_key
     if not api_key:
         return {
@@ -4048,10 +4649,16 @@ async def zhipu_search(
         search_domain_filter=search_domain_filter,
         content_size=content_size,
     )
-    return await _decode_provider_json(raw, provider="zhipu", capability="web_search")
+    result = await _decode_provider_json(raw, provider="zhipu", capability="web_search")
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 async def context7_library(name: str, query: str = "") -> dict[str, Any]:
+    start = time.time()
+    preflight = _command_capability_preflight("context7-library")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"name": name, "query": query})
     api_key = config.context7_api_key
     if not api_key:
         return {
@@ -4061,10 +4668,16 @@ async def context7_library(name: str, query: str = "") -> dict[str, Any]:
         }
     provider = Context7Provider(config.context7_base_url, api_key, config.context7_timeout)
     raw = await provider.library(name, query)
-    return await _decode_provider_json(raw, provider="context7", capability="docs_search")
+    result = await _decode_provider_json(raw, provider="context7", capability="docs_search")
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 async def context7_docs(library_id: str, query: str) -> dict[str, Any]:
+    start = time.time()
+    preflight = _command_capability_preflight("context7-docs")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"library_id": library_id, "query": query})
     api_key = config.context7_api_key
     if not api_key:
         return {
@@ -4074,7 +4687,9 @@ async def context7_docs(library_id: str, query: str) -> dict[str, Any]:
         }
     provider = Context7Provider(config.context7_base_url, api_key, config.context7_timeout)
     raw = await provider.docs(library_id, query)
-    return await _decode_provider_json(raw, provider="context7", capability="docs_search")
+    result = await _decode_provider_json(raw, provider="context7", capability="docs_search")
+    result.update(preflight.get("metadata") or {})
+    return result
 
 
 async def _test_primary_chat_completion(api_url: str, api_key: str, model: str) -> dict[str, Any]:
@@ -4548,6 +5163,16 @@ async def _test_context7_connection() -> dict[str, Any]:
 
 
 async def doctor() -> dict[str, Any]:
+    # ================================================================================
+    # 步骤4：执行 doctor 诊断
+    # ================================================================================
+    # 目标：doctor 始终报告 profile 和 command capability 状态，不把诊断变成隐藏预检。
+    # 数据源：配置、provider connection checks 和统一 capability status。
+    # 操作：
+    # 1) 保留旧的 main_search connection alias 和 minimum profile 字段。
+    # 2) 对 lite/off profile 使用 source capability 判断基本可用性。
+    # 3) 输出缺失能力和降级原因，统一 CLI 退出码映射。
+    logger.info("开始执行 doctor 诊断")
     info = config.get_config_info()
 
     main_provider_configs: list[dict[str, Any]] = []
@@ -4620,13 +5245,46 @@ async def doctor() -> dict[str, Any]:
     info["capability_status"] = minimum.get("capability_status", get_capability_status())
     info["minimum_profile_ok"] = minimum.get("ok", False)
     info["minimum_profile_missing"] = minimum.get("missing", [])
+    info["minimum_profile_missing_required"] = minimum.get("missing_required", [])
+    info["missing_capabilities"] = minimum.get("missing_required", [])
+    info["required_capabilities"] = list(minimum.get("enforced_required", []))
+    info["minimum_profile"] = minimum.get("profile", "")
+    info["command_capabilities"] = {
+        command: {
+            "required_capabilities": list(matrix.get("required", ())),
+            "required_providers": list(matrix.get("required_providers", ())),
+            "optional_capabilities": list(matrix.get("optional", ())),
+            "source_only_profiles": ["lite", "off"] if command == "search" else [],
+            "source_only_response_mode": "evidence" if command == "search" else "",
+        }
+        for command, matrix in COMMAND_CAPABILITY_MATRIX.items()
+    }
+    info["degraded"] = bool(minimum.get("degraded"))
+    info["degraded_reason"] = (
+        f"profile optional capabilities unavailable: {', '.join(minimum.get('optional_missing', []))}"
+        if minimum.get("optional_missing")
+        else ""
+    )
     info["intent_router_status"] = intent_router_status()
     main_connection_tests = info.get("main_search_connection_tests") or {}
     main_search_statuses = [item.get("status") for item in main_connection_tests.values() if isinstance(item, dict)]
     primary_test = info.get("primary_connection_test", {})
     primary_status = primary_test.get("status")
     main_search_ok = any(status == "ok" for status in main_search_statuses) if main_connection_tests else primary_status == "ok"
-    info["ok"] = info.get("config_storage_ok", True) and main_search_ok and minimum.get("ok", False)
+    active_profile = minimum.get("profile", "standard")
+    source_search_ok = any(
+        _capability_available(info["capability_status"], capability)
+        for capability in ("main_search", "web_search", "docs_search")
+    )
+    profile_health_ok = main_search_ok
+    if active_profile in {"lite", "off"}:
+        profile_health_ok = source_search_ok
+    info["ok"] = (
+        info.get("config_storage_ok", True)
+        and not info.get("config_parameter_errors")
+        and profile_health_ok
+        and minimum.get("ok", False)
+    )
     if info["ok"]:
         info["error_type"] = ""
         info["error"] = ""
@@ -4647,6 +5305,7 @@ async def doctor() -> dict[str, Any]:
             info["error_type"] = "network_error"
         else:
             info["error_type"] = "runtime_error"
+    logger.info("doctor 诊断完成: ok=%s profile=%s", info.get("ok", False), active_profile)
     return info
 
 
