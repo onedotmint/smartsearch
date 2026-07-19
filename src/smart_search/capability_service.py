@@ -1,6 +1,37 @@
 """Capability registry, routing metadata, and capability validation."""
 
-from .service_support import *
+import time
+from typing import Any
+
+from .config import config
+from .intent_router import (
+    CAPABILITY_UTTERANCES,
+    DEFAULT_ROUTE_CALIBRATION_MODELS,
+    DEFAULT_SEMANTIC_CONFIDENCE_MARGIN,
+    DEFAULT_SEMANTIC_CONFIDENCE_THRESHOLD,
+    ROUTABLE_CAPABILITIES,
+    ROUTE_CALIBRATION_QUERIES,
+    IntentRouter,
+    build_rules_route,
+    _classifier_can_add_capability,
+    _cosine_similarity,
+    _ordered_capabilities,
+    _semantic_summary,
+)
+from .logger import logger
+from .providers.openai_compatible import OpenAICompatibleSearchProvider
+from .providers.xai_responses import XAIResponsesSearchProvider
+from .security import sanitize_text
+from .service_support import (
+    CAPABILITY_PROFILE_NAMES,
+    COMMAND_CAPABILITY_MATRIX,
+    MINIMUM_PROFILE_ERROR,
+    PROFILE_NAMES,
+    PROVIDER_PROFILES,
+    PROVIDER_REGISTRY,
+    _attempt,
+    _elapsed_ms,
+)
 
 def _provider_capabilities(provider: str) -> tuple[str, ...]:
     profile = PROVIDER_REGISTRY.get(provider, {})

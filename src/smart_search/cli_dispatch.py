@@ -2,6 +2,7 @@
 
 from .cli_support import *
 from .cli_setup import *
+from .capability_service import _minimum_profile_result
 from .cli import _exit_code, _print_result
 
 async def _run_async(args: argparse.Namespace) -> int:
@@ -326,7 +327,7 @@ def _run_setup(args: argparse.Namespace) -> int:
         final_values = _merge_setup_values(current_after, values)
         final_status = _setup_status_from_values(final_values)
         configured_profile = final_values.get("SMART_SEARCH_MINIMUM_PROFILE") or "standard"
-        minimum_result = service._minimum_profile_result(configured_profile, final_status)
+        minimum_result = _minimum_profile_result(configured_profile, final_status)
         _write_stderr(_t(lang, "\n保存完成。\n", "\nSaved.\n"))
         if skill_result is not None:
             _write_skill_install_summary(skill_result, lang)

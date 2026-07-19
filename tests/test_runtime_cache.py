@@ -3,15 +3,15 @@ import asyncio
 import pytest
 
 from smart_search import service
-from smart_search import search_service
+from smart_search import search_service, service_support
 from smart_search.runtime_cache import RuntimeTTLCache
 
 
 @pytest.fixture(autouse=True)
 def clear_runtime_caches():
-    service.reset_runtime_cache()
+    service_support.reset_runtime_cache()
     yield
-    service.reset_runtime_cache()
+    service_support.reset_runtime_cache()
 
 
 @pytest.mark.asyncio

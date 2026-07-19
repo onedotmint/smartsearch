@@ -1,14 +1,105 @@
-"""Stable public service facade for the split service workflows.
+"""Stable public service facade for the split service workflows."""
 
-The facade keeps historical imports working while each workflow owns its
-implementation in a cohesive module.
-"""
+from .capability_service import (
+    capabilities,
+    get_capability_status,
+    intent_router_status,
+    provider_profiles,
+    route,
+    route_calibrate,
+    validate_command_capabilities,
+    validate_minimum_profile,
+)
+from .config import config
+from .operations_service import (
+    config_list,
+    config_path,
+    config_set,
+    config_unset,
+    current_model,
+    diagnose_openai_compatible,
+    doctor,
+    set_model,
+    smoke,
+    write_output,
+)
+from .provider_commands import (
+    anysearch_batch,
+    anysearch_domains,
+    anysearch_extract,
+    anysearch_search,
+    call_firecrawl_scrape,
+    call_firecrawl_search,
+    call_jina_reader,
+    call_tavily_extract,
+    call_tavily_map,
+    call_tavily_search,
+    context7_docs,
+    context7_library,
+    exa_find_similar,
+    exa_search,
+    fetch,
+    map_site,
+    zhipu_mcp_read_file,
+    zhipu_mcp_reader,
+    zhipu_mcp_repo_structure,
+    zhipu_mcp_search,
+    zhipu_mcp_search_doc,
+    zhipu_search,
+)
+from .research_service import build_deep_research_plan, research
+from .search_service import extra_results_to_sources, fetch_available_models, get_available_models_cached, search
+from .service_support import DEEP_ALLOWED_TOOLS, RESEARCH_ROUTE_POLICY_VERSION
 
-from .service_support import *
-from .capability_service import *
-from .search_service import *
-from .research_service import *
-from .provider_commands import *
-from .operations_service import *
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = [
+    "anysearch_batch",
+    "anysearch_domains",
+    "anysearch_extract",
+    "anysearch_search",
+    "build_deep_research_plan",
+    "call_firecrawl_scrape",
+    "call_firecrawl_search",
+    "call_jina_reader",
+    "call_tavily_extract",
+    "call_tavily_map",
+    "call_tavily_search",
+    "capabilities",
+    "config",
+    "config_list",
+    "config_path",
+    "config_set",
+    "config_unset",
+    "context7_docs",
+    "context7_library",
+    "current_model",
+    "diagnose_openai_compatible",
+    "doctor",
+    "exa_find_similar",
+    "exa_search",
+    "extra_results_to_sources",
+    "fetch",
+    "fetch_available_models",
+    "get_available_models_cached",
+    "get_capability_status",
+    "intent_router_status",
+    "map_site",
+    "provider_profiles",
+    "research",
+    "route",
+    "route_calibrate",
+    "search",
+    "set_model",
+    "smoke",
+    "validate_command_capabilities",
+    "validate_minimum_profile",
+    "write_output",
+    "zhipu_mcp_read_file",
+    "zhipu_mcp_reader",
+    "zhipu_mcp_repo_structure",
+    "zhipu_mcp_search",
+    "zhipu_mcp_search_doc",
+    "zhipu_search",
+    "DEEP_ALLOWED_TOOLS",
+    "RESEARCH_ROUTE_POLICY_VERSION",
+]

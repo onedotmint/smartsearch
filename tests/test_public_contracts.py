@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from smart_search import cli, service
+from smart_search import capability_service, cli, service
 from smart_search.cli_contract import build_json_result
 from smart_search.utils import PromptConfigurationError, get_prompt, prompt_overrides
 
@@ -37,9 +37,9 @@ def test_minimum_profile_modes_keep_standard_fail_closed():
         "site_map": {"ok": True},
     }
 
-    standard = service._minimum_profile_result("standard", status)
-    lite = service._minimum_profile_result("lite", status)
-    full = service._minimum_profile_result(
+    standard = capability_service._minimum_profile_result("standard", status)
+    lite = capability_service._minimum_profile_result("lite", status)
+    full = capability_service._minimum_profile_result(
         "full",
         {
             **status,
@@ -48,7 +48,7 @@ def test_minimum_profile_modes_keep_standard_fail_closed():
             "web_fetch": {"ok": True},
         },
     )
-    lite_docs_only = service._minimum_profile_result(
+    lite_docs_only = capability_service._minimum_profile_result(
         "lite",
         {
             "main_search": {"ok": False},

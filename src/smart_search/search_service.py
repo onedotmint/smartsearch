@@ -1,8 +1,78 @@
 """Search orchestration and same-capability fallback workflows."""
 
-from .service_support import *
-from .capability_service import *
-from .provider_commands import *
+import asyncio
+import time
+from typing import Any
+
+import httpx
+
+from .capability_service import (
+    _command_capability_metadata,
+    _main_search_provider_configs,
+    _main_search_providers,
+    _provider_configured,
+    validate_command_capabilities,
+    validate_minimum_profile,
+)
+from .capability_executor import CapabilityOperation, execute_capability
+from .config import config
+from .evidence import EvidenceBundle
+from .intent_router import IntentRouter
+from .logger import logger
+from .provider_commands import (
+    anysearch_search,
+    call_firecrawl_scrape,
+    call_firecrawl_search,
+    call_tavily_extract,
+    call_tavily_search,
+    context7_library,
+    exa_search,
+    jina_fetch,
+    zhipu_mcp_reader,
+    zhipu_mcp_search,
+    zhipu_search,
+)
+from .providers.base import ProviderError, coerce_provider_result
+from .providers.openai_compatible import OpenAICompatibleSearchProvider
+from .providers.xai_responses import XAIResponsesSearchProvider
+from .runtime_cache import (
+    CacheExecution,
+    add_fetch,
+    add_request,
+    current_context,
+    mark_budget_exhausted,
+    observe_command,
+    observe_stage,
+)
+from .security import sanitize_text
+from .service_support import (
+    MINIMUM_PROFILE_ERROR,
+    PROFILE_NAMES,
+    SOURCE_PROVENANCE_WARNING,
+    _AVAILABLE_MODELS_CACHE,
+    _AVAILABLE_MODELS_LOCK,
+    _append_openai_transport_attempts,
+    _attempt,
+    _attempt_timeout_seconds,
+    _cache_attempt_extra,
+    _cached_source_provider,
+    _capability_plan,
+    _capability_plan_from_result,
+    _combined_degraded_reason,
+    _elapsed_ms,
+    _evidence_bundle_fields,
+    _extract_urls,
+    _fallback_used,
+    _normalize_source_results,
+    _openai_model_breaker_state,
+    _openai_model_candidates,
+    _provider_names_from_attempts,
+    _record_openai_model_failure,
+    _record_openai_model_success,
+    _remaining_budget_seconds,
+)
+from .sources import merge_sources, new_session_id, split_answer_and_sources
+from .utils import PromptConfigurationError
 
 def _empty_search_result(
     start: float,
@@ -133,107 +203,74 @@ async def _run_web_fetch_fallback(
     fallback: str = "auto",
     preferred_order: list[str] | None = None,
 ) -> tuple[dict[str, Any] | None, list[dict]]:
-    attempts: list[dict] = []
-    if not add_fetch():
-        return None, [_budget_exhausted_attempt("web_fetch")]
-    provider_status = _provider_status_for_capability("web_fetch")
-    attempts.extend(
-        _skipped_provider_attempt("web_fetch", item)
-        for item in provider_status
-        if item.get("configured") and not item.get("eligible")
+    """
+    /*
+     * ================================================================================
+     * 步骤1：执行 web_fetch capability
+     * ================================================================================
+     * 目标：保留 fetch provider 顺序和证据内容语义，复用共享执行生命周期。
+     * 数据源：web_fetch provider chain、URL 和 fetch fallback 参数。
+     * 操作：
+     * 1) provider-specific adapter 只负责调用和结果归一化。
+     * 2) executor 负责 fetch budget、request budget、cache 和 attempts。
+     * ================================================================================
+     */
+    """
+
+    async def run_provider(provider: str, outcome: dict[str, Any]) -> dict[str, Any]:
+        # 1.1 调用 owning provider adapter 并转换为统一 fetch payload。
+        if provider == "tavily":
+            content = await call_tavily_extract(url)
+            return {"content": sanitize_text(content or ""), "url": url, "provider": provider}
+        if provider == "jina":
+            data = await jina_fetch(url)
+            outcome.update(data if isinstance(data, dict) else {})
+            return {
+                "content": sanitize_text(data.get("content") or "") if data.get("ok") else "",
+                "url": url,
+                "provider": provider,
+                "error_type": data.get("error_type", ""),
+                "error": data.get("error", ""),
+            }
+        if provider == "zhipu-mcp-reader":
+            data = await zhipu_mcp_reader(url)
+            outcome.update(data if isinstance(data, dict) else {})
+            return {
+                "content": sanitize_text(data.get("content") or "") if data.get("ok") else "",
+                "url": url,
+                "provider": provider,
+                "error_type": data.get("error_type", ""),
+                "error": data.get("error", ""),
+            }
+        content = await call_firecrawl_scrape(url)
+        return {"content": sanitize_text(content or ""), "url": url, "provider": provider}
+
+    operation = CapabilityOperation(
+        capability="web_fetch",
+        input_value=url,
+        cache_kind="fetch",
+        cache_options={"format": "markdown"},
+        run=run_provider,
+        empty_value=lambda provider: {
+            "content": "",
+            "url": url,
+            "provider": provider,
+            "error_type": "budget_exhausted" if provider == "request-budget" else "",
+            "error": "request budget exhausted" if provider == "request-budget" else "",
+        },
+        is_success=lambda value: isinstance(value, dict) and bool(str(value.get("content") or "").strip()),
+        result_count=lambda _value: 1,
     )
-    providers = [item["provider"] for item in provider_status if item.get("eligible")]
-    if preferred_order:
-        allowed = {provider for provider in providers}
-        ordered = [provider for provider in preferred_order if provider in allowed]
-        ordered.extend(provider for provider in providers if provider not in ordered)
-        providers = ordered
-    if fallback == "off":
-        providers = providers[:1]
-
-    for provider in providers:
-        start = time.time()
-        outcome: dict[str, Any] = {}
-        try:
-            async def fetch_factory() -> dict[str, Any]:
-                if not add_request():
-                    outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted", "retryable": False})
-                    return {
-                        "content": "",
-                        "url": url,
-                        "provider": provider,
-                        "error_type": "budget_exhausted",
-                        "error": "request budget exhausted",
-                    }
-                if provider == "tavily":
-                    content = await call_tavily_extract(url)
-                    return {
-                        "content": sanitize_text(content or ""),
-                        "url": url,
-                        "provider": provider,
-                    }
-                if provider == "jina":
-                    data = await jina_fetch(url)
-                    outcome.update(data if isinstance(data, dict) else {})
-                    return {
-                        "content": sanitize_text(data.get("content") or "") if data.get("ok") else "",
-                        "url": url,
-                        "provider": provider,
-                        "error_type": data.get("error_type", ""),
-                        "error": data.get("error", ""),
-                    }
-                if provider == "zhipu-mcp-reader":
-                    data = await zhipu_mcp_reader(url)
-                    outcome.update(data if isinstance(data, dict) else {})
-                    return {
-                        "content": sanitize_text(data.get("content") or "") if data.get("ok") else "",
-                        "url": url,
-                        "provider": provider,
-                        "error_type": data.get("error_type", ""),
-                        "error": data.get("error", ""),
-                    }
-                content = await call_firecrawl_scrape(url)
-                return {
-                    "content": sanitize_text(content or ""),
-                    "url": url,
-                    "provider": provider,
-                }
-
-            execution = await _cached_fetch_provider(
-                provider,
-                url,
-                {"format": "markdown"},
-                fetch_factory,
-            )
-            fetch_data = execution.value if isinstance(execution.value, dict) else {}
-            content = fetch_data.get("content") or ""
-            error_type = outcome.get("error_type") or fetch_data.get("error_type", "")
-            error = outcome.get("error") or fetch_data.get("error", "")
-            attempt_extra = _cache_attempt_extra(execution)
-            if content.strip():
-                attempts.append(_attempt("web_fetch", provider, "ok", start, result_count=1, extra=attempt_extra))
-                return {
-                    "ok": True,
-                    "url": url,
-                    "provider": provider,
-                    "content": content,
-                }, attempts
-            status = "error" if error_type in {"auth_error", "config_error", "parameter_error", "quality_error", "provider_error", "rate_limited", "timeout", "network_error", "runtime_error", "budget_exhausted"} else "empty"
-            attempts.append(
-                _attempt(
-                    "web_fetch",
-                    provider,
-                    status,
-                    start,
-                    error_type=error_type,
-                    error=error,
-                    retryable=outcome.get("retryable"),
-                    extra=attempt_extra,
-                )
-            )
-        except Exception as e:
-            attempts.append(_attempt("web_fetch", provider, "error", start, error_type="runtime_error", error=str(e)))
-    return None, attempts
+    execution = await execute_capability(
+        operation,
+        fallback=fallback,
+        preferred_order=preferred_order,
+        reserve_fetch=add_fetch,
+    )
+    fetch_result = execution.value if isinstance(execution.value, dict) and execution.value.get("content") else None
+    if fetch_result is not None:
+        fetch_result = {"ok": True, **fetch_result}
+    return fetch_result, execution.attempts
 
 async def _run_web_search_fallback(
     query: str,
@@ -241,198 +278,102 @@ async def _run_web_search_fallback(
     providers: str = "auto",
     fallback: str = "auto",
 ) -> tuple[list[dict], list[dict]]:
-    provider_filter = _parse_provider_filter(providers)
-    attempts: list[dict] = []
-    provider_status = _provider_status_for_capability("web_search")
-    attempts.extend(
-        _skipped_provider_attempt("web_search", item)
-        for item in provider_status
-        if item.get("configured") and not item.get("eligible")
+    async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
+        # 2.1 调用 web_search provider 并归一化 source 列表。
+        if provider == "zhipu":
+            data = await zhipu_search(query, count=count)
+            outcome.update(data if isinstance(data, dict) else {})
+            return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
+        if provider == "zhipu-mcp":
+            data = await zhipu_mcp_search(query, count=count)
+            outcome.update(data if isinstance(data, dict) else {})
+            return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
+        if provider == "tavily":
+            return _normalize_source_results(await call_tavily_search(query, count), provider)
+        return _normalize_source_results(await call_firecrawl_search(query, count), provider)
+
+    operation = CapabilityOperation(
+        capability="web_search",
+        input_value=query,
+        cache_options={"count": count},
+        run=run_provider,
+        empty_value=lambda _provider: [],
+        is_success=lambda value: isinstance(value, list) and bool(value),
+        result_count=lambda value: len(value) if isinstance(value, list) else 0,
     )
-    configured = [item["provider"] for item in provider_status if item.get("eligible")]
-    if provider_filter is not None:
-        configured = [p for p in configured if p in provider_filter]
-    if fallback == "off":
-        configured = configured[:1]
-
-    for provider in configured:
-        start = time.time()
-        outcome: dict[str, Any] = {}
-        try:
-            async def source_factory() -> list[dict]:
-                if not add_request():
-                    outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted", "retryable": False})
-                    return []
-                if provider == "zhipu":
-                    data = await zhipu_search(query, count=count)
-                    outcome.update(data if isinstance(data, dict) else {})
-                    return _normalize_source_results(data.get("results"), provider) if data.get("ok") else []
-                if provider == "zhipu-mcp":
-                    data = await zhipu_mcp_search(query, count=count)
-                    outcome.update(data if isinstance(data, dict) else {})
-                    return _normalize_source_results(data.get("results"), provider) if data.get("ok") else []
-                if provider == "tavily":
-                    return _normalize_source_results(await call_tavily_search(query, count), provider)
-                return _normalize_source_results(await call_firecrawl_search(query, count), provider)
-
-            execution = await _cached_source_provider(
-                "web_search",
-                provider,
-                query,
-                {"count": count},
-                source_factory,
-            )
-            sources = execution.value if isinstance(execution.value, list) else []
-            attempt_extra = _cache_attempt_extra(execution)
-            if sources:
-                attempts.append(_attempt("web_search", provider, "ok", start, result_count=len(sources), extra=attempt_extra))
-                return sources, attempts
-            error_type = outcome.get("error_type", "")
-            status = "error" if error_type in {"rate_limited", "auth_error", "timeout", "network_error", "runtime_error", "provider_error", "budget_exhausted"} else "empty"
-            attempts.append(
-                _attempt(
-                    "web_search",
-                    provider,
-                    status,
-                    start,
-                    error_type=error_type,
-                    error=outcome.get("error", ""),
-                    retryable=outcome.get("retryable"),
-                    extra=attempt_extra,
-                )
-            )
-        except Exception as e:
-            attempts.append(_attempt("web_search", provider, "error", start, error_type="runtime_error", error=str(e)))
-    return [], attempts
+    execution = await execute_capability(
+        operation,
+        provider_filter=providers,
+        fallback=fallback,
+    )
+    return execution.value if isinstance(execution.value, list) else [], execution.attempts
 
 async def _run_docs_search_fallback(
     query: str,
     providers: str = "auto",
     fallback: str = "auto",
 ) -> tuple[list[dict], list[dict]]:
-    provider_filter = _parse_provider_filter(providers)
-    attempts: list[dict] = []
-    configured: list[str] = []
-    if config.context7_api_key:
-        configured.append("context7")
-    if config.exa_api_key:
-        configured.append("exa")
-    if provider_filter is not None:
-        configured = [p for p in configured if p in provider_filter]
-    if fallback == "off":
-        configured = configured[:1]
+    async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
+        # 3.1 调用 docs_search provider 并归一化候选来源。
+        if provider == "exa":
+            data = await exa_search(query, num_results=5, include_highlights=True)
+            outcome.update(data if isinstance(data, dict) else {})
+            return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
+        data = await context7_library(query, query)
+        outcome.update(data if isinstance(data, dict) else {})
+        return [
+            {
+                "url": f"context7:{item.get('id')}",
+                "title": item.get("title") or item.get("id") or "Context7",
+                "description": item.get("description") or "",
+                "provider": provider,
+            }
+            for item in data.get("results", [])
+            if isinstance(data, dict) and data.get("ok") and item.get("id")
+        ]
 
-    for provider in configured:
-        start = time.time()
-        outcome: dict[str, Any] = {}
-        try:
-            async def source_factory() -> list[dict]:
-                if not add_request():
-                    outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted", "retryable": False})
-                    return []
-                if provider == "exa":
-                    data = await exa_search(query, num_results=5, include_highlights=True)
-                    outcome.update(data if isinstance(data, dict) else {})
-                    return _normalize_source_results(data.get("results"), provider) if data.get("ok") else []
-                data = await context7_library(query, query)
-                outcome.update(data if isinstance(data, dict) else {})
-                return [
-                    {
-                        "url": f"context7:{item.get('id')}",
-                        "title": item.get("title") or item.get("id") or "Context7",
-                        "description": item.get("description") or "",
-                        "provider": provider,
-                    }
-                    for item in data.get("results", [])
-                    if data.get("ok") and item.get("id")
-                ]
-
-            execution = await _cached_source_provider(
-                "docs_search",
-                provider,
-                query,
-                {"include_highlights": True, "num_results": 5},
-                source_factory,
-            )
-            sources = execution.value if isinstance(execution.value, list) else []
-            attempt_extra = _cache_attempt_extra(execution)
-            if sources:
-                attempts.append(_attempt("docs_search", provider, "ok", start, result_count=len(sources), extra=attempt_extra))
-                return sources, attempts
-            error_type = outcome.get("error_type", "")
-            status = "error" if error_type in {"auth_error", "parameter_error", "rate_limited", "timeout", "network_error", "runtime_error", "provider_error", "budget_exhausted"} else "empty"
-            attempts.append(
-                _attempt(
-                    "docs_search",
-                    provider,
-                    status,
-                    start,
-                    error_type=error_type,
-                    error=outcome.get("error", ""),
-                    retryable=outcome.get("retryable"),
-                    extra=attempt_extra,
-                )
-            )
-        except Exception as e:
-            attempts.append(_attempt("docs_search", provider, "error", start, error_type="runtime_error", error=str(e)))
-    return [], attempts
+    operation = CapabilityOperation(
+        capability="docs_search",
+        input_value=query,
+        cache_options={"include_highlights": True, "num_results": 5},
+        run=run_provider,
+        empty_value=lambda _provider: [],
+        is_success=lambda value: isinstance(value, list) and bool(value),
+        result_count=lambda value: len(value) if isinstance(value, list) else 0,
+    )
+    execution = await execute_capability(
+        operation,
+        provider_filter=providers,
+        fallback=fallback,
+    )
+    return execution.value if isinstance(execution.value, list) else [], execution.attempts
 
 async def _run_vertical_search_fallback(
     query: str,
     providers: str = "auto",
     fallback: str = "auto",
 ) -> tuple[list[dict], list[dict]]:
-    provider_filter = _parse_provider_filter(providers)
-    attempts: list[dict] = []
-    configured: list[str] = []
-    if config.anysearch_api_key:
-        configured.append("anysearch")
-    if provider_filter is not None:
-        configured = [p for p in configured if p in provider_filter]
-    if fallback == "off":
-        configured = configured[:1]
+    async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
+        # 4.1 调用 vertical_search provider 并保留结构化候选。
+        data = await anysearch_search(query, max_results=5)
+        outcome.update(data if isinstance(data, dict) else {})
+        return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
 
-    for provider in configured:
-        start = time.time()
-        outcome: dict[str, Any] = {}
-        try:
-            async def source_factory() -> list[dict]:
-                if not add_request():
-                    outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted", "retryable": False})
-                    return []
-                data = await anysearch_search(query, max_results=5)
-                outcome.update(data if isinstance(data, dict) else {})
-                return _normalize_source_results(data.get("results"), provider) if data.get("ok") else []
-
-            execution = await _cached_source_provider(
-                "vertical_search",
-                provider,
-                query,
-                {"max_results": 5},
-                source_factory,
-            )
-            sources = execution.value if isinstance(execution.value, list) else []
-            attempt_extra = _cache_attempt_extra(execution)
-            if sources:
-                attempts.append(_attempt("vertical_search", provider, "ok", start, result_count=len(sources), extra=attempt_extra))
-                return sources, attempts
-            error_type = outcome.get("error_type", "")
-            status = "error" if error_type in {"auth_error", "provider_error", "rate_limited", "timeout", "network_error", "runtime_error", "budget_exhausted"} else "empty"
-            attempts.append(
-                _attempt(
-                    "vertical_search",
-                    provider,
-                    status,
-                    start,
-                    error_type=error_type,
-                    error=outcome.get("error", ""),
-                    retryable=outcome.get("retryable"),
-                    extra=attempt_extra,
-                )
-            )
-        except Exception as e:
-            attempts.append(_attempt("vertical_search", provider, "error", start, error_type="runtime_error", error=str(e)))
-    return [], attempts
+    operation = CapabilityOperation(
+        capability="vertical_search",
+        input_value=query,
+        cache_options={"max_results": 5},
+        run=run_provider,
+        empty_value=lambda _provider: [],
+        is_success=lambda value: isinstance(value, list) and bool(value),
+        result_count=lambda value: len(value) if isinstance(value, list) else 0,
+    )
+    execution = await execute_capability(
+        operation,
+        provider_filter=providers,
+        fallback=fallback,
+    )
+    return execution.value if isinstance(execution.value, list) else [], execution.attempts
 
 def _resolve_search_profile(
     profile: str,

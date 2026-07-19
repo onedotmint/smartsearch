@@ -130,14 +130,14 @@ async def test_research_synthesis_failure_preserves_evidence(monkeypatch, tmp_pa
         calls["search"] += 1
         return (
             [{"url": "https://evidence.example/source", "title": "Source", "provider": "tavily"}],
-            [service._attempt("web_search", "tavily", "ok", time.time(), result_count=1)],
+            [service_support._attempt("web_search", "tavily", "ok", time.time(), result_count=1)],
         )
 
     async def fake_fetch(url, fallback="auto", preferred_order=None):
         calls["fetch"] += 1
         return (
             {"ok": True, "url": url, "provider": "jina", "content": "fetched body"},
-            [service._attempt("web_fetch", "jina", "ok", time.time(), result_count=1)],
+            [service_support._attempt("web_fetch", "jina", "ok", time.time(), result_count=1)],
         )
 
     def fail_synthesis(*args, **kwargs):
@@ -184,7 +184,7 @@ async def test_research_without_explicit_evidence_dir_does_not_persist_artifacts
     async def fake_fetch(url, fallback="auto", preferred_order=None):
         return (
             {"ok": True, "url": url, "provider": "jina", "content": "known URL body"},
-            [service._attempt("web_fetch", "jina", "ok", time.time(), result_count=1)],
+            [service_support._attempt("web_fetch", "jina", "ok", time.time(), result_count=1)],
         )
 
     monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)

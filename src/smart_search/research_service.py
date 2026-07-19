@@ -1,9 +1,61 @@
 """Offline Deep Research planning and live evidence workflow."""
 
-from .service_support import *
-from .capability_service import *
-from .provider_commands import *
-from .search_service import *
+import hashlib
+import json
+import os
+import re
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+from .capability_service import (
+    _apply_research_overrides,
+    _command_capability_metadata,
+    _configured_for_capability,
+    _safe_provider_overrides,
+    validate_command_capabilities,
+    validate_minimum_profile,
+)
+from .capability_executor import CapabilityOperation, execute_capability
+from .config import config
+from .evidence import EvidenceBundle
+from .intent_router import IntentRouteResult, IntentRouter, build_rules_route
+from .logger import logger
+from .provider_commands import (
+    anysearch_search,
+    context7_docs,
+    context7_library,
+    exa_search,
+)
+from .runtime_cache import allow_synthesis, attach_metrics, observe_command, observe_stage
+from .search_service import _run_web_fetch_fallback, _run_web_search_fallback
+from .security import sanitize_text
+from .service_support import (
+    DEEP_ALLOWED_TOOLS,
+    DEEP_CHINA_KEYWORDS,
+    DEEP_CURRENT_KEYWORDS,
+    DEEP_EXA_DISCOVERY_KEYWORDS,
+    DEEP_HIGH_COMPLEXITY_KEYWORDS,
+    DEEP_RECENT_KEYWORDS,
+    MINIMUM_PROFILE_ERROR,
+    RESEARCH_JS_HEAVY_KEYWORDS,
+    RESEARCH_PDF_KEYWORDS,
+    RESEARCH_ROUTE_POLICY_VERSION,
+    _capability_plan,
+    _capability_plan_from_result,
+    _combined_degraded_reason,
+    _contains_any,
+    _elapsed_ms,
+    _evidence_bundle_fields,
+    _extract_urls,
+    _fallback_used,
+    _is_docs_intent,
+    _is_zh_current_intent,
+    _normalize_source_results,
+    _provider_names_from_attempts,
+)
 
 def _research_fetch_order(query: str, url: str = "", capability_status: dict[str, Any] | None = None) -> list[str]:
     providers = _configured_for_capability("web_fetch", capability_status)
@@ -132,6 +184,161 @@ def _citation_items(evidence_items: list[dict[str, Any]]) -> list[dict[str, str]
     evidence_bundle = EvidenceBundle()
     evidence_bundle.add_fetched_evidence(evidence_items)
     return evidence_bundle.to_dict()["citations"]
+
+
+async def _run_research_context7_docs(
+    question: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    /*
+     * ================================================================================
+     * 步骤1：执行 Context7 文档 evidence 阶段
+     * ================================================================================
+     * 目标：保留 library resolve -> docs read 的两段边界，只把 provider 生命周期交给 executor。
+     * 数据源：Context7 library/docs adapter、当前 query 和 RequestContext。
+     * 操作：
+     * 1) 用 source cache resolve library id。
+     * 2) 用 content cache 读取选定 library 的文档正文。
+     * 3) 只有正文非空时生成 fetched evidence，候选 library 不直接作为证据。
+     * ================================================================================
+     */
+    """
+    logger.info("开始执行 research Context7 阶段: question=%s", question)
+
+    async def resolve_library(provider: str, outcome: dict[str, Any]) -> list[dict]:
+        # 1.1 解析 library id，不把候选直接当作 fetched evidence。
+        data = await context7_library(question, question)
+        outcome.update(data if isinstance(data, dict) else {})
+        return [
+            {
+                "url": f"context7:{item.get('id')}",
+                "title": item.get("title") or item.get("id") or "Context7",
+                "description": item.get("description") or "",
+                "provider": provider,
+            }
+            for item in (data.get("results", []) if isinstance(data, dict) else [])
+            if isinstance(data, dict) and data.get("ok") and item.get("id")
+        ]
+
+    library_execution = await execute_capability(
+        CapabilityOperation(
+            capability="docs_search",
+            input_value=question,
+            cache_options={"name": question, "query": question},
+            run=resolve_library,
+            empty_value=lambda _provider: [],
+            is_success=lambda value: isinstance(value, list) and bool(value),
+            result_count=lambda value: len(value) if isinstance(value, list) else 0,
+        ),
+        providers=("context7",),
+        fallback="off",
+    )
+    attempts = list(library_execution.attempts)
+    libraries = library_execution.value if isinstance(library_execution.value, list) else []
+    if not libraries:
+        logger.info("research Context7 library 阶段结束: 无 library")
+        return [], attempts
+
+    library_id = str(libraries[0].get("url", "")).removeprefix("context7:")
+    if not library_id:
+        logger.info("research Context7 阶段结束: library id 为空")
+        return [], attempts
+
+    async def read_docs(provider: str, outcome: dict[str, Any]) -> dict[str, Any]:
+        # 1.2 读取正文并保留 provider 错误元数据。
+        data = await context7_docs(library_id, question)
+        outcome.update(data if isinstance(data, dict) else {})
+        return {
+            "content": sanitize_text(data.get("content") or "") if isinstance(data, dict) and data.get("ok") else "",
+            "library_id": library_id,
+        }
+
+    docs_execution = await execute_capability(
+        CapabilityOperation(
+            capability="docs_search",
+            input_value=f"https://context7.local/{library_id}",
+            cache_kind="content",
+            cache_options={"library_id": library_id, "query": question},
+            run=read_docs,
+            empty_value=lambda _provider: {"content": "", "library_id": library_id},
+            is_success=lambda value: isinstance(value, dict) and bool(str(value.get("content") or "").strip()),
+            result_count=lambda _value: 1,
+        ),
+        providers=("context7",),
+        fallback="off",
+    )
+    attempts.extend(docs_execution.attempts)
+    docs_payload = docs_execution.value if isinstance(docs_execution.value, dict) else {}
+    content = str(docs_payload.get("content") or "")
+    if not content.strip():
+        logger.info("research Context7 阶段结束: library=%s 无正文", library_id)
+        return [], attempts
+
+    item = _research_evidence_item(
+        url=f"context7:{library_id}",
+        provider="context7",
+        title=library_id,
+        content=content,
+        source_type="docs",
+        subquestion_id="sq2",
+    )
+    logger.info("research Context7 阶段完成: library=%s", library_id)
+    return [item], attempts
+
+
+async def _run_research_exa_docs(
+    question: str,
+    fallback: str = "auto",
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Run the Exa docs discovery operation through the shared executor."""
+
+    async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
+        # 2.1 Exa 只产出 discovery candidates，后续仍需 fetch。
+        data = await exa_search(question, num_results=5, include_highlights=True)
+        outcome.update(data if isinstance(data, dict) else {})
+        return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
+
+    execution = await execute_capability(
+        CapabilityOperation(
+            capability="docs_search",
+            input_value=question,
+            cache_options={"include_highlights": True, "num_results": 5},
+            run=run_provider,
+            empty_value=lambda _provider: [],
+            is_success=lambda value: isinstance(value, list) and bool(value),
+            result_count=lambda value: len(value) if isinstance(value, list) else 0,
+        ),
+        providers=("exa",),
+        fallback=fallback,
+    )
+    return execution.value if isinstance(execution.value, list) else [], execution.attempts
+
+
+async def _run_research_vertical_search(
+    question: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Run the experimental vertical search operation through the executor."""
+
+    async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
+        # 3.1 保留 AnySearch 的 vertical capability，不加入通用 fallback。
+        data = await anysearch_search(question, max_results=5)
+        outcome.update(data if isinstance(data, dict) else {})
+        return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
+
+    execution = await execute_capability(
+        CapabilityOperation(
+            capability="vertical_search",
+            input_value=question,
+            cache_options={"max_results": 5},
+            run=run_provider,
+            empty_value=lambda _provider: [],
+            is_success=lambda value: isinstance(value, list) and bool(value),
+            result_count=lambda value: len(value) if isinstance(value, list) else 0,
+        ),
+        providers=("anysearch",),
+        fallback="off",
+    )
+    return execution.value if isinstance(execution.value, list) else [], execution.attempts
 
 def _evidence_only_synthesis(
     question: str,
@@ -698,93 +905,21 @@ async def research(
         if not selected_docs_providers:
             gaps.append({"subquestion_id": "sq2", "reason": "no configured docs_search provider for docs/API evidence"})
         for provider in selected_docs_providers:
-            step_start = time.time()
             if provider == "context7":
-                library_outcome: dict[str, Any] = {}
-
-                async def library_factory() -> list[dict]:
-                    if not add_request():
-                        library_outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted"})
-                        return []
-                    data = await context7_library(question, question)
-                    library_outcome.update(data if isinstance(data, dict) else {})
-                    return [
-                        {
-                            "url": f"context7:{item.get('id')}",
-                            "title": item.get("title") or item.get("id") or "Context7",
-                            "description": item.get("description") or "",
-                            "provider": "context7",
-                        }
-                        for item in data.get("results", [])
-                        if data.get("ok") and item.get("id")
-                    ]
-
-                library_execution = await _cached_source_provider(
-                    "docs_search",
-                    "context7",
-                    question,
-                    {"name": question, "query": question},
-                    library_factory,
-                )
-                library_sources = library_execution.value if isinstance(library_execution.value, list) else []
-                if library_sources:
-                    provider_attempts.append(_attempt("docs_search", "context7", "ok", step_start, result_count=len(library_sources), extra=_cache_attempt_extra(library_execution)))
-                    stage_results.append({"stage": "docs_discovery", "provider": "context7", "ok": True, "result_count": len(library_sources)})
-                    library_id = str(library_sources[0].get("url", "")).removeprefix("context7:")
-                    if library_id:
-                        docs_start = time.time()
-                        docs_outcome: dict[str, Any] = {}
-
-                        async def docs_factory() -> dict[str, Any]:
-                            if not add_request():
-                                docs_outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted"})
-                                return {"content": "", "library_id": library_id, "error_type": "budget_exhausted"}
-                            data = await context7_docs(library_id, question)
-                            docs_outcome.update(data if isinstance(data, dict) else {})
-                            return {
-                                "content": sanitize_text(data.get("content") or "") if data.get("ok") else "",
-                                "library_id": library_id,
-                            }
-
-                        docs_execution = await _cached_content_provider(
-                            "docs_search",
-                            "context7",
-                            f"https://context7.local/{library_id}",
-                            {"library_id": library_id, "query": question},
-                            docs_factory,
-                        )
-                        docs_payload = docs_execution.value if isinstance(docs_execution.value, dict) else {}
-                        docs_content = docs_payload.get("content") or ""
-                        if docs_content:
-                            provider_attempts.append(_attempt("docs_search", "context7", "ok", docs_start, result_count=1, extra=_cache_attempt_extra(docs_execution)))
-                            item = _research_evidence_item(
-                                url=f"context7:{library_id}",
-                                provider="context7",
-                                title=library_id,
-                                content=docs_content,
-                                source_type="docs",
-                                subquestion_id="sq2",
-                            )
-                            evidence_items.append(item)
-                            persist_artifact("docs-context7.md", docs_content)
-                            break
-                        docs_status = "error" if docs_outcome.get("error_type") else "empty"
-                        provider_attempts.append(_attempt("docs_search", "context7", docs_status, docs_start, error_type=docs_outcome.get("error_type", ""), error=docs_outcome.get("error", ""), extra=_cache_attempt_extra(docs_execution)))
-                    if fallback_mode == "off":
-                        break
-                    continue
-                status = "error" if library_outcome.get("error_type") in {"auth_error", "timeout", "network_error", "runtime_error"} else "empty"
-                provider_attempts.append(_attempt("docs_search", "context7", status, step_start, error_type=library_outcome.get("error_type", ""), error=library_outcome.get("error", ""), extra=_cache_attempt_extra(library_execution)))
+                context7_items, attempts = await _run_research_context7_docs(question)
+                provider_attempts.extend(attempts)
+                if context7_items:
+                    evidence_items.extend(context7_items)
+                    stage_results.append({"stage": "docs_discovery", "provider": "context7", "ok": True, "result_count": len(context7_items)})
+                    persist_artifact("docs-context7.md", context7_items[0].get("content") or "")
+                    break
             elif provider == "exa":
-                data = await exa_search(question, num_results=5, include_highlights=True)
-                if data.get("ok"):
-                    sources = _normalize_source_results(data.get("results"), "exa")
-                    if sources:
-                        provider_attempts.append(_attempt("docs_search", "exa", "ok", step_start, result_count=len(sources)))
-                        discovery_sources.extend(sources)
-                        stage_results.append({"stage": "docs_discovery", "provider": "exa", "ok": True, "result_count": len(sources)})
-                        break
-                provider_attempts.append(_attempt("docs_search", "exa", "error" if data.get("error_type") else "empty", step_start, error_type=data.get("error_type", ""), error=data.get("error", "")))
+                sources, attempts = await _run_research_exa_docs(question, fallback="off")
+                provider_attempts.extend(attempts)
+                if sources:
+                    discovery_sources.extend(sources)
+                    stage_results.append({"stage": "docs_discovery", "provider": "exa", "ok": True, "result_count": len(sources)})
+                    break
 
     should_run_web_discovery = (
         signals["current_or_locale_intent"]
@@ -814,57 +949,17 @@ async def research(
         and exa_in_selected_docs_route
         and not any(source.get("provider") == "exa" for source in discovery_sources)
     ):
-        exa_start = time.time()
-        exa_outcome: dict[str, Any] = {}
-
-        async def exa_factory() -> list[dict]:
-            if not add_request():
-                exa_outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted"})
-                return []
-            data = await exa_search(question, num_results=5, include_highlights=True)
-            exa_outcome.update(data if isinstance(data, dict) else {})
-            return _normalize_source_results(data.get("results"), "exa") if data.get("ok") else []
-
-        exa_execution = await _cached_source_provider(
-            "docs_search",
-            "exa",
-            question,
-            {"include_highlights": True, "num_results": 5},
-            exa_factory,
-        )
-        sources = exa_execution.value if isinstance(exa_execution.value, list) else []
+        sources, attempts = await _run_research_exa_docs(question, fallback=fallback_mode)
+        provider_attempts.extend(attempts)
         if sources:
-            provider_attempts.append(_attempt("docs_search", "exa", "ok", exa_start, result_count=len(sources), extra=_cache_attempt_extra(exa_execution)))
             discovery_sources.extend(sources)
-        else:
-            provider_attempts.append(_attempt("docs_search", "exa", "error" if exa_outcome.get("error_type") else "empty", exa_start, error_type=exa_outcome.get("error_type", ""), error=exa_outcome.get("error", ""), extra=_cache_attempt_extra(exa_execution)))
 
     if signals["vertical_intent"] and routes["capabilities"]["vertical_search"]["providers"]:
-        vertical_start = time.time()
-        vertical_outcome: dict[str, Any] = {}
-
-        async def vertical_factory() -> list[dict]:
-            if not add_request():
-                vertical_outcome.update({"error_type": "budget_exhausted", "error": "request budget exhausted"})
-                return []
-            data = await anysearch_search(question, max_results=5)
-            vertical_outcome.update(data if isinstance(data, dict) else {})
-            return _normalize_source_results(data.get("results"), "anysearch") if data.get("ok") else []
-
-        vertical_execution = await _cached_source_provider(
-            "vertical_search",
-            "anysearch",
-            question,
-            {"max_results": 5},
-            vertical_factory,
-        )
-        sources = vertical_execution.value if isinstance(vertical_execution.value, list) else []
+        sources, attempts = await _run_research_vertical_search(question)
+        provider_attempts.extend(attempts)
         if sources:
-            provider_attempts.append(_attempt("vertical_search", "anysearch", "ok", vertical_start, result_count=len(sources), extra=_cache_attempt_extra(vertical_execution)))
             discovery_sources.extend(sources)
             stage_results.append({"stage": "vertical_discovery", "provider": "anysearch", "ok": True, "result_count": len(sources)})
-        else:
-            provider_attempts.append(_attempt("vertical_search", "anysearch", "error" if vertical_outcome.get("error_type") else "empty", vertical_start, error_type=vertical_outcome.get("error_type", ""), error=vertical_outcome.get("error", ""), extra=_cache_attempt_extra(vertical_execution)))
 
     candidates = _select_candidate_urls(discovery_sources, limit=6)
     fetched_urls = {item.get("url") for item in evidence_items}
