@@ -1,6 +1,7 @@
 import pytest
 
 from smart_search import service
+from smart_search import operations_service, search_service
 
 
 def test_minimum_profile_reports_missing_categories(monkeypatch):
@@ -87,8 +88,8 @@ async def test_live_smoke_treats_provider_failure_as_degraded_when_fallback_exis
     async def fake_fetch(url):
         return {"ok": True, "url": url, "provider": "tavily", "content": "# Page", "provider_attempts": []}
 
-    monkeypatch.setattr(service, "doctor", fake_doctor)
-    monkeypatch.setattr(service, "fetch", fake_fetch)
+    monkeypatch.setattr(operations_service, "doctor", fake_doctor)
+    monkeypatch.setattr(operations_service, "fetch", fake_fetch)
 
     result = await service.smoke("live")
 
@@ -108,8 +109,8 @@ async def test_fetch_attempts_show_fallback(monkeypatch):
     async def yes_firecrawl(url, ctx=None):
         return "# Page"
 
-    monkeypatch.setattr(service, "call_tavily_extract", no_tavily)
-    monkeypatch.setattr(service, "call_firecrawl_scrape", yes_firecrawl)
+    monkeypatch.setattr(search_service, "call_tavily_extract", no_tavily)
+    monkeypatch.setattr(search_service, "call_firecrawl_scrape", yes_firecrawl)
 
     result = await service.fetch("https://example.com")
 
@@ -133,8 +134,8 @@ async def test_search_docs_intent_uses_docs_fallback(monkeypatch):
     async def fake_context7(name, query=""):
         return {"ok": True, "results": [{"id": "/facebook/react", "title": "React", "description": "UI"}], "total": 1}
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "context7_library", fake_context7)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "context7_library", fake_context7)
 
     result = await service.search("React useEffect API docs", validation="balanced")
 
@@ -162,9 +163,9 @@ async def test_search_docs_intent_falls_back_to_exa_after_context7_empty(monkeyp
     async def fake_exa(*args, **kwargs):
         return {"ok": True, "results": [{"url": "https://docs.example.com", "title": "Docs"}]}
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "context7_library", fake_context7)
-    monkeypatch.setattr(service, "exa_search", fake_exa)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "context7_library", fake_context7)
+    monkeypatch.setattr(search_service, "exa_search", fake_exa)
 
     result = await service.search("React useEffect API docs", validation="balanced")
 
@@ -193,8 +194,8 @@ async def test_search_zh_current_uses_zhipu_reinforcement(monkeypatch):
             "total": 1,
         }
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "zhipu_search", fake_zhipu)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "zhipu_search", fake_zhipu)
 
     result = await service.search("今天国内 AI 新闻", validation="balanced")
 

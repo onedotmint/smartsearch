@@ -2,6 +2,7 @@ import json
 import asyncio
 from pathlib import Path
 from smart_search import cli
+from smart_search import cli_parser, cli_setup, cli_support
 from smart_search import skill_installer
 
 
@@ -34,7 +35,7 @@ def test_help_contains_commands(capsys):
 
 
 def test_version_flags_exit_successfully(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_get_version", lambda: "9.9.9-test")
+    monkeypatch.setattr(cli_parser, "_get_version", lambda: "9.9.9-test")
 
     for flag in ["--version", "--v", "-v"]:
         try:
@@ -832,7 +833,7 @@ def test_network_error_exit_code(monkeypatch, capsys):
 
 def test_stdout_falls_back_for_gbk_unencodable_unicode(monkeypatch):
     fake_stdout = GbkStdout()
-    monkeypatch.setattr(cli.sys, "stdout", fake_stdout)
+    monkeypatch.setattr(cli_support.sys, "stdout", fake_stdout)
 
     code = cli._print_result("exa-search", {"ok": True, "content": "A\u2060B"}, "json")
 
@@ -844,7 +845,7 @@ def test_stdout_falls_back_for_gbk_unencodable_unicode(monkeypatch):
 
 def test_gbk_stdout_keeps_json_parseable_with_chinese_and_unencodable_unicode(monkeypatch):
     fake_stdout = GbkStdout()
-    monkeypatch.setattr(cli.sys, "stdout", fake_stdout)
+    monkeypatch.setattr(cli_support.sys, "stdout", fake_stdout)
 
     code = cli._print_result("search", {"ok": True, "content": "中文A\u2060B📅"}, "json")
 
@@ -1834,7 +1835,7 @@ def test_setup_guided_installs_tui_selected_skill_targets(monkeypatch, tmp_path,
             return ["codex", "cursor"]
         return []
 
-    monkeypatch.setattr(cli, "_checkbox_with_tui", fake_checkbox)
+    monkeypatch.setattr(cli_setup, "_checkbox_with_tui", fake_checkbox)
     monkeypatch.setattr(cli.service, "config_set", lambda key, value: {"ok": True, "key": key, "value": "***"})
     monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
     monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
@@ -1963,8 +1964,8 @@ def test_tavily_hikari_key_recommends_hikari_endpoint(monkeypatch):
         seen["default"] = default
         return "hikari"
 
-    monkeypatch.setattr(cli, "_prompt_select", fake_prompt_select)
-    monkeypatch.setattr(cli, "_prompt_value", lambda *args, **kwargs: "https://pool.example.com/mcp")
+    monkeypatch.setattr(cli_setup, "_prompt_select", fake_prompt_select)
+    monkeypatch.setattr(cli_setup, "_prompt_value", lambda *args, **kwargs: "https://pool.example.com/mcp")
 
     cli._prompt_tavily_api_url(values, {}, "en")
 
@@ -1975,8 +1976,8 @@ def test_tavily_hikari_key_recommends_hikari_endpoint(monkeypatch):
 def test_tavily_hikari_prompt_shows_beginner_url_example(monkeypatch, capsys):
     values = {"TAVILY_API_KEY": "th-test-secret"}
 
-    monkeypatch.setattr(cli, "_prompt_select", lambda message, choices, default: "hikari")
-    monkeypatch.setattr(cli, "_prompt_value", lambda *args, **kwargs: "https://pool.example.com")
+    monkeypatch.setattr(cli_setup, "_prompt_select", lambda message, choices, default: "hikari")
+    monkeypatch.setattr(cli_setup, "_prompt_value", lambda *args, **kwargs: "https://pool.example.com")
 
     cli._prompt_tavily_api_url(values, {}, "zh")
     captured = capsys.readouterr()
@@ -1990,7 +1991,7 @@ def test_zhipu_prompt_saves_official_api_url_and_search_engine(monkeypatch):
     values = {}
     selections = iter(["official", "search_pro_sogou"])
 
-    monkeypatch.setattr(cli, "_prompt_select", lambda message, choices, default: next(selections))
+    monkeypatch.setattr(cli_setup, "_prompt_select", lambda message, choices, default: next(selections))
 
     cli._prompt_zhipu_api_url(values, {}, "zh")
     cli._prompt_zhipu_search_engine(values, {}, "zh")
@@ -2003,8 +2004,8 @@ def test_zhipu_prompt_allows_custom_search_engine(monkeypatch):
     values = {}
     selections = iter(["custom"])
 
-    monkeypatch.setattr(cli, "_prompt_select", lambda message, choices, default: next(selections))
-    monkeypatch.setattr(cli, "_prompt_value", lambda *args, **kwargs: "search_future")
+    monkeypatch.setattr(cli_setup, "_prompt_select", lambda message, choices, default: next(selections))
+    monkeypatch.setattr(cli_setup, "_prompt_value", lambda *args, **kwargs: "search_future")
 
     cli._prompt_zhipu_search_engine(values, {}, "en")
 
@@ -2024,7 +2025,7 @@ def test_setup_guided_zh_groups_minimum_capabilities(monkeypatch, capsys):
     monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
     monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: next(secrets))
+    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
 
     code = cli.main(["setup", "--skip-skills", "--lang", "zh"])
     captured = capsys.readouterr()
@@ -2063,7 +2064,7 @@ def test_setup_guided_zhipu_optional_reinforcement_saves_url_and_engine(monkeypa
     monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
     monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: next(secrets))
+    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
 
     code = cli.main(["setup", "--skip-skills", "--lang", "zh"])
     captured = capsys.readouterr()
@@ -2093,13 +2094,13 @@ def test_setup_guided_uses_tui_defaults_for_configured_providers(monkeypatch, ca
         checkbox_calls.append((message, selected))
         return selected
 
-    monkeypatch.setattr(cli, "_checkbox_with_tui", fake_checkbox)
-    monkeypatch.setattr(cli, "_select_with_tui", lambda message, choices, default=None: default)
+    monkeypatch.setattr(cli_setup, "_checkbox_with_tui", fake_checkbox)
+    monkeypatch.setattr(cli_setup, "_select_with_tui", lambda message, choices, default=None: default)
     monkeypatch.setattr(cli.service, "config_set", lambda key, value: {"ok": True, "key": key, "value": "***"})
     monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
     monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": {**current, **saved}})
     monkeypatch.setattr("builtins.input", lambda prompt: "")
-    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: "")
+    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: "")
 
     code = cli.main(["setup", "--skip-skills", "--lang", "en"])
     captured = capsys.readouterr()
@@ -2160,7 +2161,7 @@ def test_setup_guided_masks_configured_url_defaults(monkeypatch, capsys):
     monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
     monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": current.copy()})
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: next(secrets))
+    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
 
     code = cli.main(["setup", "--skip-skills", "--lang", "en"])
     captured = capsys.readouterr()
@@ -2183,7 +2184,7 @@ def test_setup_guided_main_search_can_save_openai_compatible_peer(monkeypatch, c
     monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
     monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: next(secrets))
+    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
 
     code = cli.main(["setup", "--skip-skills", "--lang", "en"])
     captured = capsys.readouterr()
@@ -2213,7 +2214,7 @@ def test_setup_guided_main_search_can_save_both_peer_providers(monkeypatch, caps
     monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
     monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: next(secrets))
+    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
 
     code = cli.main(["setup", "--skip-skills", "--lang", "en"])
     data = json.loads(capsys.readouterr().out)
@@ -2256,7 +2257,7 @@ def test_setup_guided_can_configure_intent_router(monkeypatch, capsys):
     monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
     monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: next(secrets))
+    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
 
     code = cli.main(["setup", "--skip-skills", "--lang", "en"])
     captured = capsys.readouterr()
@@ -2308,7 +2309,7 @@ def test_setup_guided_autofills_qwen3_8b_embedding_preset(monkeypatch, capsys):
     monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
     monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt: next(secrets))
+    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
 
     code = cli.main(["setup", "--skip-skills", "--lang", "en"])
     captured = capsys.readouterr()
@@ -2735,7 +2736,7 @@ def test_setup_interactive_does_not_print_current_secret(monkeypatch, capsys):
     )
     monkeypatch.setattr(cli.service, "config_set", fake_config_set)
     monkeypatch.setattr("builtins.input", fake_input)
-    monkeypatch.setattr(cli.getpass, "getpass", fake_getpass)
+    monkeypatch.setattr(cli_setup.getpass, "getpass", fake_getpass)
 
     code = cli.main(["setup", "--advanced", "--lang", "en"])
     captured = capsys.readouterr()
@@ -2773,7 +2774,7 @@ def test_setup_advanced_mode_keeps_low_level_prompts(monkeypatch, capsys):
     )
     monkeypatch.setattr(cli.service, "config_set", fake_config_set)
     monkeypatch.setattr("builtins.input", fake_input)
-    monkeypatch.setattr(cli.getpass, "getpass", fake_getpass)
+    monkeypatch.setattr(cli_setup.getpass, "getpass", fake_getpass)
 
     code = cli.main(["setup", "--advanced", "--lang", "en"])
 

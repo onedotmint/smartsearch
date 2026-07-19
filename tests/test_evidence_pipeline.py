@@ -3,6 +3,7 @@ import time
 import pytest
 
 from smart_search import service
+from smart_search import research_service, service_support
 from smart_search.evidence import CapabilityPlan, EvidenceBundle
 from smart_search.logger import logger
 
@@ -142,9 +143,9 @@ async def test_research_synthesis_failure_preserves_evidence(monkeypatch, tmp_pa
     def fail_synthesis(*args, **kwargs):
         raise RuntimeError("synthesis provider unavailable")
 
-    monkeypatch.setattr(service, "_run_web_search_fallback", fake_web_search)
-    monkeypatch.setattr(service, "_run_web_fetch_fallback", fake_fetch)
-    monkeypatch.setattr(service, "_evidence_only_synthesis", fail_synthesis)
+    monkeypatch.setattr(research_service, "_run_web_search_fallback", fake_web_search)
+    monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)
+    monkeypatch.setattr(research_service, "_evidence_only_synthesis", fail_synthesis)
 
     result = await service.research("today AI news", evidence_dir=str(tmp_path), fallback="auto")
 
@@ -178,7 +179,7 @@ async def test_research_without_explicit_evidence_dir_does_not_persist_artifacts
     monkeypatch.setenv("TAVILY_API_KEY", "tavily-secret")
     monkeypatch.setenv("JINA_API_KEY", "jina-secret")
     default_root = tmp_path / "generated-evidence"
-    monkeypatch.setattr(service, "_default_evidence_dir", lambda query: str(default_root))
+    monkeypatch.setattr(research_service, "_default_evidence_dir", lambda query: str(default_root))
 
     async def fake_fetch(url, fallback="auto", preferred_order=None):
         return (
@@ -186,7 +187,7 @@ async def test_research_without_explicit_evidence_dir_does_not_persist_artifacts
             [service._attempt("web_fetch", "jina", "ok", time.time(), result_count=1)],
         )
 
-    monkeypatch.setattr(service, "_run_web_fetch_fallback", fake_fetch)
+    monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)
 
     result = await service.research("https://example.com/source", fallback="off")
 

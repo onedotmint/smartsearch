@@ -1,6 +1,7 @@
 import pytest
 
 from smart_search import service
+from smart_search import search_service
 from smart_search.intent_router import IntentRouter
 
 
@@ -59,8 +60,8 @@ async def test_search_routing_decision_keeps_old_fields_and_adds_new_router_fiel
             {"capability": "docs_search", "provider": "context7", "status": "ok", "elapsed_ms": 1, "result_count": 1}
         ]
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "_run_docs_search_fallback", fake_docs_search)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "_run_docs_search_fallback", fake_docs_search)
 
     result = await service.search("React useEffect API docs", validation="balanced")
     routing = result["routing_decision"]

@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from smart_search import service
+from smart_search import capability_service, operations_service, provider_commands, research_service, search_service, service_support
 
 
 def _reset_config(monkeypatch, tmp_path):
@@ -267,7 +268,7 @@ async def test_route_calibrate_records_failed_model_without_aborting(monkeypatch
         {"id": "web-01", "query": "today news", "expected_capabilities": ["web_search"], "expected_label": "web_search"},
         {"id": "none-01", "query": "rewrite this sentence", "expected_capabilities": [], "expected_label": "none"},
     ]
-    monkeypatch.setattr(service, "_route_calibration_dataset", lambda: sample_dataset)
+    monkeypatch.setattr(capability_service, "_route_calibration_dataset", lambda: sample_dataset)
 
     async def fake_embed(self, inputs):
         if self.config.intent_embedding_model == "bad-model":
@@ -292,7 +293,7 @@ async def test_route_calibrate_records_failed_model_without_aborting(monkeypatch
                 out.append([0.0, 0.0, 1.0])
         return out
 
-    monkeypatch.setattr(service.IntentRouter, "_embed", fake_embed)
+    monkeypatch.setattr(capability_service.IntentRouter, "_embed", fake_embed)
 
     result = await service.route_calibrate(models="good-model,bad-model")
 
@@ -385,10 +386,10 @@ def test_deep_research_plan_current_market_is_offline_and_fetch_before_claim(mon
     async def should_not_run_provider(*args, **kwargs):
         raise AssertionError("build_deep_research_plan must not call live providers")
 
-    monkeypatch.setattr(service, "search", should_not_run_provider)
-    monkeypatch.setattr(service, "fetch", should_not_run_provider)
-    monkeypatch.setattr(service, "exa_search", should_not_run_provider)
-    monkeypatch.setattr(service, "zhipu_search", should_not_run_provider)
+    monkeypatch.setattr(search_service, "search", should_not_run_provider)
+    monkeypatch.setattr(provider_commands, "fetch", should_not_run_provider)
+    monkeypatch.setattr(research_service, "exa_search", should_not_run_provider)
+    monkeypatch.setattr(provider_commands, "zhipu_search", should_not_run_provider)
 
     result = service.build_deep_research_plan(
         "深度搜索一下最近的比特币行情",
@@ -412,7 +413,7 @@ def test_deep_research_plan_current_market_is_offline_and_fetch_before_claim(mon
 
 
 def test_deep_research_default_evidence_dir_uses_platform_temp_dir(monkeypatch, tmp_path):
-    monkeypatch.setattr(service.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(research_service.tempfile, "gettempdir", lambda: str(tmp_path))
     result = service.build_deep_research_plan("Deep research default evidence directory")
 
     expected_root = tmp_path / "smart-search-evidence"
@@ -559,10 +560,10 @@ async def test_disabled_tavily_is_skipped_without_network(monkeypatch):
     async def fake_firecrawl_scrape(url, ctx=None):
         return "# Fallback page"
 
-    monkeypatch.setattr(service, "call_tavily_search", should_not_run_tavily)
-    monkeypatch.setattr(service, "call_tavily_extract", should_not_run_tavily)
-    monkeypatch.setattr(service, "call_firecrawl_search", fake_firecrawl_search)
-    monkeypatch.setattr(service, "call_firecrawl_scrape", fake_firecrawl_scrape)
+    monkeypatch.setattr(search_service, "call_tavily_search", should_not_run_tavily)
+    monkeypatch.setattr(search_service, "call_tavily_extract", should_not_run_tavily)
+    monkeypatch.setattr(search_service, "call_firecrawl_search", fake_firecrawl_search)
+    monkeypatch.setattr(search_service, "call_firecrawl_scrape", fake_firecrawl_scrape)
 
     sources, search_attempts = await service._run_web_search_fallback("query")
     fetched, fetch_attempts = await service._run_web_fetch_fallback("https://example.com")
@@ -674,8 +675,8 @@ async def test_research_executes_staged_evidence_only_workflow(monkeypatch, tmp_
             [service._attempt("web_fetch", "jina", "ok", time.time(), result_count=1)],
         )
 
-    monkeypatch.setattr(service, "_run_web_search_fallback", fake_web_search)
-    monkeypatch.setattr(service, "_run_web_fetch_fallback", fake_fetch)
+    monkeypatch.setattr(research_service, "_run_web_search_fallback", fake_web_search)
+    monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)
 
     result = await service.research("今天国内 AI 新闻", evidence_dir=str(tmp_path), fallback="auto")
 
@@ -709,8 +710,8 @@ async def test_research_reports_degraded_gaps_without_citing_discovery_candidate
             ],
         )
 
-    monkeypatch.setattr(service, "_run_web_search_fallback", fake_web_search)
-    monkeypatch.setattr(service, "_run_web_fetch_fallback", fake_fetch)
+    monkeypatch.setattr(research_service, "_run_web_search_fallback", fake_web_search)
+    monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)
 
     result = await service.research("今天国内 AI 新闻", evidence_dir=str(tmp_path), fallback="auto")
 
@@ -734,8 +735,8 @@ async def test_research_fallback_off_limits_same_capability_fetch(monkeypatch, t
     async def should_not_discover(*args, **kwargs):
         raise AssertionError("known URL with fallback off should not need discovery after fetch failure")
 
-    monkeypatch.setattr(service, "_run_web_fetch_fallback", fake_fetch)
-    monkeypatch.setattr(service, "_run_web_search_fallback", should_not_discover)
+    monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)
+    monkeypatch.setattr(research_service, "_run_web_search_fallback", should_not_discover)
 
     result = await service.research("https://example.com/source", evidence_dir=str(tmp_path), fallback="off")
 
@@ -768,10 +769,10 @@ async def test_research_fallback_off_does_not_run_supplemental_exa(monkeypatch, 
             [service._attempt("web_fetch", preferred_order[0], "ok", time.time(), result_count=1)],
         )
 
-    monkeypatch.setattr(service, "context7_library", fake_context7_library)
-    monkeypatch.setattr(service, "exa_search", fail_exa)
-    monkeypatch.setattr(service, "_run_web_search_fallback", fake_web_search)
-    monkeypatch.setattr(service, "_run_web_fetch_fallback", fake_fetch)
+    monkeypatch.setattr(research_service, "context7_library", fake_context7_library)
+    monkeypatch.setattr(research_service, "exa_search", fail_exa)
+    monkeypatch.setattr(research_service, "_run_web_search_fallback", fake_web_search)
+    monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)
 
     result = await service.research("React official API docs", evidence_dir=str(tmp_path), fallback="off")
 
@@ -845,7 +846,7 @@ async def test_zhipu_search_uses_configured_engine_and_command_override(monkeypa
             engine = kwargs.get("search_engine") or self.search_engine
             return json.dumps({"ok": True, "search_engine": engine, "results": [], "elapsed_ms": 1})
 
-    monkeypatch.setattr(service, "ZhipuWebSearchProvider", FakeZhipuProvider)
+    monkeypatch.setattr(provider_commands, "ZhipuWebSearchProvider", FakeZhipuProvider)
 
     configured_result = await service.zhipu_search("test")
     override_result = await service.zhipu_search("test", search_engine="search_pro_quark")
@@ -866,9 +867,9 @@ async def test_search_returns_sources(monkeypatch):
     async def fake_search(self, query, platform="", ctx=None):
         return 'Answer.\n\nsources([{"url":"https://example.com","title":"Example"}])'
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "call_tavily_search", lambda *a, **k: None)
-    monkeypatch.setattr(service, "call_firecrawl_search", lambda *a, **k: None)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "call_tavily_search", lambda *a, **k: None)
+    monkeypatch.setattr(search_service, "call_firecrawl_search", lambda *a, **k: None)
 
     result = await service.search("what is example")
 
@@ -896,9 +897,9 @@ async def test_search_splits_primary_and_extra_sources(monkeypatch):
     async def fake_tavily_search(query, max_results=6):
         return [{"url": "https://extra.example.com", "title": "Extra", "content": "candidate"}]
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "call_tavily_search", fake_tavily_search)
-    monkeypatch.setattr(service, "call_firecrawl_search", lambda *a, **k: None)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "call_tavily_search", fake_tavily_search)
+    monkeypatch.setattr(search_service, "call_firecrawl_search", lambda *a, **k: None)
 
     result = await service.search("what is example", extra_sources=1)
 
@@ -922,9 +923,9 @@ async def test_search_uses_xai_responses_for_explicit_xai_config(monkeypatch):
         captured["tools"] = self.tools
         return "Answer [[1]](https://example.com)."
 
-    monkeypatch.setattr(service.XAIResponsesSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "call_tavily_search", lambda *a, **k: None)
-    monkeypatch.setattr(service, "call_firecrawl_search", lambda *a, **k: None)
+    monkeypatch.setattr(search_service.XAIResponsesSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "call_tavily_search", lambda *a, **k: None)
+    monkeypatch.setattr(search_service, "call_firecrawl_search", lambda *a, **k: None)
 
     result = await service.search("what is example")
 
@@ -954,8 +955,8 @@ async def test_search_fallbacks_from_xai_responses_to_openai_compatible(monkeypa
         captured.append((self.__class__.__name__, self.api_url, self.api_key, self.model))
         return 'Fallback answer.\n\nsources([{"url":"https://fallback.example.com","title":"Fallback"}])'
 
-    monkeypatch.setattr(service.XAIResponsesSearchProvider, "search", failing_xai)
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fallback_openai)
+    monkeypatch.setattr(search_service.XAIResponsesSearchProvider, "search", failing_xai)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fallback_openai)
 
     result = await service.search("what is example")
 
@@ -986,8 +987,8 @@ async def test_search_does_not_fake_openai_compatible_fallback_when_only_xai_con
     async def should_not_run(self, query, platform="", ctx=None):
         raise AssertionError("OpenAI-compatible fallback requires its own configured URL and key")
 
-    monkeypatch.setattr(service.XAIResponsesSearchProvider, "search", failing_xai)
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", should_not_run)
+    monkeypatch.setattr(search_service.XAIResponsesSearchProvider, "search", failing_xai)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", should_not_run)
 
     result = await service.search("what is example")
 
@@ -1007,7 +1008,7 @@ async def test_search_accepts_only_openai_compatible_as_main_provider(monkeypatc
     async def fake_search(self, query, platform="", ctx=None):
         return "Relay answer."
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
 
     result = await service.search("what is example")
 
@@ -1036,7 +1037,7 @@ async def test_search_passes_openai_compatible_stream_config_and_cli_override(mo
         captured["stream"] = self.stream
         return "Relay answer."
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
 
     kwargs = {} if override_stream is None else {"stream": override_stream}
     result = await service.search("what is example", **kwargs)
@@ -1072,7 +1073,7 @@ async def test_search_openai_compatible_primary_model_falls_back_to_configured_m
             return ""
         return "Fallback answer."
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
 
     result = await service.search("what is example", providers="openai-compatible")
 
@@ -1098,7 +1099,7 @@ async def test_search_model_override_disables_configured_fallback_models(monkeyp
         seen_models.append(self.model)
         return ""
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
 
     result = await service.search("what is example", providers="openai-compatible", model="override-model")
 
@@ -1143,7 +1144,7 @@ async def test_search_fallback_off_disables_model_fallback_but_keeps_transport_a
         ]
         return "Rescued answer."
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
 
     result = await service.search("what is example", providers="openai-compatible", fallback="off")
 
@@ -1170,7 +1171,7 @@ async def test_search_model_breaker_skips_primary_model(monkeypatch):
         seen_models.append(self.model)
         return "Fallback answer."
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
 
     result = await service.search("what is example", providers="openai-compatible")
 
@@ -1301,7 +1302,7 @@ async def test_search_standard_runs_with_unrelated_capabilities_missing(monkeypa
     async def fake_search(self, query, platform="", ctx=None):
         return "Answer."
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
 
     result = await service.search("plain query")
 
@@ -1323,7 +1324,7 @@ async def test_search_lite_evidence_uses_source_only_capabilities(monkeypatch):
             [service._attempt("web_search", "zhipu", "ok", time.time(), result_count=1)],
         )
 
-    monkeypatch.setattr(service, "_run_web_search_fallback", fake_web_search)
+    monkeypatch.setattr(search_service, "_run_web_search_fallback", fake_web_search)
 
     result = await service.search("source query", response_mode="evidence")
 
@@ -1369,7 +1370,7 @@ async def test_provider_specific_command_reports_missing_named_provider(monkeypa
     async def should_not_run(*args, **kwargs):
         raise AssertionError("provider must not run when its key is missing")
 
-    monkeypatch.setattr(service.ExaSearchProvider, "search", should_not_run)
+    monkeypatch.setattr(provider_commands.ExaSearchProvider, "search", should_not_run)
 
     result = await service.exa_search("python docs")
 
@@ -1421,8 +1422,8 @@ async def test_doctor_accepts_lite_source_profile_without_main_connection(monkey
         "_test_zhipu_mcp_connection",
         "_test_context7_connection",
     ):
-        monkeypatch.setattr(service, name, not_configured)
-    monkeypatch.setattr(service, "_test_zhipu_connection", zhipu_ok)
+        monkeypatch.setattr(operations_service, name, not_configured)
+    monkeypatch.setattr(operations_service, "_test_zhipu_connection", zhipu_ok)
 
     result = await service.doctor()
 
@@ -1458,9 +1459,9 @@ async def test_zhipu_mcp_web_search_error_records_attempt_and_falls_back_same_ca
     async def yes_tavily(query, max_results=6):
         return [{"url": "https://fallback.example.com", "title": "Fallback", "content": "fallback source"}]
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "zhipu_mcp_search", failing_zhipu_mcp)
-    monkeypatch.setattr(service, "call_tavily_search", yes_tavily)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "zhipu_mcp_search", failing_zhipu_mcp)
+    monkeypatch.setattr(search_service, "call_tavily_search", yes_tavily)
 
     result = await service.search("latest MCP status", validation="strict")
 
@@ -1485,8 +1486,8 @@ async def test_search_provider_filter_can_select_openai_compatible(monkeypatch):
     async def fallback_openai(self, query, platform="", ctx=None):
         return "Relay answer."
 
-    monkeypatch.setattr(service.XAIResponsesSearchProvider, "search", should_not_run)
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fallback_openai)
+    monkeypatch.setattr(search_service.XAIResponsesSearchProvider, "search", should_not_run)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fallback_openai)
 
     result = await service.search("what is example", providers="openai-compatible")
 
@@ -1509,8 +1510,8 @@ async def test_balanced_current_sports_queries_use_web_search_reinforcement(monk
     async def fake_tavily_search(query, max_results=6):
         return [{"url": "https://sports.example.com", "title": "Sports", "content": "score"}]
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "call_tavily_search", fake_tavily_search)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "call_tavily_search", fake_tavily_search)
 
     result = await service.search(query, validation="balanced")
 
@@ -1535,8 +1536,8 @@ async def test_chinese_language_request_does_not_trigger_current_web_search(monk
     async def should_not_run_web_search(query, count=5, providers="auto", fallback="auto"):
         raise AssertionError("generic Chinese-language requests should not trigger current web_search")
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "_run_web_search_fallback", should_not_run_web_search)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "_run_web_search_fallback", should_not_run_web_search)
 
     result = await service.search("中文解释 Python 函数", validation="balanced")
 
@@ -1564,9 +1565,9 @@ async def test_docs_query_routes_docs_without_current_web_search(monkeypatch):
     async def should_not_run_web_search(query, count=5, providers="auto", fallback="auto"):
         raise AssertionError("docs query should not trigger current web_search")
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "_run_docs_search_fallback", fake_docs_search)
-    monkeypatch.setattr(service, "_run_web_search_fallback", should_not_run_web_search)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "_run_docs_search_fallback", fake_docs_search)
+    monkeypatch.setattr(search_service, "_run_web_search_fallback", should_not_run_web_search)
 
     result = await service.search("React useEffect API docs 中文解释", validation="balanced")
 
@@ -1591,8 +1592,8 @@ async def test_strict_still_uses_web_search_without_current_keyword(monkeypatch)
     async def fake_tavily_search(query, max_results=6):
         return [{"url": "https://strict.example.com", "title": "Strict", "content": "evidence"}]
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "call_tavily_search", fake_tavily_search)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "call_tavily_search", fake_tavily_search)
 
     result = await service.search("plain evergreen query", validation="strict")
 
@@ -1621,8 +1622,8 @@ async def test_search_vertical_intent_uses_anysearch_when_configured(monkeypatch
             "results": [{"url": "https://cve.example.com/openssl", "title": "OpenSSL CVE", "description": "impact"}],
         }
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "anysearch_search", fake_anysearch)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "anysearch_search", fake_anysearch)
 
     result = await service.search("CVE-2026 OpenSSL 漏洞影响范围", validation="balanced")
 
@@ -1647,8 +1648,8 @@ async def test_search_respects_fallback_off_for_main_search(monkeypatch):
     async def should_not_run(self, query, platform="", ctx=None):
         raise AssertionError("OpenAI-compatible fallback should not run when fallback is off")
 
-    monkeypatch.setattr(service.XAIResponsesSearchProvider, "search", failing_xai)
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", should_not_run)
+    monkeypatch.setattr(search_service.XAIResponsesSearchProvider, "search", failing_xai)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", should_not_run)
 
     result = await service.search("what is example", fallback="off")
 
@@ -1683,8 +1684,8 @@ async def test_search_reports_primary_provider_http_error(monkeypatch):
     async def should_not_hide_failure(*args, **kwargs):
         return [{"url": "https://extra.example.com"}]
 
-    monkeypatch.setattr(service.XAIResponsesSearchProvider, "search", failing_search)
-    monkeypatch.setattr(service, "call_tavily_search", should_not_hide_failure)
+    monkeypatch.setattr(search_service.XAIResponsesSearchProvider, "search", failing_search)
+    monkeypatch.setattr(search_service, "call_tavily_search", should_not_hide_failure)
 
     result = await service.search("what is example", extra_sources=1, fallback="off")
 
@@ -1708,8 +1709,8 @@ async def test_fetch_prefers_tavily(monkeypatch):
     async def no_firecrawl(url, ctx=None):
         raise AssertionError("Firecrawl should not run when Tavily succeeds")
 
-    monkeypatch.setattr(service, "call_tavily_extract", yes_tavily)
-    monkeypatch.setattr(service, "call_firecrawl_scrape", no_firecrawl)
+    monkeypatch.setattr(search_service, "call_tavily_extract", yes_tavily)
+    monkeypatch.setattr(search_service, "call_firecrawl_scrape", no_firecrawl)
 
     result = await service.fetch("https://example.com")
 
@@ -1729,8 +1730,8 @@ async def test_fetch_fallbacks_to_firecrawl(monkeypatch):
     async def yes_firecrawl(url, ctx=None):
         return "# Page"
 
-    monkeypatch.setattr(service, "call_tavily_extract", no_tavily)
-    monkeypatch.setattr(service, "call_firecrawl_scrape", yes_firecrawl)
+    monkeypatch.setattr(search_service, "call_tavily_extract", no_tavily)
+    monkeypatch.setattr(search_service, "call_firecrawl_scrape", yes_firecrawl)
 
     result = await service.fetch("https://example.com")
 
@@ -1754,9 +1755,9 @@ async def test_fetch_uses_shared_chain_and_falls_back_after_jina_quality_error(m
     async def yes_firecrawl(url, ctx=None):
         return "# Page"
 
-    monkeypatch.setattr(service, "call_tavily_extract", no_tavily)
-    monkeypatch.setattr(service, "jina_fetch", bad_jina)
-    monkeypatch.setattr(service, "call_firecrawl_scrape", yes_firecrawl)
+    monkeypatch.setattr(search_service, "call_tavily_extract", no_tavily)
+    monkeypatch.setattr(search_service, "jina_fetch", bad_jina)
+    monkeypatch.setattr(search_service, "call_firecrawl_scrape", yes_firecrawl)
 
     result = await service.fetch("https://example.com")
 
@@ -1782,8 +1783,8 @@ async def test_search_known_url_uses_same_fetch_chain_as_fetch(monkeypatch):
         captured["url"] = url
         return {"ok": True, "provider": "jina", "url": url, "content": "# Jina Page"}
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(service, "jina_fetch", yes_jina)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "jina_fetch", yes_jina)
 
     result = await service.search("请抓取 https://example.com/docs?x=1 后总结", validation="balanced")
 
@@ -1805,8 +1806,8 @@ async def test_fetch_reports_config_error_without_extract_keys(monkeypatch):
     async def no_firecrawl(url, ctx=None):
         return None
 
-    monkeypatch.setattr(service, "call_tavily_extract", no_tavily)
-    monkeypatch.setattr(service, "call_firecrawl_scrape", no_firecrawl)
+    monkeypatch.setattr(search_service, "call_tavily_extract", no_tavily)
+    monkeypatch.setattr(search_service, "call_firecrawl_scrape", no_firecrawl)
 
     result = await service.fetch("https://example.com")
 
@@ -1825,8 +1826,8 @@ async def test_fetch_reports_network_error_when_providers_fail(monkeypatch):
     async def no_firecrawl(url, ctx=None):
         return None
 
-    monkeypatch.setattr(service, "call_tavily_extract", no_tavily)
-    monkeypatch.setattr(service, "call_firecrawl_scrape", no_firecrawl)
+    monkeypatch.setattr(search_service, "call_tavily_extract", no_tavily)
+    monkeypatch.setattr(search_service, "call_firecrawl_scrape", no_firecrawl)
 
     result = await service.fetch("https://example.com")
 
@@ -1862,7 +1863,7 @@ async def test_tavily_custom_base_is_used_for_search_extract_and_map(monkeypatch
                 payload = {}
             return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(service.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(provider_commands.httpx, "AsyncClient", FakeAsyncClient)
 
     search_result = await service.call_tavily_search("query", max_results=1)
     extract_result = await service.call_tavily_extract("https://example.com")
@@ -1905,7 +1906,7 @@ async def test_firecrawl_custom_base_is_used_for_search_and_scrape(monkeypatch):
                 payload = {}
             return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(service.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(provider_commands.httpx, "AsyncClient", FakeAsyncClient)
 
     search_result = await service.call_firecrawl_search("query", limit=1)
     scrape_result = await service.call_firecrawl_scrape("https://example.com")
@@ -1927,7 +1928,7 @@ async def test_exa_search_passes_parameters(monkeypatch):
         captured.update(kwargs)
         return json.dumps({"ok": True, "results": [], "total": 0})
 
-    monkeypatch.setattr(service.ExaSearchProvider, "search", fake_search)
+    monkeypatch.setattr(provider_commands.ExaSearchProvider, "search", fake_search)
 
     result = await service.exa_search(
         "python docs",
@@ -1951,7 +1952,7 @@ async def test_exa_search_accepts_powershell_split_domain_filter(monkeypatch):
         captured.update(kwargs)
         return json.dumps({"ok": True, "results": [], "total": 0})
 
-    monkeypatch.setattr(service.ExaSearchProvider, "search", fake_search)
+    monkeypatch.setattr(provider_commands.ExaSearchProvider, "search", fake_search)
 
     result = await service.exa_search(
         "freertos release",
@@ -1971,7 +1972,7 @@ async def test_exa_search_normalizes_error_json(monkeypatch):
     async def fake_search(self, **kwargs):
         return json.dumps({"ok": False, "error": "exa failed"})
 
-    monkeypatch.setattr(service.ExaSearchProvider, "search", fake_search)
+    monkeypatch.setattr(provider_commands.ExaSearchProvider, "search", fake_search)
 
     result = await service.exa_search("python docs")
 
@@ -1987,7 +1988,7 @@ async def test_exa_search_preserves_provider_error_type(monkeypatch):
     async def fake_search(self, **kwargs):
         return json.dumps({"ok": False, "error_type": "parameter_error", "error": "HTTP 400: Bad Request"})
 
-    monkeypatch.setattr(service.ExaSearchProvider, "search", fake_search)
+    monkeypatch.setattr(provider_commands.ExaSearchProvider, "search", fake_search)
 
     result = await service.exa_search("python docs")
 
@@ -2023,7 +2024,7 @@ async def test_anysearch_service_wrappers_decode_provider_json(monkeypatch):
     monkeypatch.setenv("ANYSEARCH_API_URL", "https://anysearch.example.com/mcp")
     monkeypatch.setenv("ANYSEARCH_API_KEY", "as-test-secret")
     monkeypatch.setenv("ANYSEARCH_TIMEOUT_SECONDS", "7")
-    monkeypatch.setattr(service, "AnySearchProvider", FakeAnySearchProvider)
+    monkeypatch.setattr(provider_commands, "AnySearchProvider", FakeAnySearchProvider)
 
     domains = await service.anysearch_domains("security")
     search = await service.anysearch_search("CVE-2024-3094", domain="security.cve", sub_domain="xz", max_results=2)
@@ -2055,7 +2056,7 @@ async def test_anysearch_service_parse_error(monkeypatch):
         async def list_domains(self, domain=""):
             return "not json"
 
-    monkeypatch.setattr(service, "AnySearchProvider", FakeAnySearchProvider)
+    monkeypatch.setattr(provider_commands, "AnySearchProvider", FakeAnySearchProvider)
     monkeypatch.setenv("ANYSEARCH_API_KEY", "anysearch-test-secret")
 
     result = await service.anysearch_domains()
@@ -2125,8 +2126,8 @@ async def test_diagnose_openai_compatible_timeout_after_quick_chat(monkeypatch):
             "stream": stream,
         }
 
-    monkeypatch.setattr(service, "_test_primary_chat_completion", fake_quick)
-    monkeypatch.setattr(service, "_probe_openai_compatible_search_shape", fake_probe)
+    monkeypatch.setattr(operations_service, "_test_primary_chat_completion", fake_quick)
+    monkeypatch.setattr(operations_service, "_probe_openai_compatible_search_shape", fake_probe)
 
     result = await service.diagnose_openai_compatible(timeout_seconds=3)
     dumped = json.dumps(result, ensure_ascii=False)
@@ -2157,8 +2158,8 @@ async def test_diagnose_openai_compatible_recommends_stream_when_only_stream_wor
             "stream": stream,
         }
 
-    monkeypatch.setattr(service, "_test_primary_chat_completion", fake_quick)
-    monkeypatch.setattr(service, "_probe_openai_compatible_search_shape", fake_probe)
+    monkeypatch.setattr(operations_service, "_test_primary_chat_completion", fake_quick)
+    monkeypatch.setattr(operations_service, "_probe_openai_compatible_search_shape", fake_probe)
 
     result = await service.diagnose_openai_compatible()
 
@@ -2185,8 +2186,8 @@ async def test_diagnose_openai_compatible_recommends_no_stream_when_stream_fails
             "stream": stream,
         }
 
-    monkeypatch.setattr(service, "_test_primary_chat_completion", fake_quick)
-    monkeypatch.setattr(service, "_probe_openai_compatible_search_shape", fake_probe)
+    monkeypatch.setattr(operations_service, "_test_primary_chat_completion", fake_quick)
+    monkeypatch.setattr(operations_service, "_probe_openai_compatible_search_shape", fake_probe)
 
     result = await service.diagnose_openai_compatible()
 
@@ -2206,8 +2207,8 @@ async def test_diagnose_openai_compatible_reports_ok_when_both_search_shapes_wor
     async def fake_probe(api_url, api_key, model, *, stream, timeout_seconds):
         return {"name": "probe", "status": "ok", "message": "ok", "response_time_ms": 1.0, "has_content": True, "stream": stream}
 
-    monkeypatch.setattr(service, "_test_primary_chat_completion", fake_quick)
-    monkeypatch.setattr(service, "_probe_openai_compatible_search_shape", fake_probe)
+    monkeypatch.setattr(operations_service, "_test_primary_chat_completion", fake_quick)
+    monkeypatch.setattr(operations_service, "_probe_openai_compatible_search_shape", fake_probe)
 
     result = await service.diagnose_openai_compatible()
 
@@ -2260,7 +2261,7 @@ async def test_primary_connection_checks_chat_even_when_models_endpoint_fails(mo
                 request=httpx.Request("POST", url),
             )
 
-    monkeypatch.setattr(service.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(operations_service.httpx, "AsyncClient", FakeAsyncClient)
 
     result = await service._test_primary_connection("https://api.example.com/v1", "sk-test-secret", "grok-4.3")
 
@@ -2297,7 +2298,7 @@ async def test_primary_connection_keeps_chat_ok_when_models_probe_errors(monkeyp
                 request=httpx.Request("POST", url),
             )
 
-    monkeypatch.setattr(service.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(operations_service.httpx, "AsyncClient", FakeAsyncClient)
 
     result = await service._test_primary_connection("https://api.example.com/v1", "sk-test-secret", "grok-4.3")
 
@@ -2332,7 +2333,7 @@ async def test_doctor_uses_responses_endpoint_for_explicit_xai_config(monkeypatc
                 request=httpx.Request("POST", url),
             )
 
-    monkeypatch.setattr(service.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(operations_service.httpx, "AsyncClient", FakeAsyncClient)
 
     result = await service.doctor()
 
@@ -2376,7 +2377,7 @@ async def test_doctor_uses_chat_completions_for_only_openai_compatible_config(mo
                 request=httpx.Request("POST", url),
             )
 
-    monkeypatch.setattr(service.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(operations_service.httpx, "AsyncClient", FakeAsyncClient)
 
     result = await service.doctor()
 
@@ -2405,8 +2406,8 @@ async def test_doctor_tests_main_providers_independently(monkeypatch):
     async def fake_openai(api_url, api_key, model):
         return {"status": "ok", "message": "relay ok"}
 
-    monkeypatch.setattr(service, "_test_primary_responses", fake_xai)
-    monkeypatch.setattr(service, "_test_primary_connection", fake_openai)
+    monkeypatch.setattr(operations_service, "_test_primary_responses", fake_xai)
+    monkeypatch.setattr(operations_service, "_test_primary_connection", fake_openai)
     async def fake_exa_connection():
         return {"status": "ok", "message": "exa ok"}
 
@@ -2419,10 +2420,10 @@ async def test_doctor_tests_main_providers_independently(monkeypatch):
     async def fake_zhipu_mcp_connection():
         return {"status": "not_configured", "message": "missing"}
 
-    monkeypatch.setattr(service, "_test_exa_connection", fake_exa_connection)
-    monkeypatch.setattr(service, "_test_tavily_connection", fake_tavily_connection)
-    monkeypatch.setattr(service, "_test_jina_connection", fake_jina_connection)
-    monkeypatch.setattr(service, "_test_zhipu_mcp_connection", fake_zhipu_mcp_connection)
+    monkeypatch.setattr(operations_service, "_test_exa_connection", fake_exa_connection)
+    monkeypatch.setattr(operations_service, "_test_tavily_connection", fake_tavily_connection)
+    monkeypatch.setattr(operations_service, "_test_jina_connection", fake_jina_connection)
+    monkeypatch.setattr(operations_service, "_test_zhipu_mcp_connection", fake_zhipu_mcp_connection)
 
     result = await service.doctor()
 
@@ -2452,7 +2453,7 @@ async def test_call_jina_reader_decodes_provider_json(monkeypatch):
         async def fetch(self, url):
             return json.dumps({"ok": True, "provider": "jina", "url": url, "content": "# Page"})
 
-    monkeypatch.setattr(service, "JinaReaderProvider", FakeJinaReaderProvider)
+    monkeypatch.setattr(provider_commands, "JinaReaderProvider", FakeJinaReaderProvider)
 
     result = await service.call_jina_reader("https://example.com")
 
@@ -2490,7 +2491,7 @@ async def test_zhipu_mcp_service_wrappers_decode_provider_json(monkeypatch):
 
     monkeypatch.setenv("ZHIPU_MCP_API_KEY", "zmcp-test-secret")
     monkeypatch.setenv("ZHIPU_MCP_TIMEOUT_SECONDS", "7")
-    monkeypatch.setattr(service, "ZhipuMCPProvider", FakeZhipuMCPProvider)
+    monkeypatch.setattr(provider_commands, "ZhipuMCPProvider", FakeZhipuMCPProvider)
 
     search = await service.zhipu_mcp_search("query", count=2)
     reader = await service.zhipu_mcp_reader("https://example.com")
@@ -2536,7 +2537,7 @@ async def test_tavily_doctor_connection_uses_configured_timeout(monkeypatch):
             seen["json"] = json
             return httpx.Response(200, json={"results": []}, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(service.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(operations_service.httpx, "AsyncClient", FakeAsyncClient)
 
     result = await service._test_tavily_connection()
 

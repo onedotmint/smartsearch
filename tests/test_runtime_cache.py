@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from smart_search import service
+from smart_search import search_service
 from smart_search.runtime_cache import RuntimeTTLCache
 
 
@@ -87,7 +88,7 @@ async def test_fetch_cache_reuses_clean_content_and_public_metrics(monkeypatch):
         calls += 1
         return "# Result\nAuthorization: Bearer hidden-token"
 
-    monkeypatch.setattr(service, "call_tavily_extract", fake_extract)
+    monkeypatch.setattr(search_service, "call_tavily_extract", fake_extract)
 
     first = await service.fetch("https://Example.com/page/#fragment")
     second = await service.fetch("https://example.com/page")
@@ -119,7 +120,7 @@ async def test_fetch_concurrent_requests_share_one_owner_task(monkeypatch):
         await release.wait()
         return "shared-content"
 
-    monkeypatch.setattr(service, "call_tavily_extract", fake_extract)
+    monkeypatch.setattr(search_service, "call_tavily_extract", fake_extract)
     owner = asyncio.create_task(service.fetch("https://example.com/shared"))
     await started.wait()
     waiter = asyncio.create_task(service.fetch("https://example.com/shared"))
@@ -150,7 +151,7 @@ async def test_search_source_cache_reuses_normalized_results(monkeypatch):
             "results": [{"title": "Source", "url": "https://example.com/a", "content": "evidence"}],
         }
 
-    monkeypatch.setattr(service, "zhipu_search", fake_search)
+    monkeypatch.setattr(search_service, "zhipu_search", fake_search)
 
     first = await service.search("same query", response_mode="evidence")
     second = await service.search("same   query", response_mode="evidence")
@@ -176,7 +177,7 @@ async def test_fetch_cache_invalidates_on_ttl_config_credential_and_disable(monk
         calls += 1
         return f"content-{calls}"
 
-    monkeypatch.setattr(service, "call_tavily_extract", fake_extract)
+    monkeypatch.setattr(search_service, "call_tavily_extract", fake_extract)
 
     first = await service.fetch("https://example.com/page")
     assert first["content"] == "content-1"
@@ -210,7 +211,7 @@ async def test_sensitive_fetch_url_bypasses_cache(monkeypatch):
         calls += 1
         return "content"
 
-    monkeypatch.setattr(service, "call_tavily_extract", fake_extract)
+    monkeypatch.setattr(search_service, "call_tavily_extract", fake_extract)
 
     await service.fetch("https://example.com/page?api_key=secret")
     await service.fetch("https://example.com/page?api_key=secret")

@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from smart_search import service
+from smart_search import search_service
 from smart_search.providers.base import (
     ProviderResult,
     classify_provider_exception,
@@ -113,8 +114,8 @@ async def test_service_consumes_provider_error_without_treating_it_as_success(mo
             capability="main_search",
         )
 
-    monkeypatch.setattr(service.XAIResponsesSearchProvider, "search", failed_xai)
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", successful_relay)
+    monkeypatch.setattr(search_service.XAIResponsesSearchProvider, "search", failed_xai)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", successful_relay)
 
     result = await service.search("provider contract", fallback="auto")
 

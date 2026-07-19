@@ -8,6 +8,7 @@ import httpx
 
 from smart_search.config import ConfigSnapshot
 from smart_search import service
+from smart_search import search_service
 from smart_search.runtime_cache import (
     RequestBudget,
     RequestContext,
@@ -213,7 +214,7 @@ async def test_search_skips_provider_when_deadline_is_exhausted(monkeypatch):
         calls += 1
         return "unexpected"
 
-    monkeypatch.setattr(service.OpenAICompatibleSearchProvider, "search", should_not_call)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", should_not_call)
 
     result = await service.search("budget test", timeout_seconds=0)
 
