@@ -7,6 +7,37 @@ class SmartSearchArgumentParser(argparse.ArgumentParser):
         kwargs.setdefault("allow_abbrev", False)
         super().__init__(*args, **kwargs)
 
+
+PUBLIC_COMMANDS = (
+    "search",
+    "route",
+    "fetch",
+    "map",
+    "deep",
+    "research",
+    "doctor",
+    "setup",
+    "config",
+    "skills",
+)
+
+
+def _hide_advanced_command_help(subparsers: argparse._SubParsersAction) -> None:
+    """
+    =================================================================================
+    步骤1：收窄根命令帮助
+    =================================================================================
+    目标：让普通用户先看到核心工作流，同时保留高级命令的兼容解析。
+    数据源：已注册的顶层 subparser 和 PUBLIC_COMMANDS 白名单。
+    操作：
+    1) 只保留核心命令的帮助行。
+    2) 保留完整 choices 映射，使隐藏命令和别名继续可调用。
+    """
+    subparsers._choices_actions[:] = [
+        action for action in subparsers._choices_actions if action.dest in PUBLIC_COMMANDS
+    ]
+
+
 def _add_format_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--format", choices=["json", "markdown", "content"], default="json")
     parser.add_argument("--output", default="", help="Write rendered output to a file.")
@@ -22,7 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Smart Search CLI for AI-agent web research.",
     )
     parser.add_argument("-v", "--v", "--version", action="version", version=f"%(prog)s {_get_version()}")
-    sub = parser.add_subparsers(dest="command", required=True, parser_class=SmartSearchArgumentParser)
+    sub = parser.add_subparsers(
+        dest="command",
+        required=True,
+        parser_class=SmartSearchArgumentParser,
+        metavar="{" + ",".join(PUBLIC_COMMANDS) + "}",
+    )
 
     search_parser = sub.add_parser(
         "search", aliases=COMMAND_ALIASES["search"], help="Run OpenAI-compatible web search."
@@ -436,6 +472,7 @@ def build_parser() -> argparse.ArgumentParser:
         "regression", aliases=COMMAND_ALIASES["regression"], help="Run offline CLI regression tests."
     )
     regression_parser.set_defaults(command="regression")
+    _hide_advanced_command_help(sub)
     return parser
 
 __all__ = [name for name in globals() if not name.startswith("__")]

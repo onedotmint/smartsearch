@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -263,16 +264,29 @@ def test_public_docs_structure_is_packaged_and_linked():
         "docs/development.md",
         "CONTRIBUTING.md",
     ]
-    package_json = (ROOT / "package.json").read_text(encoding="utf-8")
+    packaged_paths = [
+        "docs/getting-started.md",
+        "docs/commands.md",
+        "docs/providers.md",
+        "docs/concepts/search-vs-deep-vs-research.md",
+        "docs/concepts/evidence.md",
+        "docs/concepts/routing.md",
+    ]
+    package_json = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    package_files = package_json["files"]
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     readme_zh = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
 
     for relative_path in required_paths:
         assert (ROOT / relative_path).exists()
-        package_marker = "docs/" if relative_path.startswith("docs/") else relative_path
-        assert package_marker in package_json
-    assert "docs/" in package_json
-    assert "CONTRIBUTING.md" in package_json
+    for relative_path in packaged_paths:
+        assert relative_path in package_files or (
+            relative_path.startswith("docs/concepts/") and "docs/concepts/*.md" in package_files
+        )
+    assert "skills/smart-search-cli/**" not in package_files
+    assert "CONTRIBUTING.md" not in package_files
+    assert "docs/development.md" not in package_files
+    assert "src/smart_search/assets/skills/smart-search-cli/**" in package_files
     assert "docs/getting-started.md" in readme
     assert "docs/getting-started.md" in readme_zh
 

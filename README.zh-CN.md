@@ -97,10 +97,10 @@ smart-search skills update --targets codex --format json
 - [Search、Deep Research 和 Research](docs/concepts/search-vs-deep-vs-research.md)：规划器和执行器合约。
 - [证据策略](docs/concepts/evidence.md)：发现、抓取、引用和缺口。
 - [路由](docs/concepts/routing.md)：意图模式、远程路由调用和可观测字段。
-- [开发指南](docs/development.md)：验证、打包和发布通道。
-- [贡献指南](CONTRIBUTING.md)：源码修改、文档同步和 PR 要求。
+- [开发指南](https://github.com/onedotmint/smartsearch/blob/main/docs/development.md)：验证、打包和发布通道。
+- [贡献指南](https://github.com/onedotmint/smartsearch/blob/main/CONTRIBUTING.md)：源码修改、文档同步和 PR 要求。
 
-公开的 AI agent 合约在 [`skills/smart-search-cli/`](skills/smart-search-cli/)。`src/smart_search/assets/skills/smart-search-cli/` 是随 Python runtime 打包的副本，两份内容必须保持同步。
+公开的 AI agent 合约维护在[仓库 skill 目录](https://github.com/onedotmint/smartsearch/tree/main/skills/smart-search-cli)。打包副本会随 Python runtime 发布，两份内容必须保持同步。
 
 ## 排障
 

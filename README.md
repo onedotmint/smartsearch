@@ -97,10 +97,10 @@ Search results are discovery candidates. For high-risk claims, fetch the relevan
 - [Search vs Deep Research vs Research](docs/concepts/search-vs-deep-vs-research.md) — planner and executor contracts.
 - [Evidence policy](docs/concepts/evidence.md) — discovery, fetch, citations, and gaps.
 - [Routing](docs/concepts/routing.md) — intent modes, remote router calls, and observability.
-- [Development](docs/development.md) — verification, packaging, and release lanes.
-- [Contributing](CONTRIBUTING.md) — source changes, documentation parity, and pull requests.
+- [Development](https://github.com/onedotmint/smartsearch/blob/main/docs/development.md) — verification, packaging, and release lanes.
+- [Contributing](https://github.com/onedotmint/smartsearch/blob/main/CONTRIBUTING.md) — source changes, documentation parity, and pull requests.
 
-The public AI-agent contract lives in [`skills/smart-search-cli/`](skills/smart-search-cli/). The bundled copy under `src/smart_search/assets/skills/smart-search-cli/` is packaged with the Python runtime and must stay synchronized.
+The public AI-agent contract is maintained in the [repository skill directory](https://github.com/onedotmint/smartsearch/tree/main/skills/smart-search-cli). The bundled copy is packaged with the Python runtime and must stay synchronized.
 
 ## Troubleshooting
 

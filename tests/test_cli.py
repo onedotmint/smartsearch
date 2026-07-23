@@ -31,7 +31,30 @@ def test_help_contains_commands(capsys):
     out = capsys.readouterr().out
     assert "search" in out
     assert "doctor" in out
-    assert "regression" in out
+    assert "setup" in out
+    assert "regression" not in out
+    assert "exa-search" not in out
+    assert "route-calibrate" not in out
+
+
+def test_hidden_commands_remain_parseable():
+    parser = cli.build_parser()
+
+    hidden_commands = [
+        ["route-calibrate"],
+        ["exa-search", "query"],
+        ["zhipu-search", "query"],
+        ["anysearch-search", "query"],
+        ["context7-library", "react"],
+        ["capabilities"],
+        ["diagnose", "openai-compatible"],
+        ["model", "current"],
+        ["smoke"],
+        ["regression"],
+    ]
+
+    for argv in hidden_commands:
+        assert parser.parse_args(argv).command == argv[0]
 
 
 def test_version_flags_exit_successfully(monkeypatch, capsys):
