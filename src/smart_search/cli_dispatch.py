@@ -160,9 +160,7 @@ async def _run_async(args: argparse.Namespace) -> int:
     return EXIT_PARAMETER_ERROR
 
 def _run_model(args: argparse.Namespace) -> int:
-    if args.model_command == "set":
-        data = service.set_model(args.model)
-    elif args.model_command == "current":
+    if args.model_command == "current":
         data = service.current_model()
     else:
         data = {"ok": False, "error_type": "parameter_error", "error": "Unknown model command"}

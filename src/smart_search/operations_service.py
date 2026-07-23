@@ -584,17 +584,6 @@ def current_model() -> dict[str, Any]:
         "config_file": str(config.config_file),
     }
 
-def set_model(model: str) -> dict[str, Any]:
-    return {
-        "ok": False,
-        "error_type": "parameter_error",
-        "error": (
-            "The legacy default model command was removed. Use `smart-search config set XAI_MODEL <model>` "
-            "or `smart-search config set OPENAI_COMPATIBLE_MODEL <model>`."
-        ),
-        "config_file": str(config.config_file),
-    }
-
 def config_path() -> dict[str, Any]:
     return config.config_path_info()
 
@@ -1101,7 +1090,6 @@ __all__ = [
     "current_model",
     "diagnose_openai_compatible",
     "doctor",
-    "set_model",
     "smoke",
     "write_output",
 ]

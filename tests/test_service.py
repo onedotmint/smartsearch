@@ -70,19 +70,15 @@ def _reset_config(monkeypatch, tmp_path):
     return fake_config_file
 
 
-def test_model_set_is_removed_and_current_reports_explicit_models(monkeypatch, tmp_path):
+def test_current_model_reports_explicit_models(monkeypatch, tmp_path):
     fake_config_file = _reset_config(monkeypatch, tmp_path)
 
     service.config_set("XAI_MODEL", "xai-model")
     service.config_set("OPENAI_COMPATIBLE_API_URL", "https://relay.example.com/v1")
     service.config_set("OPENAI_COMPATIBLE_MODEL", "relay-model")
 
-    set_result = service.set_model("legacy-model")
     current_result = service.current_model()
 
-    assert set_result["ok"] is False
-    assert set_result["error_type"] == "parameter_error"
-    assert "XAI_MODEL" in set_result["error"]
     assert current_result["xai_model"] == "xai-model"
     assert current_result["openai_compatible_model"] == "relay-model"
     assert current_result["config_file"] == str(fake_config_file)

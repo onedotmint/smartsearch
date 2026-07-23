@@ -105,7 +105,6 @@ def test_each_subcommand_help_exits_successfully(capsys):
         ["config", "set", "--help"],
         ["config", "unset", "--help"],
         ["model", "--help"],
-        ["model", "set", "--help"],
         ["model", "current", "--help"],
         ["regression", "--help"],
     ]
@@ -177,7 +176,6 @@ def test_command_aliases_parse_to_canonical_commands():
         assert parser.parse_args(argv).config_command == config_command
 
     model_cases = [
-        (["mdl", "s", "grok"], "set"),
         (["mdl", "cur"], "current"),
         (["mdl", "c"], "current"),
     ]
@@ -904,37 +902,14 @@ def test_real_doctor_ignores_legacy_primary_env_and_returns_config_exit(monkeypa
     assert secret not in out
 
 
-def test_model_set_returns_parameter_error(monkeypatch, capsys):
-    def fake_set_model(model):
-        return {
-            "ok": False,
-            "error_type": "parameter_error",
-            "error": "Use XAI_MODEL or OPENAI_COMPATIBLE_MODEL.",
-            "config_file": "C:/tmp/smart-search-config.json",
-        }
-
-    monkeypatch.setattr(cli.service, "set_model", fake_set_model)
-
-    code = cli.main(["model", "set", "grok-4-fast"])
-
-    assert code == cli.EXIT_PARAMETER_ERROR
-    assert json.loads(capsys.readouterr().out)["error_type"] == "parameter_error"
-
-
-def test_model_aliases_use_canonical_commands(monkeypatch, capsys):
+def test_model_aliases_use_current_command(monkeypatch, capsys):
     def fake_current_model():
         return {"ok": True, "current_model": "grok-4-fast"}
 
-    def fake_set_model(model):
-        return {"ok": False, "error_type": "parameter_error", "error": "Use explicit provider model keys."}
-
     monkeypatch.setattr(cli.service, "current_model", fake_current_model)
-    monkeypatch.setattr(cli.service, "set_model", fake_set_model)
 
     assert cli.main(["mdl", "cur"]) == cli.EXIT_OK
     assert json.loads(capsys.readouterr().out)["current_model"] == "grok-4-fast"
-    assert cli.main(["mdl", "s", "grok-4-fast"]) == cli.EXIT_PARAMETER_ERROR
-    assert json.loads(capsys.readouterr().out)["error_type"] == "parameter_error"
 
 
 def test_config_set_masks_value(monkeypatch, capsys):
@@ -1099,7 +1074,7 @@ def test_config_markdown_and_content_are_masked_and_non_json(monkeypatch, capsys
     assert "key=XAI_API_KEY" in unset_out
 
 
-def test_model_markdown_and_content_are_human_readable(monkeypatch, capsys):
+def test_model_markdown_is_human_readable(monkeypatch, capsys):
     def fake_current_model():
         return {
             "ok": True,
@@ -1108,23 +1083,13 @@ def test_model_markdown_and_content_are_human_readable(monkeypatch, capsys):
             "config_file": "C:/tmp/config.json",
         }
 
-    def fake_set_model(model):
-        return {"ok": False, "error_type": "parameter_error", "error": "Use explicit provider model keys."}
-
     monkeypatch.setattr(cli.service, "current_model", fake_current_model)
-    monkeypatch.setattr(cli.service, "set_model", fake_set_model)
 
     assert cli.main(["model", "current", "--format", "markdown"]) == cli.EXIT_OK
     markdown_out = capsys.readouterr().out
     assert "# Smart Search Model" in markdown_out
     assert "grok-4-fast" in markdown_out
     assert "relay-model" in markdown_out
-
-    assert cli.main(["model", "set", "grok", "--format", "content"]) == cli.EXIT_PARAMETER_ERROR
-    content_out = capsys.readouterr().out
-    assert "Model FAIL" in content_out
-    assert "Use explicit provider model keys." in content_out
-
 
 def test_provider_markdown_outputs_result_lists(monkeypatch, capsys):
     async def fake_exa_search(*args, **kwargs):
@@ -1258,9 +1223,6 @@ def test_all_formatted_commands_have_non_json_markdown(monkeypatch):
     def fake_current_model():
         return {"ok": True, "xai_model": "grok"}
 
-    def fake_set_model(model):
-        return {"ok": False, "error_type": "parameter_error", "error": "Use explicit provider model keys."}
-
     monkeypatch.setattr(cli.service, "search", fake_search)
     monkeypatch.setattr(cli.service, "fetch", fake_fetch)
     monkeypatch.setattr(cli.service, "map_site", fake_map)
@@ -1284,7 +1246,6 @@ def test_all_formatted_commands_have_non_json_markdown(monkeypatch):
     monkeypatch.setattr(cli.service, "config_set", fake_config_set)
     monkeypatch.setattr(cli.service, "config_unset", fake_config_unset)
     monkeypatch.setattr(cli.service, "current_model", fake_current_model)
-    monkeypatch.setattr(cli.service, "set_model", fake_set_model)
 
     command_cases = [
         ("search", ["search", "query", "--format", "markdown"]),
@@ -1312,7 +1273,6 @@ def test_all_formatted_commands_have_non_json_markdown(monkeypatch):
         ("config-set", ["config", "set", "XAI_MODEL", "grok", "--format", "markdown"]),
         ("config-unset", ["config", "unset", "XAI_MODEL", "--format", "markdown"]),
         ("model-current", ["model", "current", "--format", "markdown"]),
-        ("model-set", ["model", "set", "grok", "--format", "markdown"]),
     ]
 
     for name, argv in command_cases:

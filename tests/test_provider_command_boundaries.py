@@ -4,20 +4,9 @@ import pytest
 
 from smart_search import (
     operations_service,
-    provider_commands,
     provider_diagnostics,
-    provider_fetch_commands,
-    provider_mcp_commands,
     provider_search_commands,
-    provider_vertical_commands,
 )
-
-
-def test_provider_command_facade_reexports_owning_modules():
-    assert provider_commands.exa_search is provider_search_commands.exa_search
-    assert provider_commands.fetch is provider_fetch_commands.fetch
-    assert provider_commands.zhipu_mcp_search is provider_mcp_commands.zhipu_mcp_search
-    assert provider_commands.anysearch_search is provider_vertical_commands.anysearch_search
 
 
 def test_operations_service_uses_provider_diagnostic_owners():

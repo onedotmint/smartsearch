@@ -35,7 +35,7 @@ Remote prompt URLs are rejected. Local prompt overrides apply only to the curren
 | `capabilities` | - | Report configured capabilities and fallback metadata |
 | `setup` | `init` | Save local provider configuration and optionally install skills |
 | `config` | `cfg` | Read or update local configuration |
-| `model` | `mdl` | Inspect or set explicit provider models |
+| `model` | `mdl` | Inspect explicit provider models |
 | `skills` | `skill` | Inspect or update installed managed skill files |
 | `smoke` | `sm` | Run provider routing smoke checks |
 | `regression` | `reg` | Run offline CLI regression checks |

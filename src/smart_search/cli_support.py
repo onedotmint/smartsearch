@@ -117,7 +117,6 @@ CONFIG_COMMAND_ALIASES = {
 }
 
 MODEL_COMMAND_ALIASES = {
-    "set": ["s"],
     "current": ["cur", "c"],
 }
 

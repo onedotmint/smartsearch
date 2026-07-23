@@ -19,7 +19,6 @@ from .operations_service import (
     current_model,
     diagnose_openai_compatible,
     doctor,
-    set_model,
     smoke,
     write_output,
 )
@@ -90,7 +89,6 @@ __all__ = [
     "route",
     "route_calibrate",
     "search",
-    "set_model",
     "smoke",
     "validate_command_capabilities",
     "validate_minimum_profile",
