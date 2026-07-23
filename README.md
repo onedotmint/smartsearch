@@ -9,7 +9,7 @@ CLI-first, skill-driven web research for AI agents and terminal users. `smart-se
 ## Install
 
 ```sh
-npm install -g @konbakuyomu/smart-search@latest
+npm install -g @onedotmint/smart-search@latest
 smart-search --version
 smart-search setup
 ```

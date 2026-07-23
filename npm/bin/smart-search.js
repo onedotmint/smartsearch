@@ -14,7 +14,7 @@ const pythonPath =
 
 function printReinstallHint() {
   console.error("Repair it by reinstalling the package:");
-  console.error("  npm install -g @konbakuyomu/smart-search");
+  console.error("  npm install -g @onedotmint/smart-search");
 }
 
 if (!fs.existsSync(pythonPath)) {

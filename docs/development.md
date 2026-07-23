@@ -77,8 +77,8 @@ Stable version bumps use a commit subject such as `chore(release): bump version 
 
 ## Release closeout checklist
 
-1. Check `npm view @konbakuyomu/smart-search versions --json` and `npm view @konbakuyomu/smart-search dist-tags --json` before choosing a version.
-2. Check `gh release list --repo konbakuyomu/smartsearch --limit 100` before creating or editing a release.
+1. Check `npm view @onedotmint/smart-search versions --json` and `npm view @onedotmint/smart-search dist-tags --json` before choosing a version.
+2. Check `gh release list --repo onedotmint/smartsearch --limit 100` before creating or editing a release.
 3. Keep beta releases on `next`; do not move `latest`.
 4. When npm returns `E409`, verify whether the exact version already exists before retrying; npm `E409` is not a reason to mutate a published version.
 5. Install the published version and run `smart-search --version`, `smart-search regression`, and `smart-search smoke --mock --format json`.

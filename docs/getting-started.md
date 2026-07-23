@@ -5,14 +5,14 @@ This guide takes a new installation from zero configuration to one search and on
 ## Install the npm package
 
 ```sh
-npm install -g @konbakuyomu/smart-search@latest
+npm install -g @onedotmint/smart-search@latest
 smart-search --version
 ```
 
 Use the `next` channel when testing an unreleased package:
 
 ```sh
-npm install -g @konbakuyomu/smart-search@next
+npm install -g @onedotmint/smart-search@next
 ```
 
 The wrapper needs Node.js 18 or newer. It creates an isolated Python 3.10+ runtime inside the package installation and exposes one `smart-search` command.

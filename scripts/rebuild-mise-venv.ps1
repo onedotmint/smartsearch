@@ -1,5 +1,5 @@
 # Rebuild the Python venv inside the mise install dir for
-# @konbakuyomu/smart-search using a clean (non-mise-shim) python interpreter.
+# @onedotmint/smart-search using a clean (non-mise-shim) python interpreter.
 #
 # Why: mise's npm backend may skip the postinstall venv setup, or run it with
 # a python from PATH that resolves to a mise shim — copying a launcher into
@@ -7,16 +7,16 @@
 # always uses an absolute-path real python to ensure the venv contains a
 # clean python.exe and the smart-search package is installed properly.
 #
-# Run after every `mise install` or `mise upgrade npm:@konbakuyomu/smart-search`.
+# Run after every `mise install` or `mise upgrade npm:@onedotmint/smart-search`.
 #
 # Override the python source by setting $env:SMART_SEARCH_REBUILD_PYTHON,
 # otherwise default to scoop's python313.
 
 $ErrorActionPreference = 'Stop'
 
-$pkgRoot = Join-Path $env:LOCALAPPDATA 'mise\installs\npm-konbakuyomu-smart-search'
+$pkgRoot = Join-Path $env:LOCALAPPDATA 'mise\installs\npm-onedotmint-smart-search'
 if (-not (Test-Path -LiteralPath $pkgRoot)) {
-    Write-Error "smart-search mise install dir not found: $pkgRoot. Run 'mise install npm:@konbakuyomu/smart-search@latest' first."
+    Write-Error "smart-search mise install dir not found: $pkgRoot. Run 'mise install npm:@onedotmint/smart-search@latest' first."
 }
 
 $miseInstallDir = Get-ChildItem -LiteralPath $pkgRoot -Directory -ErrorAction SilentlyContinue |
@@ -26,9 +26,9 @@ if (-not $miseInstallDir) {
     Write-Error "no installed version dir under $pkgRoot."
 }
 
-# npm extracts the package to node_modules/@konbakuyomu/smart-search/, which is
+# npm extracts the package to node_modules/@onedotmint/smart-search/, which is
 # what npm/bin/smart-search.js treats as packageRoot (and where venvDir lives).
-$packageDir = Join-Path $miseInstallDir.FullName 'node_modules\@konbakuyomu\smart-search'
+$packageDir = Join-Path $miseInstallDir.FullName 'node_modules\@onedotmint\smart-search'
 if (-not (Test-Path -LiteralPath (Join-Path $packageDir 'pyproject.toml'))) {
     Write-Error "pyproject.toml not found under $packageDir. mise install may have failed."
 }

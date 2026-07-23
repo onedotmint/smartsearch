@@ -16,7 +16,7 @@
 - This bundled skill is maintained with the `smartsearch` repository.
 - Private API keys should be saved with `smart-search setup` or `smart-search config set`; environment variables remain supported for CI and advanced users.
 - Do not depend on MCP inline `env` values or committed API-key environment variables for CLI use.
-- On Windows with mise, the managed package name is `npm:@konbakuyomu/smart-search`; the executable remains `smart-search`. Diagnose mise managed installs with `mise ls "npm:@konbakuyomu/smart-search"` and `mise which smart-search`.
+- On Windows with mise, the managed package name is `npm:@onedotmint/smart-search`; the executable remains `smart-search`. Diagnose mise managed installs with `mise ls "npm:@onedotmint/smart-search"` and `mise which smart-search`.
 
 ## Commands
 

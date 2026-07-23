@@ -21,7 +21,7 @@ def run_resolver(base_version: str, versions: list[str]) -> str:
             "node",
             str(RESOLVER),
             "--package",
-            "@konbakuyomu/smart-search",
+            "@onedotmint/smart-search",
             "--base",
             base_version,
             "--id",

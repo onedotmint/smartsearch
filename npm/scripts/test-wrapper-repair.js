@@ -111,7 +111,7 @@ assert.strictEqual(failedRepair.spawnSyncCalls.length, 1);
 assert.strictEqual(failedRepair.spawnCalls.length, 0);
 assert.deepStrictEqual(failedRepair.exits, [1]);
 assert(
-  failedRepair.stderr.includes("  npm install -g @konbakuyomu/smart-search"),
+  failedRepair.stderr.includes("  npm install -g @onedotmint/smart-search"),
   "failed repair should recommend reinstalling the stable package"
 );
 assert(
@@ -128,7 +128,7 @@ assert.strictEqual(repairSpawnError.spawnSyncCalls.length, 1);
 assert.strictEqual(repairSpawnError.spawnCalls.length, 0);
 assert.deepStrictEqual(repairSpawnError.exits, [5]);
 assert(
-  repairSpawnError.stderr.includes("  npm install -g @konbakuyomu/smart-search"),
+  repairSpawnError.stderr.includes("  npm install -g @onedotmint/smart-search"),
   "repair spawn errors should recommend reinstalling the stable package"
 );
 assert(

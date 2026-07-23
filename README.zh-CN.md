@@ -9,7 +9,7 @@
 ## 安装
 
 ```sh
-npm install -g @konbakuyomu/smart-search@latest
+npm install -g @onedotmint/smart-search@latest
 smart-search --version
 smart-search setup
 ```
