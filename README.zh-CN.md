@@ -115,7 +115,7 @@ smart-search smoke --mock --format json
 
 ## 开发验证
 
-源码 checkout 的验证和发布说明见[开发指南](docs/development.md)。最小验证集如下：
+源码 checkout 的验证和发布说明见[开发指南](https://github.com/onedotmint/smartsearch/blob/main/docs/development.md)。最小验证集如下：
 
 ```sh
 python -m compileall -q src tests

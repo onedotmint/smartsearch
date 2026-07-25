@@ -115,7 +115,7 @@ smart-search smoke --mock --format json
 
 ## Development
 
-Source-checkout verification and release instructions live in [Development](docs/development.md). The short verification set is:
+Source-checkout verification and release instructions live in [Development](https://github.com/onedotmint/smartsearch/blob/main/docs/development.md). The short verification set is:
 
 ```sh
 python -m compileall -q src tests
