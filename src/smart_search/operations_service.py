@@ -958,6 +958,21 @@ async def _smoke_mock(start: float) -> dict[str, Any]:
     }
 
 async def _smoke_live(start: float) -> dict[str, Any]:
+    """
+    /*
+     * ================================================================================
+     * 步骤1：执行 live smoke
+     * ================================================================================
+     * 目标：只在实际配置 web_fetch provider 时执行 fetch，并保留 provider attempts。
+     * 数据源：doctor capability status、provider 配置和 fetch 返回结果。
+     * 操作：
+     * 1) 执行最低能力档位和已配置 provider 的连接检查。
+     * 2) 覆盖 Tavily、Jina、Zhipu MCP Reader 和 Firecrawl fetch 路由。
+     * 3) 汇总 case、provider_attempts 和失败状态。
+     * ================================================================================
+     */
+    """
+    logger.info("步骤1开始：执行 live smoke")
     cases: list[dict[str, Any]] = []
     doctor_result = await doctor()
     capability_status = doctor_result.get("capability_status", {})
@@ -1011,9 +1026,21 @@ async def _smoke_live(start: float) -> dict[str, Any]:
     else:
         cases.append(_case("context7 library", True, {"skipped": "CONTEXT7_API_KEY not configured"}))
 
-    if _provider_configured("tavily") or _provider_configured("firecrawl"):
+    fetch_provider_ids = ("tavily", "jina", "zhipu-mcp-reader", "firecrawl")
+    configured_fetch_providers = [provider for provider in fetch_provider_ids if _provider_configured(provider)]
+    if configured_fetch_providers:
         fetch_result = await fetch("https://example.com")
-        cases.append(_case("web fetch fallback chain", bool(fetch_result.get("ok")), {"provider": fetch_result.get("provider", ""), "provider_attempts": fetch_result.get("provider_attempts", [])}))
+        cases.append(
+            _case(
+                "web fetch fallback chain",
+                bool(fetch_result.get("ok")),
+                {
+                    "provider": fetch_result.get("provider", ""),
+                    "configured_providers": configured_fetch_providers,
+                    "provider_attempts": fetch_result.get("provider_attempts", []),
+                },
+            )
+        )
     else:
         cases.append(_case("web fetch fallback chain", True, {"skipped": "no fetch providers configured"}))
 
@@ -1022,7 +1049,7 @@ async def _smoke_live(start: float) -> dict[str, Any]:
     attempts: list[dict] = []
     for c in cases:
         attempts.extend(c.get("provider_attempts", []))
-    return {
+    result = {
         "ok": not failed,
         "mode": "live",
         "failed_cases": failed,
@@ -1031,6 +1058,8 @@ async def _smoke_live(start: float) -> dict[str, Any]:
         "provider_attempts": attempts,
         "elapsed_ms": _elapsed_ms(start),
     }
+    logger.info("步骤1结束：live smoke 完成，ok=%s", result["ok"])
+    return result
 
 class OutputFileExistsError(FileExistsError):
     """Raised when a CLI output path exists and overwrite was not requested."""

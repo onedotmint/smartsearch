@@ -99,6 +99,65 @@ async def test_live_smoke_treats_provider_failure_as_degraded_when_fallback_exis
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("config_key", "provider"),
+    [("JINA_API_KEY", "jina"), ("ZHIPU_MCP_API_KEY", "zhipu-mcp-reader")],
+)
+async def test_live_smoke_runs_fetch_for_each_configured_fetch_provider(monkeypatch, config_key, provider):
+    """
+    /*
+     * ================================================================================
+     * 步骤1：校验 live smoke fetch provider gate
+     * ================================================================================
+     * 目标：只配置 Jina 或 Zhipu MCP Reader 时也执行 web fetch 检查。
+     * 数据源：单个 fetch provider 配置、模拟 doctor 和 fetch 结果。
+     * 操作：
+     * 1) 固定 doctor 的 capability status，避免依赖本地 provider 请求。
+     * 2) 记录 smoke 是否调用 fetch，并检查实际 provider attempt。
+     * ================================================================================
+     */
+    """
+    monkeypatch.setenv(config_key, "provider-secret")
+    fetch_calls = []
+
+    async def fake_doctor():
+        return {
+            "ok": True,
+            "minimum_profile_ok": True,
+            "error_type": "",
+            "error": "",
+            "capability_status": {
+                "main_search": {"configured": [], "fallback_chain": [], "ok": False},
+                "web_search": {"configured": [], "fallback_chain": [], "ok": False},
+                "docs_search": {"configured": [], "fallback_chain": [], "ok": False},
+                "web_fetch": {"configured": [provider], "fallback_chain": [provider], "ok": True},
+            },
+            "zhipu_connection_test": {"status": "not_configured", "message": "not configured"},
+            "context7_connection_test": {"status": "not_configured", "message": "not configured"},
+        }
+
+    async def fake_fetch(url):
+        fetch_calls.append(url)
+        return {
+            "ok": True,
+            "url": url,
+            "provider": provider,
+            "content": "# Page",
+            "provider_attempts": [{"capability": "web_fetch", "provider": provider, "status": "ok"}],
+        }
+
+    monkeypatch.setattr(operations_service, "doctor", fake_doctor)
+    monkeypatch.setattr(operations_service, "fetch", fake_fetch)
+
+    result = await service.smoke("live")
+
+    fetch_case = next(case for case in result["cases"] if case["name"] == "web fetch fallback chain")
+    assert fetch_calls == ["https://example.com"]
+    assert fetch_case["configured_providers"] == [provider]
+    assert fetch_case["provider_attempts"][0]["provider"] == provider
+
+
+@pytest.mark.asyncio
 async def test_fetch_attempts_show_fallback(monkeypatch):
     monkeypatch.setenv("TAVILY_API_KEY", "tavily-secret")
     monkeypatch.setenv("FIRECRAWL_API_KEY", "firecrawl-secret")

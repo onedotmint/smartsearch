@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -83,7 +84,7 @@ def classify_provider_exception(exc: BaseException) -> tuple[str, str, bool]:
         _logger.info("provider error classification finished")
         return result
 
-    if isinstance(exc, httpx.TimeoutException):
+    if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError, TimeoutError)):
         result = ("timeout", str(exc) or "request timed out", True)
         _logger.info("provider error classification finished")
         return result

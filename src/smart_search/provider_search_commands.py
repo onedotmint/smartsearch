@@ -9,7 +9,9 @@ from .capability_service import (
     _provider_availability,
 )
 from .config import config
+from .logger import logger
 from .provider_command_support import decode_provider_json
+from .providers.base import ProviderError, classify_provider_exception
 from .providers.context7 import Context7Provider
 from .providers.exa import ExaSearchProvider
 from .providers.zhipu import ZhipuWebSearchProvider
@@ -32,19 +34,24 @@ async def call_tavily_search(query: str, max_results: int = 6) -> list[dict] | N
      * ================================================================================
      */
     """
-    availability = _provider_availability("tavily", "web_search")
-    if not availability.get("eligible"):
-        return None
-    endpoint = f"{config.tavily_api_url.rstrip('/')}/search"
-    headers = {"Authorization": f"Bearer {config.tavily_api_key}", "Content-Type": "application/json"}
-    body = {
-        "query": query,
-        "max_results": max_results,
-        "search_depth": "advanced",
-        "include_raw_content": False,
-        "include_answer": False,
-    }
+    logger.info("步骤1开始：调用 Tavily 搜索")
     try:
+        # 1.1 检查 provider eligibility，未配置时保持空结果语义。
+        availability = _provider_availability("tavily", "web_search")
+        if not availability.get("eligible"):
+            logger.info("步骤1结束：Tavily 搜索未进入调用链")
+            return None
+
+        # 1.2 发起请求并校验结果结构。
+        endpoint = f"{config.tavily_api_url.rstrip('/')}/search"
+        headers = {"Authorization": f"Bearer {config.tavily_api_key}", "Content-Type": "application/json"}
+        body = {
+            "query": query,
+            "max_results": max_results,
+            "search_depth": "advanced",
+            "include_raw_content": False,
+            "include_answer": False,
+        }
         ctx = current_context()
         async with request_client(ctx, timeout=90.0) as client:
             response = await client.post(
@@ -54,27 +61,58 @@ async def call_tavily_search(query: str, max_results: int = 6) -> list[dict] | N
                 **request_timeout_kwargs(90.0, ctx),
             )
             response.raise_for_status()
-            results = response.json().get("results", [])
-            return [
-                {
-                    "title": item.get("title", ""),
-                    "url": item.get("url", ""),
-                    "content": item.get("content", ""),
-                    "score": item.get("score", 0),
-                }
-                for item in results
-            ] if results else None
-    except Exception:
-        return None
+            payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("results", []), list):
+            raise ValueError("Tavily search response results must be a list")
+        results = payload.get("results", [])
+        normalized = [
+            {
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "content": item.get("content", ""),
+                "score": item.get("score", 0),
+            }
+            for item in results
+        ]
+        logger.info("步骤1结束：Tavily 搜索完成，结果数=%s", len(normalized))
+        return normalized or None
+    except ProviderError:
+        logger.info("步骤1结束：Tavily 搜索返回已分类异常")
+        raise
+    except Exception as exc:
+        error_type, error, retryable = classify_provider_exception(exc)
+        logger.info("步骤1结束：Tavily 搜索异常，error_type=%s", error_type)
+        raise ProviderError(
+            error_type,
+            error,
+            provider="tavily",
+            capability="web_search",
+            retryable=retryable,
+        ) from exc
 
 
 async def call_firecrawl_search(query: str, limit: int = 14) -> list[dict] | None:
-    """Call Firecrawl search once for the web_search capability."""
-    if not config.firecrawl_api_key:
-        return None
-    endpoint = f"{config.firecrawl_api_url.rstrip('/')}/search"
-    headers = {"Authorization": f"Bearer {config.firecrawl_api_key}", "Content-Type": "application/json"}
+    """
+    /*
+     * ================================================================================
+     * 步骤2：调用 Firecrawl 搜索
+     * ================================================================================
+     * 目标：保留 web_search 的传输异常，让上层 attempt 区分空结果和 provider 错误。
+     * 数据源：Firecrawl 配置、查询文本和结果上限。
+     * 操作：
+     * 1) 发起一次 uncached provider request。
+     * 2) 校验响应结构并返回标准 source 字段。
+     * ================================================================================
+     */
+    """
+    logger.info("步骤2开始：调用 Firecrawl 搜索")
     try:
+        # 2.1 检查配置并构造请求。
+        if not config.firecrawl_api_key:
+            logger.info("步骤2结束：Firecrawl 搜索未配置")
+            return None
+        endpoint = f"{config.firecrawl_api_url.rstrip('/')}/search"
+        headers = {"Authorization": f"Bearer {config.firecrawl_api_key}", "Content-Type": "application/json"}
         ctx = current_context()
         async with request_client(ctx, timeout=90.0) as client:
             response = await client.post(
@@ -84,17 +122,35 @@ async def call_firecrawl_search(query: str, limit: int = 14) -> list[dict] | Non
                 **request_timeout_kwargs(90.0, ctx),
             )
             response.raise_for_status()
-            results = response.json().get("data", {}).get("web", [])
-            return [
+            payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+            raise ValueError("Firecrawl search response data must be an object")
+        results = payload["data"].get("web", [])
+        if not isinstance(results, list):
+            raise ValueError("Firecrawl search response data.web must be a list")
+        normalized = [
                 {
                     "title": item.get("title", ""),
                     "url": item.get("url", ""),
                     "description": item.get("description", ""),
                 }
                 for item in results
-            ] if results else None
-    except Exception:
-        return None
+            ]
+        logger.info("步骤2结束：Firecrawl 搜索完成，结果数=%s", len(normalized))
+        return normalized or None
+    except ProviderError:
+        logger.info("步骤2结束：Firecrawl 搜索返回已分类异常")
+        raise
+    except Exception as exc:
+        error_type, error, retryable = classify_provider_exception(exc)
+        logger.info("步骤2结束：Firecrawl 搜索异常，error_type=%s", error_type)
+        raise ProviderError(
+            error_type,
+            error,
+            provider="firecrawl",
+            capability="web_search",
+            retryable=retryable,
+        ) from exc
 
 
 async def exa_search(

@@ -1,5 +1,6 @@
 import json
 import time
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
@@ -917,6 +918,96 @@ async def test_search_splits_primary_and_extra_sources(monkeypatch):
     assert result["extra_sources"][0]["url"] == "https://extra.example.com"
     assert result["extra_sources"][0]["provider"] == "tavily"
     assert "not automatically used to verify generated content" in result["source_warning"]
+
+
+@pytest.mark.asyncio
+async def test_search_records_empty_and_exception_extra_source_attempts(monkeypatch):
+    """
+    /*
+     * ================================================================================
+     * 步骤1：校验 extra_sources provider attempt
+     * ================================================================================
+     * 目标：空结果和 timeout 异常都不能在并行 gather 边界丢失。
+     * 数据源：主搜索成功结果、Tavily 空结果和 Firecrawl timeout。
+     * 操作：
+     * 1) 固定主搜索返回，隔离 extra_sources 的失败分支。
+     * 2) 检查两个已调度 provider 都保留独立 attempt 和错误类型。
+     * ================================================================================
+     */
+    """
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "sk-test-secret")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-secret")
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "firecrawl-test-secret")
+
+    async def fake_search(self, query, platform="", ctx=None):
+        return "Answer."
+
+    async def empty_tavily(query, max_results=6):
+        return None
+
+    async def failing_firecrawl(query, limit=14):
+        raise httpx.ReadTimeout("Firecrawl timed out", request=httpx.Request("POST", "https://firecrawl.example/search"))
+
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "call_tavily_search", empty_tavily)
+    monkeypatch.setattr(search_service, "call_firecrawl_search", failing_firecrawl)
+
+    result = await service.search("what is example", extra_sources=2)
+
+    attempts = [attempt for attempt in result["provider_attempts"] if attempt["capability"] == "web_search"]
+    assert result["ok"] is True
+    assert [attempt["provider"] for attempt in attempts] == ["tavily", "firecrawl"]
+    assert attempts[0]["status"] == "empty"
+    assert attempts[0]["error_type"] == "empty"
+    assert attempts[1]["status"] == "error"
+    assert attempts[1]["error_type"] == "timeout"
+    assert result["error"] == ""
+
+
+@pytest.mark.asyncio
+async def test_search_records_extra_source_budget_refusal(monkeypatch):
+    """
+    /*
+     * ================================================================================
+     * 步骤2：校验 extra_sources request budget
+     * ================================================================================
+     * 目标：预算拒绝时仍保留已调度 provider 的可解释 skipped attempt。
+     * 数据源：一次主搜索 request 和一次被拒绝的 Tavily request。
+     * 操作：
+     * 1) 让主搜索预留成功，让 extra source 预留失败。
+     * 2) 确认 provider adapter 没有被调用，attempt 标为 budget_exhausted。
+     * ================================================================================
+     */
+    """
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "sk-test-secret")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-secret")
+    reservations = iter([True, False])
+    calls = 0
+
+    async def fake_search(self, query, platform="", ctx=None):
+        return "Answer."
+
+    async def should_not_run(query, max_results=6):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("Tavily must not run after request budget refusal")
+
+    def reserve_request():
+        return next(reservations, False)
+
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "add_request", reserve_request)
+    monkeypatch.setattr(search_service, "call_tavily_search", should_not_run)
+
+    result = await service.search("what is example", extra_sources=1)
+
+    attempts = [attempt for attempt in result["provider_attempts"] if attempt["capability"] == "web_search"]
+    assert calls == 0
+    assert len(attempts) == 1
+    assert attempts[0]["status"] == "skipped"
+    assert attempts[0]["error_type"] == "budget_exhausted"
 
 
 @pytest.mark.asyncio
@@ -1884,6 +1975,99 @@ async def test_tavily_custom_base_is_used_for_search_extract_and_map(monkeypatch
     assert extract_result == "# Extracted"
     assert map_result["ok"] is True
     assert map_result["results"] == ["https://example.com/docs"]
+
+
+@pytest.mark.asyncio
+async def test_tavily_map_empty_results_are_reported_as_empty_failure(monkeypatch):
+    """
+    /*
+     * ================================================================================
+     * 步骤3：校验 Tavily map 空结果
+     * ================================================================================
+     * 目标：HTTP 200 且 results 为空时不能报告成功。
+     * 数据源：Tavily map 空 results 响应。
+     * 操作：
+     * 1) 替换 HTTP client，固定 provider 返回的空列表。
+     * 2) 检查 ok、error_type 和结果列表保持稳定。
+     * ================================================================================
+     */
+    """
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-test-secret")
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, headers, json):
+            return httpx.Response(
+                200,
+                json={"base_url": json["url"], "results": [], "response_time": 0.1},
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(provider_fetch_commands.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = await service.call_tavily_map("https://example.com")
+
+    assert result["ok"] is False
+    assert result["error_type"] == "empty"
+    assert result["results"] == []
+    assert result["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_firecrawl_retries_retryable_http_error(monkeypatch):
+    """
+    /*
+     * ================================================================================
+     * 步骤4：校验 Firecrawl retry
+     * ================================================================================
+     * 目标：服务端 HTTP 失败可重试，后续成功响应仍返回正文。
+     * 数据源：Firecrawl 第一次 503 和第二次 markdown 成功响应。
+     * 操作：
+     * 1) 替换 command client，记录每次 scrape 请求。
+     * 2) 检查 retry 后返回正文，且请求次数符合配置。
+     * ================================================================================
+     */
+    """
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "firecrawl-test-secret")
+    monkeypatch.setenv("SMART_SEARCH_RETRY_MAX_ATTEMPTS", "3")
+    responses = [
+        httpx.Response(
+            503,
+            text="service unavailable",
+            request=httpx.Request("POST", "https://firecrawl.example/scrape"),
+        ),
+        httpx.Response(
+            200,
+            json={"data": {"markdown": "# Scraped"}},
+            request=httpx.Request("POST", "https://firecrawl.example/scrape"),
+        ),
+    ]
+    calls = 0
+
+    class FakeClient:
+        async def post(self, url, headers, json, **kwargs):
+            nonlocal calls
+            calls += 1
+            return responses.pop(0)
+
+    @asynccontextmanager
+    async def fake_request_client(*args, **kwargs):
+        yield FakeClient()
+
+    monkeypatch.setattr(provider_fetch_commands, "request_client", fake_request_client)
+
+    result = await service.call_firecrawl_scrape("https://example.com")
+
+    assert result == "# Scraped"
+    assert calls == 2
 
 
 @pytest.mark.asyncio

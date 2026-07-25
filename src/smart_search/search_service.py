@@ -36,11 +36,10 @@ from .provider_search_commands import (
     zhipu_search,
 )
 from .provider_vertical_commands import anysearch_search
-from .providers.base import ProviderError, coerce_provider_result
+from .providers.base import ProviderError, classify_provider_exception, coerce_provider_result
 from .providers.openai_compatible import OpenAICompatibleSearchProvider
 from .providers.xai_responses import XAIResponsesSearchProvider
 from .runtime_cache import (
-    CacheExecution,
     add_fetch,
     add_request,
     current_context,
@@ -849,11 +848,39 @@ async def search(
     primary_api_mode = successful_main_config["mode"]
     effective_model = successful_main_config["model"]
 
+    """
+    /*
+     * ================================================================================
+     * 步骤4：并行获取 extra_sources
+     * ================================================================================
+     * 目标：保留每个已调度 provider 的成功、空结果、异常、缓存和预算状态。
+     * 数据源：Tavily/Firecrawl source factory、runtime cache 和 RequestBudget。
+     * 操作：
+     * 1) 每个 provider 在网络调用前预留 request budget。
+     * 2) 并行等待缓存执行，异常不在 gather 边界丢失。
+     * 3) 将每个执行结果转换为 provider_attempts，供 JSON 和 evidence bundle 使用。
+     * ================================================================================
+     */
+    """
+    logger.info("步骤4开始：并行获取 extra_sources")
     coros: list[Any] = []
     extra_provider_names: list[str] = []
+    extra_provider_starts: dict[str, float] = {}
+    extra_provider_outcomes: dict[str, dict[str, Any]] = {}
     if tavily_count:
+        tavily_outcome: dict[str, Any] = {}
+        extra_provider_outcomes["tavily"] = tavily_outcome
+        extra_provider_starts["tavily"] = time.time()
+
         async def tavily_source_factory() -> list[dict]:
             if not add_request():
+                tavily_outcome.update(
+                    {
+                        "error_type": "budget_exhausted",
+                        "error": "request budget exhausted",
+                        "retryable": False,
+                    }
+                )
                 return []
             return _normalize_source_results(await call_tavily_search(query, tavily_count), "tavily")
 
@@ -868,8 +895,19 @@ async def search(
             )
         )
     if firecrawl_count:
+        firecrawl_outcome: dict[str, Any] = {}
+        extra_provider_outcomes["firecrawl"] = firecrawl_outcome
+        extra_provider_starts["firecrawl"] = time.time()
+
         async def firecrawl_source_factory() -> list[dict]:
             if not add_request():
+                firecrawl_outcome.update(
+                    {
+                        "error_type": "budget_exhausted",
+                        "error": "request budget exhausted",
+                        "retryable": False,
+                    }
+                )
                 return []
             return _normalize_source_results(await call_firecrawl_search(query, firecrawl_count), "firecrawl")
 
@@ -888,32 +926,69 @@ async def search(
         gathered = await asyncio.gather(*coros, return_exceptions=True)
     primary_result = primary_result or ""
     extra_provider_sources: dict[str, list[dict]] = {"tavily": [], "firecrawl": []}
-    extra_provider_executions: dict[str, CacheExecution] = {}
     for provider_name, execution in zip(extra_provider_names, gathered):
+        provider_start = extra_provider_starts.get(provider_name, start)
+        outcome = extra_provider_outcomes.get(provider_name, {})
         if isinstance(execution, BaseException):
+            error_type, error, retryable = classify_provider_exception(execution)
+            provider_attempts.append(
+                _attempt(
+                    "web_search",
+                    provider_name,
+                    "error",
+                    provider_start,
+                    error_type=error_type,
+                    error=error,
+                    retryable=retryable,
+                )
+            )
             continue
-        extra_provider_executions[provider_name] = execution
-        extra_provider_sources[provider_name] = execution.value if isinstance(execution.value, list) else []
+        if isinstance(execution.value, list):
+            extra_provider_sources[provider_name] = execution.value
+        else:
+            outcome.update(
+                {
+                    "error_type": "protocol_error",
+                    "error": "extra source provider result must be a list",
+                    "retryable": False,
+                }
+            )
+
+        error_type = str(outcome.get("error_type") or "")
+        error = str(outcome.get("error") or "")
+        retryable = outcome.get("retryable") if isinstance(outcome.get("retryable"), bool) else None
+        result_count = len(extra_provider_sources[provider_name])
+        if error_type == "budget_exhausted":
+            status = "skipped"
+        elif error_type:
+            status = "empty" if error_type == "empty" else "error"
+        elif result_count:
+            status = "ok"
+        else:
+            error_type = "empty"
+            error = "provider returned no usable result"
+            retryable = False
+            status = "empty"
+        provider_attempts.append(
+            _attempt(
+                "web_search",
+                provider_name,
+                status,
+                provider_start,
+                result_count=result_count if status == "ok" else 0,
+                error_type=error_type,
+                error=error,
+                retryable=retryable,
+                extra=_cache_attempt_extra(execution),
+            )
+        )
 
     answer, primary_sources = split_answer_and_sources(primary_result)
     extra_source_items = merge_sources(
         extra_provider_sources["firecrawl"],
         extra_provider_sources["tavily"],
     )
-    for item_provider in ("tavily", "firecrawl"):
-        results = extra_provider_sources[item_provider]
-        execution = extra_provider_executions.get(item_provider)
-        if results and execution is not None:
-            provider_attempts.append(
-                _attempt(
-                    "web_search",
-                    item_provider,
-                    "ok",
-                    start,
-                    result_count=len(results),
-                    extra=_cache_attempt_extra(execution),
-                )
-            )
+    logger.info("步骤4结束：extra_sources provider attempts=%s", len(extra_provider_names))
 
     supplemental_sources: list[dict] = []
     if validation_level in {"balanced", "strict"}:

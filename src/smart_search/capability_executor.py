@@ -21,6 +21,7 @@ from .service_support import (
     _cached_fetch_provider,
     _cached_source_provider,
 )
+from .providers.base import classify_provider_exception
 
 
 OperationRunner = Callable[[str, dict[str, Any]], Awaitable[Any]]
@@ -243,7 +244,14 @@ async def execute_capability(
             error = str(outcome.get("error") or error or "")
             if isinstance(outcome.get("retryable"), bool):
                 retryable = outcome["retryable"]
-            status = "error" if error_type else "empty"
+            if not error_type:
+                error_type = "empty"
+                error = error or "provider returned no usable result"
+                retryable = False
+            elif error_type == "empty":
+                error = error or "provider returned no usable result"
+                retryable = False if retryable is None else retryable
+            status = "empty" if error_type == "empty" else "error"
             attempts.append(
                 _attempt(
                     operation.capability,
@@ -259,18 +267,26 @@ async def execute_capability(
             if error_type == "budget_exhausted":
                 logger.info("capability 执行停止于预算边界: capability=%s provider=%s", operation.capability, provider)
                 break
+        # 3.5 将 transport、HTTP、timeout 和未知异常统一转为稳定 attempt。
         except Exception as exc:
+            error_type, error, retryable = classify_provider_exception(exc)
             attempts.append(
                 _attempt(
                     operation.capability,
                     provider,
                     "error",
                     provider_start,
-                    error_type="runtime_error",
-                    error=str(exc),
+                    error_type=error_type,
+                    error=error,
+                    retryable=retryable,
                 )
             )
-            logger.info("capability provider 执行异常: capability=%s provider=%s", operation.capability, provider)
+            logger.info(
+                "capability provider 执行异常: capability=%s provider=%s error_type=%s",
+                operation.capability,
+                provider,
+                error_type,
+            )
 
     value = operation.empty_value("request-budget" if any(item.get("error_type") == "budget_exhausted" for item in attempts) else "")
     logger.info(
