@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_SKILL_DIR = ROOT / "skills" / "smart-search-cli"
 PACKAGED_SKILL_DIR = ROOT / "src" / "smart_search" / "assets" / "skills" / "smart-search-cli"
 PUBLIC_DOCS_DIR = ROOT / "docs"
+LOCAL_TRELLIS_DIR = ROOT / ".trellis"
 
 
 def test_regression_does_not_create_repo_log_file():
@@ -289,6 +290,41 @@ def test_public_docs_structure_is_packaged_and_linked():
     assert "src/smart_search/assets/skills/smart-search-cli/**" in package_files
     assert "docs/getting-started.md" in readme
     assert "docs/getting-started.md" in readme_zh
+    assert "https://github.com/onedotmint/smartsearch/blob/main/docs/development.md" in readme
+    assert "https://github.com/onedotmint/smartsearch/blob/main/docs/development.md" in readme_zh
+    assert "](docs/development.md)" not in readme
+    assert "](docs/development.md)" not in readme_zh
+
+
+def test_local_trellis_contracts_keep_current_ownership_boundaries():
+    spec_dir = LOCAL_TRELLIS_DIR / "spec"
+    if not spec_dir.exists():
+        return
+
+    provider_contract = (spec_dir / "backend" / "provider-capability-contract.md").read_text(encoding="utf-8")
+    workflow = (LOCAL_TRELLIS_DIR / "workflow.md").read_text(encoding="utf-8")
+    config = (LOCAL_TRELLIS_DIR / "config.yaml").read_text(encoding="utf-8")
+    local_architecture_dir = (
+        ROOT / ".agents" / "skills" / "trellis-meta" / "references" / "local-architecture"
+    )
+    if not local_architecture_dir.exists():
+        return
+    local_architecture = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(local_architecture_dir.glob("*.md"))
+    )
+    current_specs = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(spec_dir.rglob("*.md"))
+    )
+
+    assert "provider_commands.py" not in current_specs
+    assert "_decode_provider_json" not in provider_contract
+    assert "@konbakuyomu/smart-search" not in current_specs
+    assert provider_contract.index("Context7 first") < provider_contract.index("Exa only after")
+    assert ".trellis/spec/cli/" not in local_architecture
+    assert "inject-workflow-state.js" not in workflow
+    assert "session_auto_commit: false" in config
 
 
 def test_readme_language_split_and_provider_links_are_documented():
