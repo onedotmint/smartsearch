@@ -46,7 +46,7 @@ The first local check has deterministic output:
 
 ```text
 $ smart-search --version
-smart-search 0.1.14
+smart-search 0.1.0
 ```
 
 Search responses use a versioned JSON envelope. Provider text and URLs vary; the stable shape is `schema_version`, `command`, `data`, and `meta`.

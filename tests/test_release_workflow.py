@@ -141,13 +141,13 @@ def test_release_docs_explain_beta_lane_and_npm_immutability():
 
 
 def test_current_stable_release_notes_describe_user_visible_changes():
-    notes = (ROOT / ".github" / "releases" / "v0.1.14.md").read_text(encoding="utf-8")
+    notes = (ROOT / ".github" / "releases" / "v0.1.0.md").read_text(encoding="utf-8")
 
     required_markers = [
-        "GitHub issue #7",
+        "Initial release",
+        "@onedotmint/smart-search",
         "smart-search skills status",
-        "smart-search skills update",
-        "smart-search diagnose openai-compatible",
+        "smart-search research",
         "Context7",
         "Exa",
         "Validation",

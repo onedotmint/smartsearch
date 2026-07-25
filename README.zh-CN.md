@@ -46,7 +46,7 @@ smart-search fetch "https://www.python.org/downloads/" --format markdown
 
 ```text
 $ smart-search --version
-smart-search 0.1.14
+smart-search 0.1.0
 ```
 
 搜索响应使用带版本号的 JSON envelope。provider 返回的正文和 URL 会变化；稳定结构是 `schema_version`、`command`、`data` 和 `meta`。
