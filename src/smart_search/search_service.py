@@ -36,7 +36,7 @@ from .provider_search_commands import (
     zhipu_search,
 )
 from .provider_vertical_commands import anysearch_search
-from .providers.base import ProviderError, classify_provider_exception, coerce_provider_result
+from .providers.base import classify_provider_exception, coerce_provider_result
 from .providers.openai_compatible import OpenAICompatibleSearchProvider
 from .providers.xai_responses import XAIResponsesSearchProvider
 from .runtime_cache import (
@@ -792,9 +792,33 @@ async def search(
                             extra=attempt_extra,
                         )
                     )
-            except Exception as e:
-                error_result = _primary_search_exception_result(start, session_id, query, candidate_config["mode"], search_provider.get_provider_name(), e)
-                last_primary_error = error_result
+            except Exception as exc:
+                """
+                /*
+                 * ==============================================================================
+                 * 步骤1：统一主搜索异常分类
+                 * ==============================================================================
+                 * 目标：把 provider 边界抛出的原始异常转换为统一错误协议。
+                 * 数据源：Prompt 配置异常和 provider 原始异常。
+                 * 操作：
+                 * 1) 保留 Prompt 配置错误的 config_error 语义。
+                 * 2) 其他异常交给统一 provider 分类器处理。
+                 * ==============================================================================
+                 */
+                """
+                logger.info("步骤1开始：统一主搜索异常分类，provider=%s", search_provider.get_provider_name())
+                if isinstance(exc, PromptConfigurationError):
+                    error_type, error, retryable = "config_error", str(exc), False
+                else:
+                    error_type, error, retryable = classify_provider_exception(exc)
+                last_primary_error = _primary_search_error_result(
+                    start,
+                    session_id,
+                    query,
+                    candidate_config["mode"],
+                    error_type,
+                    error,
+                )
                 transport_attempts = getattr(search_provider, "last_transport_attempts", [])
                 if _append_openai_transport_attempts(provider_attempts, search_provider, candidate_config):
                     transport_fallback_used = transport_fallback_used or any(
@@ -809,11 +833,13 @@ async def search(
                             search_provider.get_provider_name(),
                             "error",
                             primary_start,
-                            error_type=error_result["error_type"],
-                            error=error_result["error"],
+                            error_type=error_type,
+                            error=error,
+                            retryable=retryable,
                             extra=attempt_extra,
                         )
                     )
+                logger.info("步骤1结束：统一主搜索异常分类，error_type=%s", error_type)
         if primary_result is not None:
             break
     if primary_result is None:
@@ -1077,70 +1103,6 @@ async def search(
         "degraded_reason": _combined_degraded_reason(evidence_bundle, capability_metadata),
         "elapsed_ms": _elapsed_ms(start),
     }
-
-def _primary_search_exception_result(
-    start: float,
-    session_id: str,
-    query: str,
-    primary_api_mode: str,
-    provider_name: str,
-    exc: BaseException,
-) -> dict[str, Any]:
-    if isinstance(exc, ProviderError):
-        return _primary_search_error_result(
-            start,
-            session_id,
-            query,
-            primary_api_mode,
-            exc.error_type,
-            str(exc),
-        )
-    if isinstance(exc, PromptConfigurationError):
-        return _primary_search_error_result(
-            start,
-            session_id,
-            query,
-            primary_api_mode,
-            "config_error",
-            str(exc),
-        )
-    if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError, TimeoutError)):
-        return _primary_search_error_result(
-            start,
-            session_id,
-            query,
-            primary_api_mode,
-            "network_error",
-            f"{provider_name} 请求超时: {str(exc)}",
-        )
-    if isinstance(exc, httpx.HTTPStatusError):
-        body = exc.response.text[:300] if exc.response is not None else str(exc)
-        status = exc.response.status_code if exc.response is not None else "unknown"
-        return _primary_search_error_result(
-            start,
-            session_id,
-            query,
-            primary_api_mode,
-            "network_error",
-            f"{provider_name} HTTP {status}: {body}",
-        )
-    if isinstance(exc, httpx.RequestError):
-        return _primary_search_error_result(
-            start,
-            session_id,
-            query,
-            primary_api_mode,
-            "network_error",
-            f"{provider_name} 网络错误: {str(exc)}",
-        )
-    return _primary_search_error_result(
-        start,
-        session_id,
-        query,
-        primary_api_mode,
-        "runtime_error",
-        f"{provider_name} 运行错误: {str(exc)}",
-    )
 
 def _primary_search_error_result(
     start: float,

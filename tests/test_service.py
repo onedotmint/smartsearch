@@ -17,6 +17,8 @@ from smart_search import (
     search_service,
     service_support,
 )
+from smart_search.logger import logger
+from smart_search.utils import PromptConfigurationError
 
 
 def _reset_config(monkeypatch, tmp_path):
@@ -1073,6 +1075,64 @@ async def test_search_fallbacks_from_xai_responses_to_openai_compatible(monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exception_kind", "expected_error_type", "expected_retryable"),
+    [
+        ("auth", "auth_error", False),
+        ("rate_limited", "rate_limited", True),
+        ("timeout", "timeout", True),
+        ("unknown", "protocol_error", False),
+        ("prompt", "config_error", False),
+    ],
+)
+async def test_search_classifies_raw_provider_exceptions(monkeypatch, exception_kind, expected_error_type, expected_retryable):
+    """
+    /*
+     * ================================================================================
+     * 步骤1：校验主搜索原始异常分类
+     * ================================================================================
+     * 目标：让主搜索异常直接复用统一 provider 错误协议。
+     * 数据源：XAI provider 原始 HTTP、timeout、配置和未知异常。
+     * 操作：
+     * 1) 固定单一主搜索 provider，隔离 fallback 影响。
+     * 2) 检查顶层错误和 provider attempt 使用同一 error_type 与 retryable。
+     * ================================================================================
+     */
+    """
+    logger.info("步骤1开始：校验主搜索原始异常分类，kind=%s", exception_kind)
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-secret")
+
+    if exception_kind in {"auth", "rate_limited"}:
+        status_code = 401 if exception_kind == "auth" else 429
+        request = httpx.Request("POST", "https://api.x.ai/v1/responses")
+        response = httpx.Response(status_code, text="provider failure", request=request)
+        exception = httpx.HTTPStatusError("provider failure", request=request, response=response)
+    elif exception_kind == "timeout":
+        exception = httpx.ReadTimeout(
+            "provider timeout",
+            request=httpx.Request("POST", "https://api.x.ai/v1/responses"),
+        )
+    elif exception_kind == "prompt":
+        exception = PromptConfigurationError("prompt override is invalid")
+    else:
+        exception = RuntimeError("provider protocol failure")
+
+    async def failing_xai(self, query, platform="", ctx=None):
+        raise exception
+
+    monkeypatch.setattr(search_service.XAIResponsesSearchProvider, "search", failing_xai)
+
+    result = await service.search("what is example")
+
+    attempt = result["provider_attempts"][0]
+    assert result["ok"] is False
+    assert result["error_type"] == expected_error_type
+    assert attempt["error_type"] == expected_error_type
+    assert attempt["retryable"] is expected_retryable
+    logger.info("步骤1结束：主搜索原始异常分类校验完成，error_type=%s", expected_error_type)
+
+
+@pytest.mark.asyncio
 async def test_search_does_not_fake_openai_compatible_fallback_when_only_xai_configured(monkeypatch):
     monkeypatch.setenv("XAI_API_KEY", "xai-test-secret")
 
@@ -1787,9 +1847,9 @@ async def test_search_reports_primary_provider_http_error(monkeypatch):
     result = await service.search("what is example", extra_sources=1, fallback="off")
 
     assert result["ok"] is False
-    assert result["error_type"] == "network_error"
+    assert result["error_type"] == "parameter_error"
     assert result["primary_api_mode"] == "xai-responses"
-    assert "xAI Responses HTTP 422" in result["error"]
+    assert "HTTP 422" in result["error"]
     assert "bad tools" in result["error"]
     assert result["sources"] == []
     assert result["primary_sources"] == []
