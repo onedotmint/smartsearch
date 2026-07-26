@@ -118,6 +118,9 @@ CONFIG_COMMAND_ALIASES = {
 
 MODEL_COMMAND_ALIASES = {
     "current": ["cur", "c"],
+    "list": ["ls", "l"],
+    "add": ["a"],
+    "remove": ["rm", "r"],
 }
 
 SKILLS_COMMAND_ALIASES = {

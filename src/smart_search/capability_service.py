@@ -117,6 +117,49 @@ def _provider_availability(provider: str, capability: str = "") -> dict[str, Any
         logger.info("provider 可用性计算完成: provider=%s reason=%s", provider, result["reason"])
         return result
 
+    if provider in {"xai-responses", "openai-compatible"} and (not capability or capability == "main_search"):
+        try:
+            routes_configured = config.model_routes_configured
+            routes = config.model_routes if routes_configured else []
+        except ValueError:
+            error = "Invalid SMART_SEARCH_MODEL_ROUTES"
+            try:
+                config.model_routes
+            except ValueError as exc:
+                error = str(exc)
+            result = {
+                "provider": provider,
+                "capabilities": list(capabilities),
+                "config_keys": ["SMART_SEARCH_MODEL_ROUTES"],
+                "configured": False,
+                "enabled": True,
+                "eligible": False,
+                "reason": "invalid_model_routes",
+                "error": error,
+            }
+            logger.info("provider 可用性计算完成: provider=%s reason=invalid_model_routes", provider)
+            return result
+        if routes_configured:
+            matching_routes = [route for route in routes if route.get("provider") == provider]
+            configured = bool(matching_routes)
+            result = {
+                "provider": provider,
+                "capabilities": list(capabilities),
+                "config_keys": ["SMART_SEARCH_MODEL_ROUTES"],
+                "configured": configured,
+                "enabled": True,
+                "eligible": configured,
+                "reason": "ready" if configured else "not_in_model_routes",
+                "route_ids": [route.get("id", "") for route in matching_routes],
+            }
+            logger.info(
+                "provider 可用性计算完成: provider=%s configured=%s routes=%s",
+                provider,
+                configured,
+                len(matching_routes),
+            )
+            return result
+
     config_attrs = tuple(profile.get("config_attrs") or ())
     config_keys = [attribute.upper() for attribute in config_attrs]
     missing_keys: list[str] = []
@@ -707,10 +750,36 @@ def _provider_allowed(provider_id: str, provider_filter: set[str] | None) -> boo
     return bool(provider_filter.intersection(aliases))
 
 def _configured_main_search_provider_ids() -> list[str]:
+    if config.model_routes_configured:
+        return list(dict.fromkeys(route["provider"] for route in config.model_routes))
     return [provider for provider in _provider_chain("main_search") if _provider_configured(provider)]
 
 def _main_search_provider_configs(model_override: str = "", providers: str = "auto") -> list[dict[str, Any]]:
     provider_filter = _parse_provider_filter(providers)
+    if config.model_routes_configured:
+        route_configs: list[dict[str, Any]] = []
+        for route in config.model_routes:
+            provider = route["provider"]
+            if not _provider_allowed(provider, provider_filter):
+                continue
+            route_config: dict[str, Any] = {
+                "provider": provider,
+                "mode": "xai-responses" if provider == "xai-responses" else "chat-completions",
+                "api_url": route["api_url"],
+                "api_key": route["api_key"],
+                "model": model_override or route["model"],
+                "route_id": route["id"],
+                "source": "SMART_SEARCH_MODEL_ROUTES",
+            }
+            if provider == "xai-responses":
+                route_config["tools"] = list(route.get("tools") or [])
+            else:
+                route_config["fallback_models"] = [] if model_override else list(route.get("fallback_models") or [])
+                route_config["stream"] = bool(route.get("stream", False))
+                route_config["tools"] = []
+            route_configs.append(route_config)
+        return route_configs
+
     by_provider: dict[str, dict[str, Any]] = {}
 
     if config.xai_api_key:

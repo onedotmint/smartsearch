@@ -47,7 +47,9 @@
 - `smart-search diagnose openai-compatible [--timeout SECONDS] [--format json|markdown] [--output PATH]`
 - `smart-search setup [--lang zh|en] [--advanced] [--non-interactive] [--skip-skills] [--install-skills CSV] [--skills-root PATH] [--minimum-profile lite|standard|full|off] [--format json|markdown|content] [--output PATH]`
 - `smart-search config path|list|set|unset ... [--format json|markdown|content] [--output PATH]`
-- `smart-search model current [--format json|markdown|content] [--output PATH]`
+- `smart-search model current|list [--format json|markdown|content] [--output PATH]`
+- `smart-search model add --id ID [--provider xai-responses|openai-compatible] --api-url URL --api-key KEY --model MODEL [--tools CSV] [--fallback-models CSV] [--stream|--no-stream] [--format json|markdown|content] [--output PATH]`
+- `smart-search model remove ID [--format json|markdown|content] [--output PATH]`
 - `smart-search regression`
 - `smart-search smoke [--mode mock|live] [--mock] [--live] [--format json|markdown|content] [--output PATH]`
 
@@ -55,7 +57,7 @@
 
 Top-level aliases normalize to the same service behavior as their full command: `search`/`s`, `route`/`rt`, `fetch`/`f`, `map`/`m`, `exa-search`/`exa`/`x`, `exa-similar`/`xs`, `zhipu-search`/`z`/`zp`, `zhipu-mcp-search`/`zmcp-search`, `zhipu-mcp-reader`/`zmcp-reader`, `zhipu-mcp-search-doc`/`zmcp-doc`, `zhipu-mcp-repo-structure`/`zmcp-tree`, `zhipu-mcp-read-file`/`zmcp-file`, `anysearch-domains`/`as-domains`, `anysearch-search`/`as-search`/`as`, `anysearch-extract`/`as-extract`, `anysearch-batch`/`as-batch`, `context7-library`/`c7`/`ctx7`, `context7-docs`/`c7d`/`c7docs`/`ctx7-docs`, `deep`/`dr`, `research`/`rs`, `route-calibrate`/`route-cal`/`rcal`, `doctor`/`d`, `diagnose`/`diag`, `setup`/`init`, `config`/`cfg`, `model`/`mdl`, `smoke`/`sm`, and `regression`/`reg`.
 
-Nested aliases: `config path`/`cfg p`, `config list`/`cfg ls`/`cfg l`, `config set`/`cfg s`, `config unset`/`cfg rm`/`cfg u`, and `model current`/`mdl cur`/`mdl c`.
+Nested aliases: `config path`/`cfg p`, `config list`/`cfg ls`/`cfg l`, `config set`/`cfg s`, `config unset`/`cfg rm`/`cfg u`, `model current`/`mdl cur`/`mdl c`, `model list`/`mdl ls`/`mdl l`, `model add`/`mdl a`, and `model remove`/`mdl rm`/`mdl r`.
 
 ## Output Format Expectations
 

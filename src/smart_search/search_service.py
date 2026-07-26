@@ -77,6 +77,30 @@ from .service_support import (
 from .sources import merge_sources, new_session_id, split_answer_and_sources
 from .utils import PromptConfigurationError
 
+
+def _main_search_failure_allows_route_fallback(error_type: str) -> bool:
+    """
+    /*
+     * ==============================================================================
+     * 步骤1：判断模型路由是否继续
+     * ==============================================================================
+     * 目标：只把上游服务失败交给下一条模型路由，避免备用配置掩盖本地错误。
+     * 数据源：ProviderResult 或异常分类后的 error_type。
+     * 操作：配置、参数和预算错误立即停止；超时、网络、限流、空结果及其他
+     * provider 协议错误继续尝试下一条路由。
+     * ==============================================================================
+     */
+    """
+    logger.info("步骤1开始：判断模型路由 fallback，error_type=%s", error_type)
+    allowed = str(error_type or "").strip().lower() not in {
+        "config_error",
+        "parameter_error",
+        "budget_exhausted",
+    }
+    logger.info("步骤1结束：模型路由 fallback 判断完成，allowed=%s", allowed)
+    return allowed
+
+
 def _empty_search_result(
     start: float,
     session_id: str,
@@ -111,6 +135,8 @@ def _empty_search_result(
         "providers_used": [],
         "provider_attempts": [],
         "fallback_used": False,
+        "model_route_id": "",
+        "model_route_fallback_used": False,
         "validation_level": "",
         "required_capabilities": [],
         "required_capability_groups": [],
@@ -542,6 +568,18 @@ async def search(
     # 1) concise/synthesized 要求 main_search。
     # 2) lite/off 的 evidence 模式允许 web_search/docs_search source-only。
     # 3) 缺少命令必需能力时返回聚焦 config_error。
+    try:
+        if config.model_routes_configured:
+            config.model_routes
+    except ValueError as exc:
+        return _empty_search_result(
+            start,
+            session_id,
+            query,
+            "config_error",
+            str(exc),
+            extra={"validation_level": validation_level},
+        )
     minimum = validate_minimum_profile()
     if minimum.get("error_type") == "parameter_error":
         return _empty_search_result(
@@ -658,6 +696,18 @@ async def search(
         "fallback_mode": fallback_mode,
         "providers": providers,
         "main_search_chain": [item["provider"] for item in selected_main_provider_configs],
+        "main_search_route_chain": [
+            item.get("route_id") or item["provider"] for item in selected_main_provider_configs
+        ],
+        "main_search_routes": [
+            {
+                "id": item.get("route_id", ""),
+                "provider": item["provider"],
+                "model": item.get("model", ""),
+                "api_url": item.get("api_url", ""),
+            }
+            for item in selected_main_provider_configs
+        ],
         "openai_compatible_stream": next((bool(item.get("stream")) for item in selected_main_provider_configs if item["provider"] == "openai-compatible"), False),
         "openai_compatible_models": openai_candidate_models,
         "openai_compatible_model_fallback_enabled": len(openai_candidate_models) > 1,
@@ -670,7 +720,11 @@ async def search(
     successful_main_config: dict[str, Any] | None = None
     last_primary_error: dict[str, Any] | None = None
     model_fallback_used = False
+    model_route_fallback_used = False
     transport_fallback_used = False
+    last_route_id = ""
+    last_main_route_id = ""
+    stop_main_search = False
     total_main_candidates = sum(
         len(_openai_model_candidates(item, fallback_mode=fallback_mode, model_override=model))
         if item["provider"] == "openai-compatible"
@@ -689,6 +743,14 @@ async def search(
             primary_start = time.time()
             search_provider = _main_search_providers([candidate_config], fallback="auto")[0]
             attempt_extra: dict[str, Any] = {}
+            route_id = str(candidate_config.get("route_id") or "")
+            if route_id:
+                attempt_extra["route_id"] = route_id
+                if last_route_id and route_id != last_route_id:
+                    attempt_extra["fallback_from_route"] = last_route_id
+                    model_route_fallback_used = True
+                last_route_id = route_id
+            last_main_route_id = route_id
             if candidate_config["provider"] == "openai-compatible":
                 attempt_extra["model"] = candidate_config["model"]
                 attempt_extra["model_role"] = candidate_config.get("model_role", "primary")
@@ -731,7 +793,8 @@ async def search(
                             extra={**attempt_extra, "budget_exhausted": True},
                         )
                     )
-                    continue
+                    stop_main_search = True
+                    break
                 with observe_stage("search.primary"):
                     if attempt_timeout is not None:
                         candidate_result = await asyncio.wait_for(search_provider.search(query, provider_platform), timeout=attempt_timeout)
@@ -746,7 +809,7 @@ async def search(
                     capability="main_search",
                     wire_format="content",
                 )
-                if _append_openai_transport_attempts(provider_attempts, search_provider, candidate_config):
+                if _append_openai_transport_attempts(provider_attempts, search_provider, candidate_config, attempt_extra):
                     transport_fallback_used = transport_fallback_used or any(
                         attempt.get("fallback_from_transport") for attempt in transport_attempts
                     )
@@ -766,6 +829,8 @@ async def search(
                         )
                     if candidate_config["provider"] == "openai-compatible":
                         _record_openai_model_success(candidate_config["api_url"], candidate_config["model"])
+                    if route_id:
+                        last_route_id = route_id
                     break
                 if candidate_config["provider"] == "openai-compatible":
                     attempt_extra["breaker_state"] = _record_openai_model_failure(candidate_config["api_url"], candidate_config["model"])
@@ -792,6 +857,11 @@ async def search(
                             extra=attempt_extra,
                         )
                     )
+                if not _main_search_failure_allows_route_fallback(error_type):
+                    stop_main_search = True
+                    break
+                if route_id:
+                    last_route_id = route_id
             except Exception as exc:
                 """
                 /*
@@ -820,7 +890,7 @@ async def search(
                     error,
                 )
                 transport_attempts = getattr(search_provider, "last_transport_attempts", [])
-                if _append_openai_transport_attempts(provider_attempts, search_provider, candidate_config):
+                if _append_openai_transport_attempts(provider_attempts, search_provider, candidate_config, attempt_extra):
                     transport_fallback_used = transport_fallback_used or any(
                         attempt.get("fallback_from_transport") for attempt in transport_attempts
                     )
@@ -839,19 +909,33 @@ async def search(
                             extra=attempt_extra,
                         )
                     )
+                if not _main_search_failure_allows_route_fallback(error_type):
+                    stop_main_search = True
+                    break
+                if route_id:
+                    last_route_id = route_id
                 logger.info("步骤1结束：统一主搜索异常分类，error_type=%s", error_type)
         if primary_result is not None:
+            break
+        if stop_main_search:
             break
     if primary_result is None:
         result = last_primary_error or _primary_search_error_result(start, session_id, query, primary_api_mode, "network_error", "搜索失败或无结果")
         if any(attempt.get("error_type") == "budget_exhausted" for attempt in provider_attempts):
             result["error_type"] = "budget_exhausted"
             result["error"] = "request budget exhausted"
+        if context is not None and context.budget.exhausted:
+            result["error_type"] = "budget_exhausted"
+            result["error"] = "request budget exhausted"
         result["provider_attempts"] = provider_attempts
         result["providers_used"] = _provider_names_from_attempts(provider_attempts)
-        result["fallback_used"] = _fallback_used(provider_attempts)
+        result["fallback_used"] = _fallback_used(provider_attempts) or model_route_fallback_used
         result["transport_fallback_used"] = transport_fallback_used
         result["model_fallback_used"] = model_fallback_used
+        result["model_route_id"] = last_main_route_id
+        result["model_route_fallback_used"] = model_route_fallback_used
+        routing_decision["last_attempted_route_id"] = last_main_route_id
+        routing_decision["model_route_fallback_used"] = model_route_fallback_used
         result["routing_decision"] = routing_decision
         result["validation_level"] = validation_level
         result.update(capability_metadata)
@@ -873,6 +957,9 @@ async def search(
     successful_main_config = successful_main_config or selected_main_provider_configs[0]
     primary_api_mode = successful_main_config["mode"]
     effective_model = successful_main_config["model"]
+    successful_route_id = str(successful_main_config.get("route_id") or "")
+    routing_decision["selected_route_id"] = successful_route_id
+    routing_decision["model_route_fallback_used"] = model_route_fallback_used
 
     """
     /*
@@ -1092,9 +1179,11 @@ async def search(
         "routing_decision": routing_decision,
         "providers_used": _provider_names_from_attempts(provider_attempts),
         "provider_attempts": provider_attempts,
-        "fallback_used": _fallback_used(provider_attempts),
+        "fallback_used": _fallback_used(provider_attempts) or model_route_fallback_used,
         "transport_fallback_used": transport_fallback_used,
         "model_fallback_used": model_fallback_used,
+        "model_route_id": successful_route_id,
+        "model_route_fallback_used": model_route_fallback_used,
         "validation_level": validation_level,
         **capability_metadata,
         **evidence_fields,

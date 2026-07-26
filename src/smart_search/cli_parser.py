@@ -336,13 +336,38 @@ def build_parser() -> argparse.ArgumentParser:
     model_parser = sub.add_parser(
         "model",
         aliases=COMMAND_ALIASES["model"],
-        help="Inspect explicit provider models; use config set XAI_MODEL or OPENAI_COMPATIBLE_MODEL to change them.",
+        help="Manage ordered main-search model routes.",
     )
     model_parser.set_defaults(command="model")
     model_sub = model_parser.add_subparsers(dest="model_command", required=True, parser_class=SmartSearchArgumentParser)
     model_current = model_sub.add_parser("current", aliases=MODEL_COMMAND_ALIASES["current"])
     model_current.set_defaults(model_command="current")
     _add_format_args(model_current)
+    model_list = model_sub.add_parser("list", aliases=MODEL_COMMAND_ALIASES["list"], help="List ordered model routes.")
+    model_list.set_defaults(model_command="list")
+    _add_format_args(model_list)
+    model_add = model_sub.add_parser("add", aliases=MODEL_COMMAND_ALIASES["add"], help="Append one model route.")
+    model_add.set_defaults(model_command="add")
+    model_add.add_argument("--id", dest="route_id", required=True, help="Stable route ID used by model remove.")
+    model_add.add_argument(
+        "--provider",
+        choices=["xai-responses", "openai-compatible"],
+        default="openai-compatible",
+        help="Provider protocol for this route.",
+    )
+    model_add.add_argument("--api-url", required=True, help="Provider API base URL.")
+    model_add.add_argument("--api-key", required=True, help="Provider API key.")
+    model_add.add_argument("--model", dest="model_name", required=True, help="Provider model name.")
+    model_add.add_argument("--tools", default="", help="xAI tools, comma-separated: web_search,x_search.")
+    model_add.add_argument("--fallback-models", default="", help="Same-endpoint fallback models, comma-separated.")
+    stream_group = model_add.add_mutually_exclusive_group()
+    stream_group.add_argument("--stream", dest="stream", action="store_true", default=False, help="Use stream=true for this OpenAI-compatible route.")
+    stream_group.add_argument("--no-stream", dest="stream", action="store_false", help="Use stream=false for this OpenAI-compatible route.")
+    _add_format_args(model_add)
+    model_remove = model_sub.add_parser("remove", aliases=MODEL_COMMAND_ALIASES["remove"], help="Remove one model route by ID.")
+    model_remove.set_defaults(model_command="remove")
+    model_remove.add_argument("route_id")
+    _add_format_args(model_remove)
 
     skills_parser = sub.add_parser(
         "skills",

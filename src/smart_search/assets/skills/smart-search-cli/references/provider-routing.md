@@ -71,7 +71,8 @@ Intent router rules:
 - `zhipu-mcp-search`, `zhipu-mcp-reader`, and `zhipu-mcp-*` zread commands use Zhipu Coding Plan Remote MCP only.
 - Runtime config priority is environment variables first, then local config file, then defaults.
 - `setup` and `config` read/write the local Smart Search config file and do not call providers.
-- `model current` reports explicit provider model settings. Use `config set XAI_MODEL ...` or `config set OPENAI_COMPATIBLE_MODEL ...` to change models.
+- `SMART_SEARCH_MODEL_ROUTES` stores an ordered JSON array of independent main-search routes. Each route has its own `id`, `provider`, `api_url`, `api_key`, and `model`; `model add`, `model list`, `model current`, and `model remove` manage the same list. Route keys are masked in inspection output, and existing `XAI_*` / `OPENAI_COMPATIBLE_*` settings remain compatible when the array is absent.
+- `model current` reports the first route as current when model routes are configured. Use `model add` to append a route, or `config set XAI_MODEL ...` / `config set OPENAI_COMPATIBLE_MODEL ...` for legacy single-provider settings.
 
 Zhipu Web Search API:
 

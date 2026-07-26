@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ class Config:
     _DEFAULT_SEARCH_CACHE_TTL_SECONDS = "30"
     _DEFAULT_FETCH_CACHE_TTL_SECONDS = "300"
     _DEFAULT_CACHE_MAX_SIZE = "256"
+    _MODEL_ROUTES_KEY = "SMART_SEARCH_MODEL_ROUTES"
     _CACHE_TTL_BOUNDS = (1, 604800)
     _CACHE_MAX_SIZE_BOUNDS = (1, 10000)
     _CONFIG_DIR_MODE = 0o700
@@ -57,6 +59,15 @@ class Config:
     _ALLOWED_FALLBACK_MODES = {"auto", "off"}
     _ALLOWED_MINIMUM_PROFILES = {"lite", "standard", "full", "off"}
     _ALLOWED_INTENT_ROUTER_MODES = {"hybrid", "rules", "off"}
+    _MODEL_ROUTE_PROVIDER_ALIASES = {
+        "xai": "xai-responses",
+        "xai-responses": "xai-responses",
+        "grok": "xai-responses",
+        "openai": "openai-compatible",
+        "openai-compatible": "openai-compatible",
+        "chat-completions": "openai-compatible",
+    }
+    _MODEL_ROUTE_XAI_TOOLS = {"web_search", "x_search"}
     _CONFIG_KEYS = {
         "XAI_API_URL",
         "XAI_API_KEY",
@@ -70,6 +81,7 @@ class Config:
         "SMART_SEARCH_VALIDATION_LEVEL",
         "SMART_SEARCH_FALLBACK_MODE",
         "SMART_SEARCH_MINIMUM_PROFILE",
+        "SMART_SEARCH_MODEL_ROUTES",
         "SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS",
         "SMART_SEARCH_RESEARCH_DISABLED_PROVIDERS",
         "SMART_SEARCH_INTENT_ROUTER",
@@ -132,7 +144,7 @@ class Config:
         key
         for key in _CONFIG_KEYS
         if "KEY" in key or "TOKEN" in key or "SECRET" in key
-    }
+    } | {"SMART_SEARCH_MODEL_ROUTES"}
     _LEGACY_CONFIG_KEYS: dict[str, str] = {}
 
     def __new__(cls):
@@ -316,6 +328,215 @@ class Config:
         except (FileNotFoundError, PermissionError, OSError, json.JSONDecodeError):
             return {}
 
+    @classmethod
+    def _parse_model_routes_value(cls, raw: object) -> list[dict[str, Any]]:
+        """
+        /*
+         * ================================================================================
+         * 步骤1：解析并校验模型路由
+         * ================================================================================
+         * 目标：把配置文件或环境变量中的模型路由转换为统一的内部结构。
+         * 数据源：SMART_SEARCH_MODEL_ROUTES JSON 数组。
+         * 操作：
+         * 1) 校验数组、路由 ID、provider、地址、密钥和模型字段。
+         * 2) 规范 provider 别名、OpenRouter 模型后缀和可选 fallback 字段。
+         * 3) 拒绝重复 ID、未知 provider 和不完整路由，避免运行时猜测配置意图。
+         * ================================================================================
+         */
+        """
+        logger.info("步骤1开始：解析模型路由配置")
+        value = raw
+        try:
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError as exc:
+                    raise ValueError("Invalid SMART_SEARCH_MODEL_ROUTES: expected a JSON array.") from exc
+            if not isinstance(value, list):
+                raise ValueError("Invalid SMART_SEARCH_MODEL_ROUTES: expected a JSON array.")
+
+            routes: list[dict[str, Any]] = []
+            seen_ids: set[str] = set()
+            for index, item in enumerate(value, start=1):
+                if not isinstance(item, Mapping):
+                    raise ValueError(f"Invalid SMART_SEARCH_MODEL_ROUTES route {index}: expected an object.")
+
+                route_id = str(item.get("id") or "").strip()
+                if not route_id:
+                    raise ValueError(f"Invalid SMART_SEARCH_MODEL_ROUTES route {index}: missing id.")
+                if route_id in seen_ids:
+                    raise ValueError(f"Invalid SMART_SEARCH_MODEL_ROUTES: duplicate id: {route_id}.")
+
+                provider_value = str(item.get("provider") or "").strip().lower()
+                provider = cls._MODEL_ROUTE_PROVIDER_ALIASES.get(provider_value, "")
+                if not provider:
+                    allowed = ", ".join(sorted({"xai-responses", "openai-compatible"}))
+                    raise ValueError(
+                        f"Invalid SMART_SEARCH_MODEL_ROUTES route {route_id}: "
+                        f"unsupported provider {provider_value or '<empty>'}; supported: {allowed}."
+                    )
+
+                api_url = str(item.get("api_url") or "").strip()
+                api_key = str(item.get("api_key") or "").strip()
+                model = str(item.get("model") or "").strip()
+                if not api_url or not api_key or not model:
+                    raise ValueError(
+                        f"Invalid SMART_SEARCH_MODEL_ROUTES route {route_id}: "
+                        "api_url, api_key, and model are required."
+                    )
+
+                normalized_model = cls.apply_model_suffix_for_url(model, api_url)
+                route: dict[str, Any] = {
+                    "id": route_id,
+                    "provider": provider,
+                    "api_url": api_url,
+                    "api_key": api_key,
+                    "model": normalized_model,
+                }
+                if provider == "xai-responses":
+                    tools_value = item.get("tools")
+                    if tools_value is None:
+                        tools = ["web_search", "x_search"]
+                    elif isinstance(tools_value, str):
+                        tools = [part.strip().lower() for part in tools_value.split(",") if part.strip()]
+                    elif isinstance(tools_value, list):
+                        tools = [str(part).strip().lower() for part in tools_value if str(part).strip()]
+                    else:
+                        raise ValueError(f"Invalid SMART_SEARCH_MODEL_ROUTES route {route_id}: tools must be a list or string.")
+                    invalid_tools = [tool for tool in tools if tool not in cls._MODEL_ROUTE_XAI_TOOLS]
+                    if invalid_tools:
+                        allowed = ", ".join(sorted(cls._MODEL_ROUTE_XAI_TOOLS))
+                        raise ValueError(
+                            f"Invalid SMART_SEARCH_MODEL_ROUTES route {route_id}: "
+                            f"unsupported tools {', '.join(invalid_tools)}; supported: {allowed}."
+                        )
+                    route["tools"] = list(dict.fromkeys(tools))
+                else:
+                    stream_value = item.get("stream", False)
+                    if isinstance(stream_value, bool):
+                        stream = stream_value
+                    elif isinstance(stream_value, str) and stream_value.strip().lower() in {"true", "1", "yes"}:
+                        stream = True
+                    elif isinstance(stream_value, str) and stream_value.strip().lower() in {"false", "0", "no", ""}:
+                        stream = False
+                    else:
+                        raise ValueError(f"Invalid SMART_SEARCH_MODEL_ROUTES route {route_id}: stream must be boolean.")
+                    fallback_value = item.get("fallback_models", [])
+                    if isinstance(fallback_value, str):
+                        fallback_models = [part.strip() for part in fallback_value.split(",") if part.strip()]
+                    elif isinstance(fallback_value, list):
+                        fallback_models = [str(part).strip() for part in fallback_value if str(part).strip()]
+                    else:
+                        raise ValueError(
+                            f"Invalid SMART_SEARCH_MODEL_ROUTES route {route_id}: fallback_models must be a list or string."
+                        )
+                    normalized_fallbacks: list[str] = []
+                    for fallback_model in fallback_models:
+                        candidate = cls.apply_model_suffix_for_url(fallback_model, api_url)
+                        if candidate != normalized_model and candidate not in normalized_fallbacks:
+                            normalized_fallbacks.append(candidate)
+                    route["stream"] = stream
+                    route["fallback_models"] = normalized_fallbacks
+
+                routes.append(route)
+                seen_ids.add(route_id)
+        except ValueError:
+            logger.info("步骤1结束：模型路由配置校验失败")
+            raise
+        logger.info("步骤1结束：模型路由配置解析完成，条数=%s", len(routes))
+        return routes
+
+    @classmethod
+    def _mask_nested_secrets(cls, value: object) -> object:
+        """
+        /*
+         * ================================================================================
+         * 步骤2：脱敏模型路由
+         * ================================================================================
+         * 目标：让 config、model 和 doctor 输出可以展示路由，但不泄露嵌套密钥。
+         * 数据源：已规范化的模型路由对象。
+         * 操作：递归复制字典和列表，仅对 key/token/secret 字段使用统一掩码。
+         * ================================================================================
+         */
+        """
+        logger.info("步骤2开始：脱敏模型路由")
+        if isinstance(value, Mapping):
+            masked = {
+                str(key): cls._mask_api_key(str(item))
+                if any(marker in str(key).upper() for marker in ("KEY", "TOKEN", "SECRET"))
+                else cls._mask_nested_secrets(item)
+                for key, item in value.items()
+            }
+            logger.info("步骤2结束：模型路由字典脱敏完成")
+            return masked
+        if isinstance(value, list):
+            masked_list = [cls._mask_nested_secrets(item) for item in value]
+            logger.info("步骤2结束：模型路由列表脱敏完成，条数=%s", len(masked_list))
+            return masked_list
+        logger.info("步骤2结束：模型路由标量无需脱敏")
+        return value
+
+    @property
+    def model_routes_configured(self) -> bool:
+        snapshot = self._get_config_snapshot()
+        return self._MODEL_ROUTES_KEY in snapshot.values
+
+    @property
+    def model_routes(self) -> list[dict[str, Any]]:
+        snapshot = self._get_config_snapshot()
+        if self._MODEL_ROUTES_KEY not in snapshot.values:
+            return []
+        return self._parse_model_routes_value(snapshot.values.get(self._MODEL_ROUTES_KEY))
+
+    def get_model_routes(self, *, masked: bool = True) -> list[dict[str, Any]]:
+        routes = self.model_routes
+        if not masked:
+            return routes
+        return self._mask_nested_secrets(routes)  # type: ignore[return-value]
+
+    def set_model_routes(self, routes: object) -> list[dict[str, Any]]:
+        """
+        /*
+         * ================================================================================
+         * 步骤3：持久化模型路由
+         * ================================================================================
+         * 目标：用原子配置写入保存经过校验的有序路由列表。
+         * 数据源：model add、model remove 或 config set 提交的路由对象。
+         * 操作：校验路由、保留其他配置项、写入 SMART_SEARCH_MODEL_ROUTES 并刷新快照。
+         * ================================================================================
+         */
+        """
+        logger.info("步骤3开始：保存模型路由")
+        snapshot = self._get_config_snapshot()
+        if snapshot.environment_values.get(self._MODEL_ROUTES_KEY) is not None:
+            raise ValueError("SMART_SEARCH_MODEL_ROUTES is controlled by the environment and cannot be edited locally.")
+        normalized = self._parse_model_routes_value(routes)
+        config_data = dict(snapshot.file_values)
+        config_data[self._MODEL_ROUTES_KEY] = normalized
+        self._save_config_file(config_data)
+        self._cached_model = None
+        logger.info("步骤3结束：模型路由保存完成，条数=%s", len(normalized))
+        return normalized
+
+    def add_model_route(self, route: Mapping[str, object]) -> list[dict[str, Any]]:
+        logger.info("开始添加模型路由")
+        routes = list(self.model_routes) if self.model_routes_configured else []
+        routes.append(dict(route))
+        result = self.set_model_routes(routes)
+        logger.info("模型路由添加完成，条数=%s", len(result))
+        return result
+
+    def remove_model_route(self, route_id: str) -> list[dict[str, Any]]:
+        logger.info("开始删除模型路由: id=%s", route_id)
+        normalized_id = str(route_id or "").strip()
+        routes = self.model_routes
+        remaining = [route for route in routes if route.get("id") != normalized_id]
+        if len(remaining) == len(routes):
+            raise ValueError(f"Model route not found: {normalized_id}")
+        result = self.set_model_routes(remaining)
+        logger.info("模型路由删除完成，条数=%s", len(result))
+        return result
+
     def _save_config_file(self, config_data: dict) -> None:
         target = self.config_file
         temp_path: Path | None = None
@@ -375,16 +596,30 @@ class Config:
 
     def get_saved_config(self, masked: bool = True) -> dict:
         data = self._get_config_snapshot().file_values
-        normalized: dict[str, str] = {}
+        normalized: dict[str, Any] = {}
         for old_key, new_key in self._LEGACY_CONFIG_KEYS.items():
             if old_key in data and new_key not in data:
                 normalized[new_key] = str(data[old_key])
         for key, value in data.items():
             if key in self._CONFIG_KEYS and value is not None:
-                normalized[key] = str(value)
+                if key == self._MODEL_ROUTES_KEY:
+                    try:
+                        normalized[key] = self._parse_model_routes_value(value)
+                    except ValueError:
+                        normalized[key] = "<invalid SMART_SEARCH_MODEL_ROUTES>"
+                else:
+                    normalized[key] = str(value)
         if not masked:
             return normalized
-        return {key: self._mask_if_secret(key, value) for key, value in normalized.items()}
+        masked_config: dict[str, Any] = {}
+        for key, value in normalized.items():
+            if key == self._MODEL_ROUTES_KEY and isinstance(value, list):
+                masked_config[key] = self._mask_nested_secrets(value)
+            elif isinstance(value, str):
+                masked_config[key] = self._mask_if_secret(key, value)
+            else:
+                masked_config[key] = value
+        return masked_config
 
     def get_config_source(self, key: str) -> str:
         snapshot = self._get_config_snapshot()
@@ -413,12 +648,12 @@ class Config:
                 sources[key] = "config_file" if legacy_key and legacy_key in snapshot.file_values else "default"
         return sources
 
-    def set_config_value(self, key: str, value: str) -> None:
+    def set_config_value(self, key: str, value: object) -> None:
         key = key.strip().upper()
         if key not in self._CONFIG_KEYS:
             raise ValueError(f"Unsupported config key: {key}")
         config_data = dict(self._get_config_snapshot().file_values)
-        config_data[key] = value
+        config_data[key] = self._parse_model_routes_value(value) if key == self._MODEL_ROUTES_KEY else value
         self._save_config_file(config_data)
         if key in {
             "XAI_API_URL",
@@ -430,6 +665,7 @@ class Config:
             "OPENAI_COMPATIBLE_MODEL",
             "OPENAI_COMPATIBLE_FALLBACK_MODELS",
             "OPENAI_COMPATIBLE_STREAM",
+            "SMART_SEARCH_MODEL_ROUTES",
             "SMART_SEARCH_VALIDATION_LEVEL",
             "SMART_SEARCH_FALLBACK_MODE",
             "SMART_SEARCH_MINIMUM_PROFILE",
@@ -457,6 +693,7 @@ class Config:
             "OPENAI_COMPATIBLE_MODEL",
             "OPENAI_COMPATIBLE_FALLBACK_MODELS",
             "OPENAI_COMPATIBLE_STREAM",
+            "SMART_SEARCH_MODEL_ROUTES",
             "SMART_SEARCH_VALIDATION_LEVEL",
             "SMART_SEARCH_FALLBACK_MODE",
             "SMART_SEARCH_MINIMUM_PROFILE",
@@ -1019,8 +1256,16 @@ class Config:
     def get_config_info(self) -> dict:
         config_parameter_errors: list[str] = []
         config_path = self.config_path_info()
+        model_routes: list[dict[str, Any]] = []
+        model_routes_error = ""
+        try:
+            if self.model_routes_configured:
+                model_routes = self.model_routes
+        except ValueError as exc:
+            model_routes_error = str(exc)
         explicit_main_configured = bool(
-            self.xai_api_key
+            model_routes
+            or self.xai_api_key
             or (self.openai_compatible_api_url and self.openai_compatible_api_key)
         )
         if explicit_main_configured:
@@ -1097,6 +1342,7 @@ class Config:
                 search_cache_ttl_error,
                 fetch_cache_ttl_error,
                 cache_max_size_error,
+                model_routes_error,
             )
             if error
         )
@@ -1115,6 +1361,7 @@ class Config:
             "OPENAI_COMPATIBLE_MODEL": self.openai_compatible_model,
             "OPENAI_COMPATIBLE_FALLBACK_MODELS": ",".join(self.openai_compatible_fallback_models),
             "OPENAI_COMPATIBLE_STREAM": self.openai_compatible_stream,
+            "SMART_SEARCH_MODEL_ROUTES": self.get_model_routes(masked=True) if not model_routes_error else "<invalid SMART_SEARCH_MODEL_ROUTES>",
             "SMART_SEARCH_VALIDATION_LEVEL": validation_level,
             "SMART_SEARCH_FALLBACK_MODE": fallback_mode,
             "SMART_SEARCH_MINIMUM_PROFILE": minimum_profile,
@@ -1175,7 +1422,11 @@ class Config:
             "JINA_READER_API_URL": self.jina_reader_api_url,
             "JINA_RESPOND_WITH": self.jina_respond_with,
             "JINA_TIMEOUT_SECONDS": self.jina_timeout,
-            "primary_api_mode": "xai-responses" if self.xai_api_key else ("chat-completions" if self.openai_compatible_api_url and self.openai_compatible_api_key else "未配置"),
+            "primary_api_mode": (
+                model_routes[0]["provider"]
+                if model_routes
+                else ("xai-responses" if self.xai_api_key else ("chat-completions" if self.openai_compatible_api_url and self.openai_compatible_api_key else "未配置"))
+            ),
             "primary_api_mode_source": "config_file" if explicit_main_configured else "default",
             "config_file": str(self.config_file),
             "config_dir": str(self.config_file.parent),

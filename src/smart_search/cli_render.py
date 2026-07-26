@@ -606,13 +606,58 @@ def _format_config_markdown(data: dict[str, Any]) -> str:
     values = data.get("values") or {}
     if values:
         lines.extend(["", "## Values"])
-        lines.extend(_markdown_table(["Key", "Value"], [[key, value] for key, value in values.items()]))
+        value_rows = []
+        for key, value in values.items():
+            rendered_value = _json(value) if key == "SMART_SEARCH_MODEL_ROUTES" and isinstance(value, list) else value
+            value_rows.append([key, rendered_value])
+        lines.extend(_markdown_table(["Key", "Value"], value_rows))
     lines.extend(_error_lines(data))
     return "\n".join(lines).strip() + "\n"
 
 
+def _model_route_rows(routes: list[dict[str, Any]]) -> list[list[Any]]:
+    """
+    /*
+     * ==============================================================================
+     * 步骤2：格式化模型路由
+     * ==============================================================================
+     * 目标：用固定字段展示路由顺序和可用信息，不展示 API key。
+     * 数据源：operations_service 返回的已脱敏 route 列表。
+     * 操作：
+     * 1) 按数组顺序生成 1-based order。
+     * 2) 仅展示 ID、provider、model、地址和流式状态。
+     * ==============================================================================
+     */
+    """
+    logger.info("步骤2开始：格式化模型路由，条数=%s", len(routes))
+    rows = [
+        [
+            index,
+            route.get("id", ""),
+            route.get("provider", ""),
+            route.get("model", ""),
+            route.get("api_url", ""),
+            "true" if route.get("stream") else "false" if route.get("provider") == "openai-compatible" else "-",
+        ]
+        for index, route in enumerate(routes, start=1)
+    ]
+    logger.info("步骤2结束：模型路由格式化完成，条数=%s", len(rows))
+    return rows
+
+
 def _format_model_markdown(data: dict[str, Any]) -> str:
     lines = ["# Smart Search Model", "", f"Status: {_status_label(data.get('ok'))}"]
+    routes = data.get("routes") or data.get("model_routes") or []
+    if routes:
+        lines.extend(["", "## Ordered Routes"])
+        lines.extend(
+            _markdown_table(
+                ["Order", "ID", "Provider", "Model", "API URL", "Stream"],
+                _model_route_rows(routes),
+            )
+        )
+        if data.get("current_route_id"):
+            lines.append(f"Current route: `{data.get('current_route_id')}`")
     rows = []
     if data.get("xai_model"):
         rows.append(["xai-responses", data.get("xai_model")])
@@ -986,6 +1031,15 @@ def _format_content(command: str, data: dict[str, Any]) -> str:
     if command == "model":
         if data.get("error"):
             return f"Model {_status_label(data.get('ok'))}: {_error_summary(data)}\n"
+        routes = data.get("routes") or data.get("model_routes") or []
+        if routes:
+            current_route = data.get("current_route_id") or ""
+            route_text = ", ".join(
+                f"{index}:{route.get('id', '')}/{route.get('provider', '')}/{route.get('model', '')}"
+                for index, route in enumerate(routes, start=1)
+            )
+            suffix = f"; current={current_route}" if current_route else ""
+            return f"Routes ({len(routes)}): {route_text}{suffix}\n"
         rows = []
         if data.get("xai_model"):
             rows.append(f"xai-responses={data.get('xai_model')}")

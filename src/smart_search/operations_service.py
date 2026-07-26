@@ -575,14 +575,177 @@ async def doctor() -> dict[str, Any]:
     logger.info("doctor 诊断完成: ok=%s profile=%s", info.get("ok", False), active_profile)
     return info
 
-def current_model() -> dict[str, Any]:
-    return {
+def _model_routes_result(action: str) -> dict[str, Any]:
+    """
+    /*
+     * ==============================================================================
+     * 步骤1：读取模型路由状态
+     * ==============================================================================
+     * 目标：让 model list 和 model current 共用同一份有序、脱敏结果。
+     * 数据源：SMART_SEARCH_MODEL_ROUTES 以及兼容保留的旧模型配置。
+     * 操作：
+     * 1) 读取并校验路由数组，保留配置文件中的顺序。
+     * 2) 仅返回脱敏后的 API key，并标记当前首选路由。
+     * ==============================================================================
+     */
+    """
+    logger.info("步骤1开始：读取模型路由状态，action=%s", action)
+    try:
+        routes = config.get_model_routes(masked=True)
+    except ValueError as exc:
+        result = {
+            "ok": False,
+            "action": action,
+            "error_type": "config_error",
+            "error": str(exc),
+            "routes": [],
+            "model_routes": [],
+            "route_count": 0,
+            "config_file": str(config.config_file),
+        }
+        logger.info("步骤1结束：模型路由状态读取失败，action=%s", action)
+        return result
+
+    current_route = routes[0] if routes else None
+    if current_route:
+        current_model_name = current_route.get("model", "")
+    elif config.xai_api_key:
+        current_model_name = config.xai_model
+    elif config.openai_compatible_api_url and config.openai_compatible_api_key:
+        current_model_name = config.openai_compatible_model
+    else:
+        current_model_name = ""
+    result = {
         "ok": True,
+        "action": action,
+        "routes": routes,
+        "model_routes": routes,
+        "route_count": len(routes),
+        "current_route": current_route,
+        "current_route_id": current_route.get("id", "") if current_route else "",
+        "current_model": current_model_name,
         "xai_model": config.xai_model,
         "openai_compatible_model": config.openai_compatible_model,
         "openai_compatible_fallback_models": config.openai_compatible_fallback_models,
         "config_file": str(config.config_file),
     }
+    logger.info("步骤1结束：模型路由状态读取完成，action=%s routes=%s", action, len(routes))
+    return result
+
+
+def current_model() -> dict[str, Any]:
+    return _model_routes_result("current")
+
+
+def model_list() -> dict[str, Any]:
+    return _model_routes_result("list")
+
+
+def model_add(
+    route_id: str,
+    provider: str,
+    api_url: str,
+    api_key: str,
+    model: str,
+    *,
+    tools: str = "",
+    stream: bool = False,
+    fallback_models: str = "",
+) -> dict[str, Any]:
+    """
+    /*
+     * ==============================================================================
+     * 步骤2：添加模型路由
+     * ==============================================================================
+     * 目标：把 CLI 提交的一条独立模型服务追加到有序路由数组末尾。
+     * 数据源：model add 参数；持久化目标为 SMART_SEARCH_MODEL_ROUTES。
+     * 操作：
+     * 1) 只写入当前 provider 支持的可选字段。
+     * 2) 由 Config 统一校验、规范化并原子保存，返回脱敏后的完整列表。
+     * ==============================================================================
+     */
+    """
+    logger.info("步骤2开始：添加模型路由，id=%s provider=%s", route_id, provider)
+    route: dict[str, Any] = {
+        "id": route_id,
+        "provider": provider,
+        "api_url": api_url,
+        "api_key": api_key,
+        "model": model,
+    }
+    if tools:
+        route["tools"] = tools
+    if provider.strip().lower() in {"openai", "openai-compatible", "chat-completions"}:
+        route["stream"] = bool(stream)
+        if fallback_models:
+            route["fallback_models"] = fallback_models
+    try:
+        config.add_model_route(route)
+    except ConfigStorageError as exc:
+        result = {
+            "ok": False,
+            "action": "add",
+            "error_type": "config_error",
+            "error": str(exc),
+            "config_file": str(config.config_file),
+        }
+        logger.info("步骤2结束：模型路由添加失败，id=%s", route_id)
+        return result
+    except ValueError as exc:
+        result = {
+            "ok": False,
+            "action": "add",
+            "error_type": "parameter_error",
+            "error": str(exc),
+            "config_file": str(config.config_file),
+        }
+        logger.info("步骤2结束：模型路由参数校验失败，id=%s", route_id)
+        return result
+    result = _model_routes_result("add")
+    logger.info("步骤2结束：模型路由添加完成，id=%s", route_id)
+    return result
+
+
+def model_remove(route_id: str) -> dict[str, Any]:
+    """
+    /*
+     * ==============================================================================
+     * 步骤3：删除模型路由
+     * ==============================================================================
+     * 目标：按稳定 route ID 删除一条配置，并保持其余路由的顺序。
+     * 数据源：model remove 参数和当前 SMART_SEARCH_MODEL_ROUTES 数组。
+     * 操作：
+     * 1) 由 Config 查找并删除精确 ID。
+     * 2) 保存后重新读取脱敏列表，供 CLI 直接展示结果。
+     * ==============================================================================
+     */
+    """
+    logger.info("步骤3开始：删除模型路由，id=%s", route_id)
+    try:
+        config.remove_model_route(route_id)
+    except ConfigStorageError as exc:
+        result = {
+            "ok": False,
+            "action": "remove",
+            "error_type": "config_error",
+            "error": str(exc),
+            "config_file": str(config.config_file),
+        }
+        logger.info("步骤3结束：模型路由删除失败，id=%s", route_id)
+        return result
+    except ValueError as exc:
+        result = {
+            "ok": False,
+            "action": "remove",
+            "error_type": "parameter_error",
+            "error": str(exc),
+            "config_file": str(config.config_file),
+        }
+        logger.info("步骤3结束：模型路由删除参数失败，id=%s", route_id)
+        return result
+    result = _model_routes_result("remove")
+    logger.info("步骤3结束：模型路由删除完成，id=%s", route_id)
+    return result
 
 def config_path() -> dict[str, Any]:
     return config.config_path_info()
@@ -1119,6 +1282,9 @@ __all__ = [
     "current_model",
     "diagnose_openai_compatible",
     "doctor",
+    "model_add",
+    "model_list",
+    "model_remove",
     "smoke",
     "write_output",
 ]

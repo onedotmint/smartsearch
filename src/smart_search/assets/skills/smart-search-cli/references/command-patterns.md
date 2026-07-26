@@ -89,6 +89,9 @@ smart-search config set ZHIPU_SEARCH_ENGINE "search_pro" --format json
 smart-search config set TAVILY_API_URL "https://api.tavily.com" --format json
 smart-search config set TAVILY_TIMEOUT_SECONDS "45" --format json
 smart-search config set FIRECRAWL_API_URL "https://api.firecrawl.dev/v2" --format json
+smart-search model add --id primary --provider openai-compatible --api-url "https://relay-a.example/v1" --api-key "key-a" --model "model-a"
+smart-search model add --id backup --provider openai-compatible --api-url "https://relay-b.example/v1" --api-key "key-b" --model "model-b"
+smart-search model list --format markdown
 smart-search model current --format json
 smart-search doctor --format json
 smart-search doctor --format markdown

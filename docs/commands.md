@@ -35,7 +35,7 @@ Remote prompt URLs are rejected. Local prompt overrides apply only to the curren
 | `capabilities` | - | Report configured capabilities and fallback metadata |
 | `setup` | `init` | Save local provider configuration and optionally install skills |
 | `config` | `cfg` | Read or update local configuration |
-| `model` | `mdl` | Inspect explicit provider models |
+| `model` | `mdl` | Manage ordered main-search model routes |
 | `skills` | `skill` | Inspect or update installed managed skill files |
 | `smoke` | `sm` | Run provider routing smoke checks |
 | `regression` | `reg` | Run offline CLI regression checks |
@@ -80,6 +80,46 @@ smart-search research "Deep research recent Bitcoin market movement" --budget de
 
 `deep --budget` accepts `quick`, `standard`, or `deep` and remains offline. `research --budget` accepts the same values and runs the live executor. `research --fallback auto` permits same-capability fallback; `--fallback off` uses only the first eligible provider inside each capability.
 
+### Ordered model routes
+
+Model routes are tried in the order shown by `model list`. A failed timeout, network request, rate-limit, provider, parse, protocol, or empty-result attempt advances to the next route. Local configuration, parameter, and exhausted-budget errors stop the request.
+
+Use the CLI to append a route without editing JSON:
+
+```sh
+smart-search model add --id primary --provider openai-compatible --api-url "https://relay-a.example/v1" --api-key "key-a" --model "model-a"
+smart-search model add --id backup --provider openai-compatible --api-url "https://relay-b.example/v1" --api-key "key-b" --model "model-b" --stream
+smart-search model list --format markdown
+smart-search model current --format json
+smart-search model remove backup
+```
+
+The same list can be edited directly in the local file reported by `smart-search config path`:
+
+```json
+{
+  "SMART_SEARCH_MODEL_ROUTES": [
+    {
+      "id": "primary",
+      "provider": "openai-compatible",
+      "api_url": "https://relay-a.example/v1",
+      "api_key": "key-a",
+      "model": "model-a"
+    },
+    {
+      "id": "backup",
+      "provider": "openai-compatible",
+      "api_url": "https://relay-b.example/v1",
+      "api_key": "key-b",
+      "model": "model-b",
+      "stream": true
+    }
+  ]
+}
+```
+
+Supported providers are `openai-compatible` and `xai-responses`. xAI routes may set `tools` to `web_search`, `x_search`, or both. OpenAI-compatible routes may set `stream` and same-endpoint `fallback_models`. `model list`, `model current`, `config list`, and `doctor` mask route API keys.
+
 ## Provider-specific commands
 
 These commands are explicit tools for focused discovery or extraction. They are not interchangeable fallback providers.
@@ -123,6 +163,7 @@ smart-search diagnose openai-compatible --format markdown
 smart-search capabilities --format json
 smart-search config path --format json
 smart-search config list --format json
+smart-search model list --format markdown
 smart-search model current --format json
 smart-search skills status --targets codex --format json
 smart-search skills update --targets codex --format json

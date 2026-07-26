@@ -55,6 +55,32 @@ xAI uses the Responses API `/responses` route through `XAI_*`. OpenAI-compatible
 
 `OPENAI_COMPATIBLE_STREAM=true`, `--stream`, and `--no-stream` are relay compatibility controls. They do not change xAI behavior, URL descriptions, or source ranking.
 
+For multiple independent endpoints, use the ordered `SMART_SEARCH_MODEL_ROUTES` array. Each entry owns its provider, API URL, API key, and model, so the next entry can use a different service or credential. The first entry is primary; later entries are tried only when the main-search request has a switchable upstream failure.
+
+```json
+{
+  "SMART_SEARCH_MODEL_ROUTES": [
+    {
+      "id": "primary",
+      "provider": "openai-compatible",
+      "api_url": "https://relay-a.example/v1",
+      "api_key": "key-a",
+      "model": "model-a"
+    },
+    {
+      "id": "backup",
+      "provider": "xai-responses",
+      "api_url": "https://api.x.ai/v1",
+      "api_key": "xai-key",
+      "model": "grok-4-fast",
+      "tools": ["web_search", "x_search"]
+    }
+  ]
+}
+```
+
+Use `smart-search model add` to append the same structure, `smart-search model list` or `smart-search model current` to inspect it, and `smart-search model remove ROUTE_ID` to delete an entry. API keys are masked in all inspection output. Existing `XAI_*` and `OPENAI_COMPATIBLE_*` settings remain valid when `SMART_SEARCH_MODEL_ROUTES` is absent.
+
 ### Zhipu REST and Coding Plan MCP
 
 `zhipu-search` is the Zhipu Web Search API route. It is not Zhipu Chat Completions or Search Agent, and it is not the MCP Server. `TAVILY_API_URL` affects Tavily only; it does not proxy Zhipu. `ZHIPU_SEARCH_ENGINE` accepts values such as `search_std`, `search_pro`, `search_pro_sogou`, and `search_pro_quark`.

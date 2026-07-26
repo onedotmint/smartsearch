@@ -851,6 +851,7 @@ def _append_openai_transport_attempts(
     provider_attempts: list[dict],
     search_provider: Any,
     candidate_config: dict[str, Any],
+    attempt_extra: dict[str, Any] | None = None,
 ) -> bool:
     transport_attempts = getattr(search_provider, "last_transport_attempts", [])
     if candidate_config.get("provider") != "openai-compatible" or not transport_attempts:
@@ -861,6 +862,10 @@ def _append_openai_transport_attempts(
             for key, value in transport_attempt.items()
             if key not in {"status", "error_type", "error", "elapsed_ms", "result_count"}
         }
+        if candidate_config.get("route_id"):
+            transport_extra["route_id"] = candidate_config["route_id"]
+        if attempt_extra and attempt_extra.get("fallback_from_route"):
+            transport_extra["fallback_from_route"] = attempt_extra["fallback_from_route"]
         if candidate_config.get("fallback_from_model"):
             transport_extra["fallback_from_model"] = candidate_config["fallback_from_model"]
         provider_attempts.append(

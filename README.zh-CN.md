@@ -81,9 +81,16 @@ smart-search research "比较两个当前 API 设计" --budget deep --format mar
 smart-search setup --non-interactive --install-skills codex,claude,cursor,hermes
 smart-search skills status --targets codex --format json
 smart-search skills update --targets codex --format json
+
+# 添加并查看按顺序备用的模型路由
+smart-search model add --id primary --provider openai-compatible --api-url "https://relay-a.example/v1" --api-key "key-a" --model "model-a"
+smart-search model add --id backup --provider openai-compatible --api-url "https://relay-b.example/v1" --api-key "key-b" --model "model-b"
+smart-search model list --format markdown
 ```
 
 给 agent 和脚本用 `--format json`，给人读报告用 `--format markdown`，终端快速阅读用 `--format content`。参数和 provider 专用命令见[命令参考](docs/commands.md)。
+
+需要多个模型服务按顺序备用时，在配置文件中加入 `SMART_SEARCH_MODEL_ROUTES` JSON 数组，或用 `smart-search model add` 追加。`smart-search model list` 查看顺序和模型，`smart-search model current` 查看当前首选路由，`smart-search model remove ROUTE_ID` 删除路由。查看命令会遮蔽 API key，原有 `XAI_*` 和 `OPENAI_COMPATIBLE_*` 配置仍可继续使用。
 
 ## 证据边界
 

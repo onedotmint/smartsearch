@@ -162,6 +162,21 @@ async def _run_async(args: argparse.Namespace) -> int:
 def _run_model(args: argparse.Namespace) -> int:
     if args.model_command == "current":
         data = service.current_model()
+    elif args.model_command == "list":
+        data = service.model_list()
+    elif args.model_command == "add":
+        data = service.model_add(
+            args.route_id,
+            args.provider,
+            args.api_url,
+            args.api_key,
+            args.model_name,
+            tools=args.tools,
+            stream=args.stream,
+            fallback_models=args.fallback_models,
+        )
+    elif args.model_command == "remove":
+        data = service.model_remove(args.route_id)
     else:
         data = {"ok": False, "error_type": "parameter_error", "error": "Unknown model command"}
     return _print_result("model", data, args.format, args.output)

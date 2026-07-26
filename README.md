@@ -81,6 +81,11 @@ smart-search research "Compare two current API designs" --budget deep --format m
 smart-search setup --non-interactive --install-skills codex,claude,cursor,hermes
 smart-search skills status --targets codex --format json
 smart-search skills update --targets codex --format json
+
+# Add and inspect ordered backup model routes
+smart-search model add --id primary --provider openai-compatible --api-url "https://relay-a.example/v1" --api-key "key-a" --model "model-a"
+smart-search model add --id backup --provider openai-compatible --api-url "https://relay-b.example/v1" --api-key "key-b" --model "model-b"
+smart-search model list --format markdown
 ```
 
 Use `--format json` for agents and scripts, `--format markdown` for reports, and `--format content` for compact terminal reading. See the [command reference](docs/commands.md) for flags and provider-specific commands.
