@@ -36,6 +36,7 @@ from .research_service import (
     _research_fetch_order,
     build_deep_research_plan,
 )
+from .security import sanitize_data
 from .service_support import (
     COMMAND_CAPABILITY_MATRIX,
     MINIMUM_PROFILE_ERROR,
@@ -582,8 +583,25 @@ async def doctor() -> dict[str, Any]:
             info["error_type"] = "network_error"
         else:
             info["error_type"] = "runtime_error"
-    logger.info("doctor 诊断完成: ok=%s profile=%s", info.get("ok", False), active_profile)
-    return info
+    """
+    /*
+     * ================================================================================
+     * 步骤5：清理 doctor 输出
+     * ================================================================================
+     * 目标：确保连接探针消息和配置诊断不返回 URL 内嵌凭据。
+     * 数据源：已聚合的 doctor 诊断结果。
+     * 操作：
+     * 1) 递归清理敏感字段、URL userinfo 和敏感查询参数。
+     * 2) 保留非敏感诊断字段与原有返回结构。
+     * ================================================================================
+    */
+    """
+    logger.info("步骤5开始：清理 doctor 输出")
+    sanitized_info = sanitize_data(info)
+    safe_info = sanitized_info if isinstance(sanitized_info, dict) else info
+    logger.info("步骤5结束：doctor 输出清理完成")
+    logger.info("doctor 诊断完成: ok=%s profile=%s", safe_info.get("ok", False), active_profile)
+    return safe_info
 
 def _model_routes_result(action: str) -> dict[str, Any]:
     """

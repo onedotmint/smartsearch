@@ -10,6 +10,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from .security import redact_url_credentials
+
 
 logger = logging.getLogger(__name__)
 
@@ -455,18 +457,23 @@ class Config:
          * ================================================================================
          * 目标：让 config、model 和 doctor 输出可以展示路由，但不泄露嵌套密钥。
          * 数据源：已规范化的模型路由对象。
-         * 操作：递归复制字典和列表，仅对 key/token/secret 字段使用统一掩码。
+         * 操作：递归复制字典和列表，对密钥字段和携带凭据的 URL 使用统一掩码。
          * ================================================================================
          */
         """
         logger.info("步骤2开始：脱敏模型路由")
         if isinstance(value, Mapping):
-            masked = {
-                str(key): cls._mask_api_key(str(item))
-                if any(marker in str(key).upper() for marker in ("KEY", "TOKEN", "SECRET"))
-                else cls._mask_nested_secrets(item)
-                for key, item in value.items()
-            }
+            masked: dict[str, object] = {}
+            for key, item in value.items():
+                normalized_key = str(key)
+
+                # 2.1 密钥字段和 URL 字段分别走对应的展示脱敏规则。
+                if any(marker in normalized_key.upper() for marker in ("KEY", "TOKEN", "SECRET")):
+                    masked[normalized_key] = cls._mask_api_key(str(item))
+                elif normalized_key.lower().endswith("url") and isinstance(item, str):
+                    masked[normalized_key] = redact_url_credentials(item)
+                else:
+                    masked[normalized_key] = cls._mask_nested_secrets(item)
             logger.info("步骤2结束：模型路由字典脱敏完成")
             return masked
         if isinstance(value, list):

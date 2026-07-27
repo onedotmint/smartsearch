@@ -47,7 +47,7 @@ from .runtime_cache import (
     observe_command,
     observe_stage,
 )
-from .security import sanitize_text
+from .security import redact_url_credentials, sanitize_text
 from .service_support import (
     MINIMUM_PROFILE_ERROR,
     PROFILE_NAMES,
@@ -690,6 +690,7 @@ async def search(
         ),
         [],
     )
+    # 3.1 路由元数据保留端点标识，但不得携带 URL 内嵌凭据。
     routing_decision = {
         **route_result.to_dict(),
         "validation_level": validation_level,
@@ -704,7 +705,7 @@ async def search(
                 "id": item.get("route_id", ""),
                 "provider": item["provider"],
                 "model": item.get("model", ""),
-                "api_url": item.get("api_url", ""),
+                "api_url": redact_url_credentials(str(item.get("api_url", ""))),
             }
             for item in selected_main_provider_configs
         ],

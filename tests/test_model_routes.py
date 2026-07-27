@@ -4,7 +4,8 @@ import pytest
 
 from smart_search import cli, operations_service, service, service_support
 from smart_search import search_service
-from smart_search.cli_render import _format_doctor_markdown
+from smart_search.cli_contract import build_json_result
+from smart_search.cli_render import _format_doctor_markdown, _format_model_markdown
 from smart_search.logger import logger
 from smart_search.utils import PromptConfigurationError
 
@@ -512,3 +513,163 @@ async def test_search_does_not_mask_prompt_configuration_error_with_backup(monke
     assert calls == ["https://primary.example/v1"]
     assert len(result["provider_attempts"]) == 1
     assert result["provider_attempts"][0]["route_id"] == "primary"
+
+
+def test_model_route_inspection_redacts_url_credentials(monkeypatch, tmp_path):
+    """
+    /*
+     * ================================================================================
+     * 步骤1：验证模型路由展示脱敏
+     * ================================================================================
+     * 目标：确保 model 与 config 检查结果不泄露 URL userinfo 或敏感查询参数。
+     * 数据源：两条含 URL 内嵌凭据的本地模型路由。
+     * 操作：
+     * 1) 分别覆盖 add、list、current、remove 与 config list 输出。
+     * 2) 验证持久化配置仍保留原始 URL 供后续请求使用。
+     * ================================================================================
+    */
+    """
+    logger.info("步骤1开始：验证模型路由展示脱敏")
+    config_file = _reset_model_config(monkeypatch, tmp_path)
+    primary_url = "https://primary-user:primary-password@primary.example/v1?api_key=primary-query-secret&region=cn"
+    backup_url = "https://backup-user:backup-password@backup.example/v1?token=backup-query-secret&region=us"
+
+    # 1.1 创建两条路由，覆盖各个模型管理结果的 route 输出。
+    added = service.model_add("primary", "openai-compatible", primary_url, "primary-api-secret", "primary-model")
+    service.model_add("backup", "openai-compatible", backup_url, "backup-api-secret", "backup-model")
+    listed = service.model_list()
+    current = service.current_model()
+    removed = service.model_remove("primary")
+    config_result = service.config_list()
+
+    # 1.2 断言所有展示和 Markdown 渲染都不包含 URL 或 API key 凭据。
+    rendered = _format_model_markdown(listed)
+    serialized = json.dumps(
+        {
+            "added": added,
+            "listed": listed,
+            "current": current,
+            "removed": removed,
+            "config": config_result,
+            "markdown": rendered,
+        },
+        ensure_ascii=False,
+    )
+    for secret in (
+        "primary-user",
+        "primary-password",
+        "primary-query-secret",
+        "primary-api-secret",
+        "backup-user",
+        "backup-password",
+        "backup-query-secret",
+        "backup-api-secret",
+    ):
+        assert secret not in serialized
+    assert "[REDACTED]@primary.example" in serialized
+    assert "[REDACTED]@backup.example" in serialized
+
+    # 1.3 持久化内容保持原样，避免展示脱敏误伤真实请求配置。
+    persisted = json.loads(config_file.read_text(encoding="utf-8"))
+    assert persisted["SMART_SEARCH_MODEL_ROUTES"] == [
+        {
+            "id": "backup",
+            "provider": "openai-compatible",
+            "api_url": backup_url,
+            "api_key": "backup-api-secret",
+            "model": "backup-model",
+            "stream": False,
+            "fallback_models": [],
+        }
+    ]
+    logger.info("步骤1结束：模型路由展示脱敏验证完成")
+
+
+@pytest.mark.asyncio
+async def test_model_route_url_credentials_are_redacted_in_doctor_and_routing_metadata(monkeypatch, tmp_path):
+    """
+    /*
+     * ================================================================================
+     * 步骤2：验证诊断与路由元数据脱敏
+     * ================================================================================
+     * 目标：确保 doctor、搜索结果和 JSON 契约都不泄露 URL 内嵌凭据。
+     * 数据源：环境变量中的独立模型路由和模拟的连接探针、模型请求。
+     * 操作：
+     * 1) 保留探针和 provider 实际收到的原始 URL。
+     * 2) 验证所有对外诊断和路由元数据仅包含脱敏 URL。
+     * ================================================================================
+    */
+    """
+    logger.info("步骤2开始：验证诊断与路由元数据脱敏")
+    _reset_model_config(monkeypatch, tmp_path)
+    service_support.reset_runtime_breakers()
+    primary_url = "https://primary-user:primary-password@primary.example/v1?api_key=primary-query-secret&region=cn"
+    backup_url = "https://backup-user:backup-password@backup.example/v1?token=backup-query-secret&region=us"
+    monkeypatch.setenv(
+        "SMART_SEARCH_MODEL_ROUTES",
+        json.dumps(
+            [
+                {
+                    "id": "primary",
+                    "provider": "openai-compatible",
+                    "api_url": primary_url,
+                    "api_key": "primary-api-secret",
+                    "model": "primary-model",
+                },
+                {
+                    "id": "backup",
+                    "provider": "openai-compatible",
+                    "api_url": backup_url,
+                    "api_key": "backup-api-secret",
+                    "model": "backup-model",
+                },
+            ]
+        ),
+    )
+    monkeypatch.setenv("SMART_SEARCH_MINIMUM_PROFILE", "off")
+    probed_urls = []
+    searched_urls = []
+
+    async def fake_probe(provider_config):
+        # 2.1 模拟 provider 将原始 URL 放入连接错误消息。
+        probed_urls.append(provider_config["api_url"])
+        return {"status": "error", "message": f"unable to reach {provider_config['api_url']}"}
+
+    async def fake_search(self, query, platform="", ctx=None):
+        # 2.2 模拟真实请求读取未脱敏的路由 URL。
+        searched_urls.append(self.api_url)
+        return "Primary answer."
+
+    monkeypatch.setattr(operations_service, "_safe_test_main_provider_connection", fake_probe)
+    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+
+    # 2.3 收集 doctor、搜索服务和 CLI JSON 契约三类对外结果。
+    doctor_result = await service.doctor()
+    search_result = await service.search("route credential test", providers="openai-compatible")
+    cli_result = build_json_result("search", search_result)
+    serialized = json.dumps(
+        {"doctor": doctor_result, "search": search_result, "cli": cli_result},
+        ensure_ascii=False,
+    )
+
+    # 2.4 对外结果不得泄露凭据，但内部探针和请求仍使用原始完整 URL。
+    for secret in (
+        "primary-user",
+        "primary-password",
+        "primary-query-secret",
+        "primary-api-secret",
+        "backup-user",
+        "backup-password",
+        "backup-query-secret",
+        "backup-api-secret",
+    ):
+        assert secret not in serialized
+    assert probed_urls == [primary_url, backup_url]
+    assert searched_urls == [primary_url]
+    assert "[REDACTED]@primary.example" in serialized
+    assert "[REDACTED]@backup.example" in serialized
+    assert "[REDACTED]@primary.example" in _format_doctor_markdown(doctor_result)
+    assert search_result["routing_decision"]["main_search_routes"][0]["api_url"].startswith(
+        "https://[REDACTED]@primary.example/v1"
+    )
+    logger.info("步骤2结束：诊断与路由元数据脱敏验证完成")
