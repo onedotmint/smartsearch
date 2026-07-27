@@ -292,22 +292,57 @@ def _format_doctor_markdown(data: dict[str, Any]) -> str:
             lines.extend(["", "## Capabilities"])
             lines.extend(_markdown_table(["Capability", "Status", "Configured", "Fallback chain"], rows))
 
+    """
+    /*
+     * ==============================================================================
+     * 步骤1：渲染主搜索连接诊断
+     * ==============================================================================
+     * 目标：区分有序 route 诊断与旧式 provider 诊断。
+     * 数据源：doctor 返回的 main_search_connection_tests。
+     * 操作：
+     * 1) 有 route_id 时分别展示 route 和 provider。
+     * 2) 没有 route_id 时保留旧式 provider 表格。
+     * ==============================================================================
+     */
+    """
+    logger.info("步骤1开始：渲染主搜索连接诊断")
     main_tests = data.get("main_search_connection_tests") or {}
     if main_tests:
         rows = []
-        for provider, test in main_tests.items():
+        route_aware = any(
+            isinstance(test, dict) and test.get("route_id")
+            for test in main_tests.values()
+        )
+        for diagnostic_id, test in main_tests.items():
             if isinstance(test, dict):
-                rows.append(
-                    [
-                        provider,
-                        _status_label(test.get("status")),
-                        _latency_text(test.get("response_time_ms")),
-                        test.get("message", ""),
-                    ]
-                )
+                if route_aware:
+                    rows.append(
+                        [
+                            test.get("route_id", diagnostic_id),
+                            test.get("provider", diagnostic_id),
+                            _status_label(test.get("status")),
+                            _latency_text(test.get("response_time_ms")),
+                            test.get("message", ""),
+                        ]
+                    )
+                else:
+                    rows.append(
+                        [
+                            diagnostic_id,
+                            _status_label(test.get("status")),
+                            _latency_text(test.get("response_time_ms")),
+                            test.get("message", ""),
+                        ]
+                    )
         lines.extend(["", "## Main Search Providers"])
-        lines.extend(_markdown_table(["Provider", "Status", "Latency", "Message"], rows))
+        headers = (
+            ["Route", "Provider", "Status", "Latency", "Message"]
+            if route_aware
+            else ["Provider", "Status", "Latency", "Message"]
+        )
+        lines.extend(_markdown_table(headers, rows))
         lines.extend(_provider_detail_lines("Provider Details", main_tests))
+    logger.info("步骤1结束：主搜索连接诊断渲染完成，条数=%s", len(main_tests))
 
     provider_tests = [
         ("exa", data.get("exa_connection_test") or {}),

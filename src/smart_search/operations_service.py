@@ -444,14 +444,24 @@ async def doctor() -> dict[str, Any]:
 
     main_provider_configs: list[dict[str, Any]] = []
     try:
+        # 4.1 按路由身份聚合 main_search 连接诊断
         main_provider_configs = _main_search_provider_configs()
         info["main_search_connection_tests"] = {}
+        primary_connection_test: dict[str, Any] | None = None
         for provider_config in main_provider_configs:
-            info["main_search_connection_tests"][provider_config["provider"]] = await _safe_test_main_provider_connection(provider_config)
+            connection_test = dict(await _safe_test_main_provider_connection(provider_config))
+            route_id = str(provider_config.get("route_id") or "")
+            diagnostic_id = route_id or provider_config["provider"]
+            if route_id:
+                connection_test["route_id"] = route_id
+                connection_test["provider"] = provider_config["provider"]
+            info["main_search_connection_tests"][diagnostic_id] = connection_test
+            if primary_connection_test is None:
+                primary_connection_test = connection_test
         if main_provider_configs:
             first_provider = main_provider_configs[0]
             info["primary_api_mode"] = first_provider["mode"]
-            info["primary_connection_test"] = info["main_search_connection_tests"][first_provider["provider"]]
+            info["primary_connection_test"] = primary_connection_test
         else:
             info["primary_connection_test"] = {"status": "config_error", "message": MINIMUM_PROFILE_ERROR}
     except ValueError as e:
