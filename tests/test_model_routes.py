@@ -68,6 +68,75 @@ def test_model_routes_are_ordered_persisted_and_masked(monkeypatch, tmp_path):
     assert [route["id"] for route in removed["routes"]] == ["backup"]
 
 
+@pytest.mark.asyncio
+async def test_empty_model_routes_do_not_restore_legacy_main_search(monkeypatch, tmp_path):
+    """
+    /*
+     * ==============================================================================
+     * 步骤1：验证删除最后模型路由后的显式空状态
+     * ==============================================================================
+     * 目标：确保删除最后一条路由后，搜索、模型管理和诊断都不恢复旧配置。
+     * 数据源：保留的 XAI_* 旧配置，以及 model add/remove 写入的空路由数组。
+     * 操作：
+     * 1) 迁移旧配置后依次删除所有路由，保留 SMART_SEARCH_MODEL_ROUTES: []。
+     * 2) 核对 current、search 和 doctor 都报告无可用主搜索模型。
+     * ==============================================================================
+    */
+    """
+    logger.info("步骤1开始：验证删除最后模型路由后的显式空状态")
+    config_file = _reset_model_config(monkeypatch, tmp_path)
+    config_file.write_text(
+        json.dumps(
+            {
+                "XAI_API_KEY": "legacy-xai-secret",
+                "XAI_MODEL": "legacy-xai-model",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # 1.1 首次添加会迁移旧配置；删除全部路由后必须保留显式空数组。
+    added = service.model_add(
+        "backup",
+        "openai-compatible",
+        "https://backup.example/v1",
+        "backup-secret",
+        "backup-model",
+    )
+    assert [route["id"] for route in added["routes"]] == [
+        "legacy-xai-responses",
+        "backup",
+    ]
+    service.model_remove("legacy-xai-responses")
+    removed = service.model_remove("backup")
+    assert removed["routes"] == []
+    assert json.loads(config_file.read_text(encoding="utf-8"))["SMART_SEARCH_MODEL_ROUTES"] == []
+
+    # 1.2 模型管理和配置诊断不能把保留的 legacy 值当成当前可用模型。
+    current = service.current_model()
+    config_info = service.config.get_config_info()
+    assert current["current_route"] is None
+    assert current["current_route_id"] == ""
+    assert current["current_model"] == ""
+    assert current["xai_model"] == ""
+    assert current["openai_compatible_model"] == ""
+    assert current["openai_compatible_fallback_models"] == []
+    assert "legacy-xai-model" not in _format_model_markdown(current)
+    assert config_info["primary_api_mode"] == "未配置"
+    assert config_info["config_status"].startswith("config_error:")
+
+    # 1.3 搜索和 doctor 均必须按空路由状态报告 main_search 缺失。
+    search_result = await service.search("empty route test")
+    doctor_result = await service.doctor()
+    assert search_result["ok"] is False
+    assert search_result["error_type"] == "config_error"
+    assert search_result["missing_capabilities"] == ["main_search"]
+    assert doctor_result["primary_api_mode"] == "未配置"
+    assert doctor_result["config_status"].startswith("config_error:")
+    assert doctor_result["main_search_connection_tests"] == {}
+    logger.info("步骤1结束：删除最后模型路由后的显式空状态验证完成")
+
+
 def test_model_add_migrates_local_legacy_main_search_config(monkeypatch, tmp_path):
     """
     /*

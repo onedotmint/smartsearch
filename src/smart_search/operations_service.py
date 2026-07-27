@@ -612,13 +612,17 @@ def _model_routes_result(action: str) -> dict[str, Any]:
      * 目标：让 model list 和 model current 共用同一份有序、脱敏结果。
      * 数据源：SMART_SEARCH_MODEL_ROUTES 以及兼容保留的旧模型配置。
      * 操作：
-     * 1) 读取并校验路由数组，保留配置文件中的顺序。
-     * 2) 仅返回脱敏后的 API key，并标记当前首选路由。
+     * 1) 读取并校验路由数组，保留配置文件中的顺序和显式空状态。
+     * 2) 仅在路由键缺失时回退旧模型配置；空数组没有当前模型。
+     * 3) 空路由时隐藏保留的旧模型展示字段，避免把已删除模型显示为可用。
+     * 4) 仅返回脱敏后的 API key，并标记当前首选路由。
      * ==============================================================================
      */
     """
     logger.info("步骤1开始：读取模型路由状态，action=%s", action)
     try:
+        # 1.1 空路由数组是显式状态，不能被旧主搜索配置覆盖。
+        routes_configured = config.model_routes_configured
         routes = config.get_model_routes(masked=True)
     except ValueError as exc:
         result = {
@@ -634,12 +638,19 @@ def _model_routes_result(action: str) -> dict[str, Any]:
         logger.info("步骤1结束：模型路由状态读取失败，action=%s", action)
         return result
 
+    # 1.2 显式空数组保留旧配置存储，但模型管理结果不能将其展示为可用。
+    empty_explicit_routes = routes_configured and not routes
     current_route = routes[0] if routes else None
     if current_route:
         current_model_name = current_route.get("model", "")
-    elif config.xai_api_key:
+    # 1.3 只有路由键不存在时，旧模型才是有效的 current model。
+    elif not routes_configured and config.xai_api_key:
         current_model_name = config.xai_model
-    elif config.openai_compatible_api_url and config.openai_compatible_api_key:
+    elif (
+        not routes_configured
+        and config.openai_compatible_api_url
+        and config.openai_compatible_api_key
+    ):
         current_model_name = config.openai_compatible_model
     else:
         current_model_name = ""
@@ -652,12 +663,21 @@ def _model_routes_result(action: str) -> dict[str, Any]:
         "current_route": current_route,
         "current_route_id": current_route.get("id", "") if current_route else "",
         "current_model": current_model_name,
-        "xai_model": config.xai_model,
-        "openai_compatible_model": config.openai_compatible_model,
-        "openai_compatible_fallback_models": config.openai_compatible_fallback_models,
+        "xai_model": "" if empty_explicit_routes else config.xai_model,
+        "openai_compatible_model": (
+            "" if empty_explicit_routes else config.openai_compatible_model
+        ),
+        "openai_compatible_fallback_models": (
+            [] if empty_explicit_routes else config.openai_compatible_fallback_models
+        ),
         "config_file": str(config.config_file),
     }
-    logger.info("步骤1结束：模型路由状态读取完成，action=%s routes=%s", action, len(routes))
+    logger.info(
+        "步骤1结束：模型路由状态读取完成，action=%s routes=%s routes_configured=%s",
+        action,
+        len(routes),
+        routes_configured,
+    )
     return result
 
 

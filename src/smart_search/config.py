@@ -1356,19 +1356,44 @@ class Config:
         return float(self._get_config_value("JINA_TIMEOUT_SECONDS", "30") or "30")
 
     def get_config_info(self) -> dict:
+        """
+        /*
+         * ==============================================================================
+         * 步骤1：聚合配置诊断状态
+         * ==============================================================================
+         * 目标：让路由配置、旧主搜索配置和诊断状态使用同一优先级规则。
+         * 数据源：配置快照中的 SMART_SEARCH_MODEL_ROUTES、XAI_* 与
+         * OPENAI_COMPATIBLE_*。
+         * 操作：
+         * 1) 先识别模型路由键是否存在，空数组也属于显式路由配置。
+         * 2) 仅在路由键缺失时使用旧主搜索配置计算可用状态。
+         * 3) 输出与搜索和模型管理一致的主模型诊断字段。
+         * ==============================================================================
+        */
+        """
+        logger.info("步骤1开始：聚合配置诊断状态")
         config_parameter_errors: list[str] = []
         config_path = self.config_path_info()
         model_routes: list[dict[str, Any]] = []
         model_routes_error = ""
+        model_routes_configured = False
         try:
-            if self.model_routes_configured:
+            # 1.1 路由键存在时，即使数组为空也必须屏蔽旧配置兜底。
+            model_routes_configured = self.model_routes_configured
+            if model_routes_configured:
                 model_routes = self.model_routes
         except ValueError as exc:
             model_routes_error = str(exc)
-        explicit_main_configured = bool(
-            model_routes
-            or self.xai_api_key
+
+        # 1.2 只有未进入路由模式时，旧主搜索配置才可作为有效主模型。
+        legacy_main_configured = bool(
+            self.xai_api_key
             or (self.openai_compatible_api_url and self.openai_compatible_api_key)
+        )
+        explicit_main_configured = (
+            bool(model_routes)
+            if model_routes_configured
+            else legacy_main_configured
         )
         if explicit_main_configured:
             config_status = "ok: 配置完整"
@@ -1453,6 +1478,23 @@ class Config:
         if not config_path.get("ok", False):
             config_status = f"config_error: {config_path.get('error', self._config_storage_hint())}"
 
+        # 1.3 诊断展示沿用同一优先级，避免空路由显示旧模型仍可用。
+        if model_routes:
+            primary_api_mode = model_routes[0]["provider"]
+        elif model_routes_configured:
+            primary_api_mode = "未配置"
+        elif self.xai_api_key:
+            primary_api_mode = "xai-responses"
+        elif self.openai_compatible_api_url and self.openai_compatible_api_key:
+            primary_api_mode = "chat-completions"
+        else:
+            primary_api_mode = "未配置"
+
+        logger.info(
+            "步骤1结束：配置诊断状态聚合完成，routes_configured=%s routes=%s",
+            model_routes_configured,
+            len(model_routes),
+        )
         return {
             "XAI_API_URL": self.xai_api_url,
             "XAI_API_KEY": self._mask_api_key(self.xai_api_key) if self.xai_api_key else "未配置",
@@ -1524,11 +1566,7 @@ class Config:
             "JINA_READER_API_URL": self.jina_reader_api_url,
             "JINA_RESPOND_WITH": self.jina_respond_with,
             "JINA_TIMEOUT_SECONDS": self.jina_timeout,
-            "primary_api_mode": (
-                model_routes[0]["provider"]
-                if model_routes
-                else ("xai-responses" if self.xai_api_key else ("chat-completions" if self.openai_compatible_api_url and self.openai_compatible_api_key else "未配置"))
-            ),
+            "primary_api_mode": primary_api_mode,
             "primary_api_mode_source": "config_file" if explicit_main_configured else "default",
             "config_file": str(self.config_file),
             "config_dir": str(self.config_file.parent),
