@@ -1693,7 +1693,11 @@ async def test_chinese_language_request_does_not_trigger_current_web_search(monk
     async def should_not_run_web_search(query, count=5, providers="auto", fallback="auto"):
         raise AssertionError("generic Chinese-language requests should not trigger current web_search")
 
+    async def fake_docs_search(query, providers="auto", fallback="auto"):
+        return [], []
+
     monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "_run_docs_search_fallback", fake_docs_search)
     monkeypatch.setattr(search_service, "_run_web_search_fallback", should_not_run_web_search)
 
     result = await service.search("中文解释 Python 函数", validation="balanced")
@@ -1940,7 +1944,11 @@ async def test_search_known_url_uses_same_fetch_chain_as_fetch(monkeypatch):
         captured["url"] = url
         return {"ok": True, "provider": "jina", "url": url, "content": "# Jina Page"}
 
+    async def fake_docs_search(query, providers="auto", fallback="auto"):
+        return [], []
+
     monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
+    monkeypatch.setattr(search_service, "_run_docs_search_fallback", fake_docs_search)
     monkeypatch.setattr(search_service, "jina_fetch", yes_jina)
 
     result = await service.search("请抓取 https://example.com/docs?x=1 后总结", validation="balanced")
@@ -2472,6 +2480,11 @@ async def test_doctor_reports_invalid_validation_config(monkeypatch):
     monkeypatch.setenv("OPENAI_COMPATIBLE_API_URL", "https://api.example.com/v1")
     monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "sk-test-secret")
     monkeypatch.setenv("SMART_SEARCH_VALIDATION_LEVEL", "banana")
+
+    async def fake_main_provider_connection(_provider_config):
+        return {"status": "config_error", "message": "validation config is invalid"}
+
+    monkeypatch.setattr(operations_service, "_safe_test_main_provider_connection", fake_main_provider_connection)
 
     result = await service.doctor()
 
