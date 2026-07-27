@@ -17,9 +17,15 @@ def _reset_model_config(monkeypatch, tmp_path):
     for key in (
         "SMART_SEARCH_MODEL_ROUTES",
         "SMART_SEARCH_MINIMUM_PROFILE",
+        "XAI_API_URL",
         "XAI_API_KEY",
+        "XAI_MODEL",
+        "XAI_TOOLS",
         "OPENAI_COMPATIBLE_API_URL",
         "OPENAI_COMPATIBLE_API_KEY",
+        "OPENAI_COMPATIBLE_MODEL",
+        "OPENAI_COMPATIBLE_STREAM",
+        "OPENAI_COMPATIBLE_FALLBACK_MODELS",
     ):
         monkeypatch.delenv(key, raising=False)
     return config_file
@@ -59,6 +65,169 @@ def test_model_routes_are_ordered_persisted_and_masked(monkeypatch, tmp_path):
     removed = service.model_remove("primary")
     assert removed["ok"] is True
     assert [route["id"] for route in removed["routes"]] == ["backup"]
+
+
+def test_model_add_migrates_local_legacy_main_search_config(monkeypatch, tmp_path):
+    """
+    /*
+     * ==============================================================================
+     * 步骤1：验证本地旧主搜索配置迁移
+     * ==============================================================================
+     * 目标：首次 model add 保留两类旧 provider 并按 legacy 顺序追加新 route。
+     * 数据源：config.json 中的 XAI_* 与 OPENAI_COMPATIBLE_* 配置。
+     * 操作：
+     * 1) 写入带 provider 专属字段的旧配置。
+     * 2) 核对持久化顺序、字段绑定、旧键保留与输出脱敏。
+     * ==============================================================================
+    */
+    """
+    logger.info("步骤1开始：验证本地旧主搜索配置迁移")
+    config_file = _reset_model_config(monkeypatch, tmp_path)
+    config_file.write_text(
+        json.dumps(
+            {
+                "XAI_API_URL": "https://legacy-xai.example/v1",
+                "XAI_API_KEY": "legacy-xai-secret",
+                "XAI_MODEL": "legacy-xai-model",
+                "XAI_TOOLS": "x_search",
+                "OPENAI_COMPATIBLE_API_URL": "https://legacy-openai.example/v1",
+                "OPENAI_COMPATIBLE_API_KEY": "legacy-openai-secret",
+                "OPENAI_COMPATIBLE_MODEL": "legacy-openai-model",
+                "OPENAI_COMPATIBLE_STREAM": "true",
+                "OPENAI_COMPATIBLE_FALLBACK_MODELS": "legacy-openai-backup",
+                "unrelated_setting": "preserved",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = service.model_add(
+        "new-route",
+        "openai-compatible",
+        "https://new-route.example/v1",
+        "new-route-secret",
+        "new-route-model",
+    )
+
+    assert result["ok"] is True
+    raw = json.loads(config_file.read_text(encoding="utf-8"))
+    routes = raw["SMART_SEARCH_MODEL_ROUTES"]
+    assert [route["id"] for route in routes] == [
+        "legacy-xai-responses",
+        "legacy-openai-compatible",
+        "new-route",
+    ]
+    assert routes[0] == {
+        "id": "legacy-xai-responses",
+        "provider": "xai-responses",
+        "api_url": "https://legacy-xai.example/v1",
+        "api_key": "legacy-xai-secret",
+        "model": "legacy-xai-model",
+        "tools": ["x_search"],
+    }
+    assert routes[1]["stream"] is True
+    assert routes[1]["fallback_models"] == ["legacy-openai-backup"]
+    assert raw["XAI_API_KEY"] == "legacy-xai-secret"
+    assert raw["OPENAI_COMPATIBLE_API_KEY"] == "legacy-openai-secret"
+    assert raw["unrelated_setting"] == "preserved"
+    serialized = json.dumps({"result": result, "config": service.config_list()}, ensure_ascii=False)
+    assert "legacy-xai-secret" not in serialized
+    assert "legacy-openai-secret" not in serialized
+    assert "new-route-secret" not in serialized
+    logger.info("步骤1结束：本地旧主搜索配置迁移验证完成")
+
+
+@pytest.mark.parametrize(
+    ("file_values", "environment_values", "secret"),
+    [
+        ({}, {"XAI_API_KEY": "environment-xai-secret"}, "environment-xai-secret"),
+        ({"XAI_API_KEY": "file-xai-secret"}, {"XAI_MODEL": "environment-xai-model"}, "file-xai-secret"),
+        (
+            {
+                "OPENAI_COMPATIBLE_API_URL": "https://file-openai.example/v1",
+                "OPENAI_COMPATIBLE_API_KEY": "file-openai-secret",
+            },
+            {"OPENAI_COMPATIBLE_STREAM": "true"},
+            "file-openai-secret",
+        ),
+    ],
+)
+def test_model_add_does_not_persist_environment_controlled_legacy_config(
+    monkeypatch,
+    tmp_path,
+    file_values,
+    environment_values,
+    secret,
+):
+    """
+    /*
+     * ==============================================================================
+     * 步骤2：验证环境控制的旧配置不会落盘
+     * ==============================================================================
+     * 目标：保护环境管理的凭据与 provider 参数，避免 model add 复制到 config.json。
+     * 数据源：文件中的 legacy 配置与同 provider 的环境覆盖。
+     * 操作：
+     * 1) 模拟密钥或运行参数来自环境变量。
+     * 2) 核对命令失败、原文件不变且结果不包含秘密。
+     * ==============================================================================
+    */
+    """
+    logger.info("步骤2开始：验证环境控制的旧配置不会落盘")
+    config_file = _reset_model_config(monkeypatch, tmp_path)
+    config_file.write_text(json.dumps({**file_values, "unrelated_setting": "preserved"}), encoding="utf-8")
+    for key, value in environment_values.items():
+        monkeypatch.setenv(key, value)
+    before = config_file.read_text(encoding="utf-8")
+
+    result = service.model_add(
+        "new-route",
+        "openai-compatible",
+        "https://new-route.example/v1",
+        "new-route-secret",
+        "new-route-model",
+    )
+
+    assert result["ok"] is False
+    assert result["error_type"] == "parameter_error"
+    assert "controlled by the environment" in result["error"]
+    assert config_file.read_text(encoding="utf-8") == before
+    assert "SMART_SEARCH_MODEL_ROUTES" not in json.loads(before)
+    assert secret not in json.dumps(result, ensure_ascii=False)
+    logger.info("步骤2结束：环境控制的旧配置未落盘验证完成")
+
+
+def test_model_add_keeps_config_unchanged_when_legacy_route_id_conflicts(monkeypatch, tmp_path):
+    """
+    /*
+     * ==============================================================================
+     * 步骤3：验证 legacy route ID 冲突的原子性
+     * ==============================================================================
+     * 目标：新 route 与生成的 legacy ID 冲突时拒绝整次迁移。
+     * 数据源：本地 xAI legacy 配置和冲突的 model add 参数。
+     * 操作：
+     * 1) 触发 route ID 重复校验。
+     * 2) 核对原 config.json 未写入 route list。
+     * ==============================================================================
+    */
+    """
+    logger.info("步骤3开始：验证 legacy route ID 冲突原子性")
+    config_file = _reset_model_config(monkeypatch, tmp_path)
+    config_file.write_text(json.dumps({"XAI_API_KEY": "legacy-xai-secret"}), encoding="utf-8")
+    before = config_file.read_text(encoding="utf-8")
+
+    result = service.model_add(
+        "legacy-xai-responses",
+        "openai-compatible",
+        "https://new-route.example/v1",
+        "new-route-secret",
+        "new-route-model",
+    )
+
+    assert result["ok"] is False
+    assert result["error_type"] == "parameter_error"
+    assert "duplicate id: legacy-xai-responses" in result["error"]
+    assert config_file.read_text(encoding="utf-8") == before
+    logger.info("步骤3结束：legacy route ID 冲突原子性验证完成")
 
 
 def test_direct_json_model_routes_are_discoverable_and_invalid_entries_fail_closed(monkeypatch, tmp_path):

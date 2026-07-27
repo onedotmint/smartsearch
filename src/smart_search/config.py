@@ -518,12 +518,107 @@ class Config:
         logger.info("步骤3结束：模型路由保存完成，条数=%s", len(normalized))
         return normalized
 
+    def _legacy_model_routes_for_migration(self, snapshot: ConfigSnapshot) -> list[dict[str, Any]]:
+        """
+        /*
+         * ==============================================================================
+         * 步骤4：构造旧主搜索模型路由
+         * ==============================================================================
+         * 目标：首次 model add 时保留本地 legacy 主搜索配置。
+         * 数据源：同一配置快照中的 XAI_* 与 OPENAI_COMPATIBLE_* 文件值。
+         * 操作：
+         * 1) 拒绝活跃 provider 的环境覆盖，避免把环境凭据写入 config.json。
+         * 2) 按 legacy fallback 顺序构造稳定 ID 的独立 route。
+         * ==============================================================================
+        */
+        """
+        logger.info("步骤4开始：构造旧主搜索模型路由")
+        xai_api_key = self.xai_api_key
+        openai_api_url = self.openai_compatible_api_url
+        openai_api_key = self.openai_compatible_api_key
+        active_providers = (
+            (
+                "xai-responses",
+                bool(xai_api_key),
+                ("XAI_API_URL", "XAI_API_KEY", "XAI_MODEL", "XAI_TOOLS"),
+            ),
+            (
+                "openai-compatible",
+                bool(openai_api_url and openai_api_key),
+                (
+                    "OPENAI_COMPATIBLE_API_URL",
+                    "OPENAI_COMPATIBLE_API_KEY",
+                    "OPENAI_COMPATIBLE_MODEL",
+                    "OPENAI_COMPATIBLE_STREAM",
+                    "OPENAI_COMPATIBLE_FALLBACK_MODELS",
+                ),
+            ),
+        )
+        environment_keys = [
+            key
+            for _, configured, keys in active_providers
+            if configured
+            for key in keys
+            if snapshot.environment_values.get(key) is not None
+        ]
+        if environment_keys:
+            logger.info("步骤4结束：旧主搜索迁移被环境配置阻止")
+            raise ValueError(
+                "Cannot migrate legacy main-search configuration controlled by the environment "
+                f"({', '.join(environment_keys)}). Set SMART_SEARCH_MODEL_ROUTES in the environment instead."
+            )
+
+        routes: list[dict[str, Any]] = []
+        if xai_api_key:
+            routes.append(
+                {
+                    "id": "legacy-xai-responses",
+                    "provider": "xai-responses",
+                    "api_url": self.xai_api_url,
+                    "api_key": xai_api_key,
+                    "model": self.xai_model,
+                    "tools": self.parse_xai_tools(self.xai_tools_raw),
+                }
+            )
+        if openai_api_url and openai_api_key:
+            routes.append(
+                {
+                    "id": "legacy-openai-compatible",
+                    "provider": "openai-compatible",
+                    "api_url": openai_api_url,
+                    "api_key": openai_api_key,
+                    "model": self.openai_compatible_model,
+                    "stream": self.openai_compatible_stream,
+                    "fallback_models": self.openai_compatible_fallback_models,
+                }
+            )
+        logger.info("步骤4结束：旧主搜索模型路由构造完成，条数=%s", len(routes))
+        return routes
+
     def add_model_route(self, route: Mapping[str, object]) -> list[dict[str, Any]]:
-        logger.info("开始添加模型路由")
-        routes = list(self.model_routes) if self.model_routes_configured else []
+        """
+        /*
+         * ==============================================================================
+         * 步骤5：追加模型路由并迁移旧配置
+         * ==============================================================================
+         * 目标：保留已保存的 legacy 主搜索配置，再追加用户提交的 route。
+         * 数据源：当前快照、legacy provider 配置与 model add 参数。
+         * 操作：
+         * 1) route list 存在时保留其顺序；缺失时构造 legacy routes。
+         * 2) 统一交给 set_model_routes 校验并原子持久化。
+         * ==============================================================================
+        */
+        """
+        logger.info("步骤5开始：添加模型路由")
+        snapshot = self._get_config_snapshot()
+        routes = (
+            list(self.model_routes)
+            if self.model_routes_configured
+            else self._legacy_model_routes_for_migration(snapshot)
+        )
         routes.append(dict(route))
         result = self.set_model_routes(routes)
-        logger.info("模型路由添加完成，条数=%s", len(result))
+        logger.info("步骤5结束：模型路由添加完成，条数=%s", len(result))
         return result
 
     def remove_model_route(self, route_id: str) -> list[dict[str, Any]]:

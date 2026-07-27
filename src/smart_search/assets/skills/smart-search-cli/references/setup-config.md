@@ -13,6 +13,7 @@
 
 - Prefer the CLI's local config file managed by `smart-search setup` / `smart-search config`.
 - Environment variables remain supported for CI and advanced users, and override the local config file.
+- The first local `smart-search model add` preserves saved legacy `XAI_*` and `OPENAI_COMPATIBLE_*` settings as ordered routes before adding the new route. It never copies environment-controlled legacy values into the local config file; define `SMART_SEARCH_MODEL_ROUTES` in the environment for that setup.
 - Do not ask users to set Windows global API-key environment variables by default.
 - If keys are changed with `smart-search config set`, rerun the CLI; no Codex restart is needed.
 - If PATH is changed, a new terminal or Codex restart may be needed.

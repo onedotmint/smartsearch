@@ -79,7 +79,7 @@ For multiple independent endpoints, use the ordered `SMART_SEARCH_MODEL_ROUTES` 
 }
 ```
 
-Use `smart-search model add` to append the same structure, `smart-search model list` or `smart-search model current` to inspect it, and `smart-search model remove ROUTE_ID` to delete an entry. API keys are masked in all inspection output. Existing `XAI_*` and `OPENAI_COMPATIBLE_*` settings remain valid when `SMART_SEARCH_MODEL_ROUTES` is absent.
+Use `smart-search model add` to append the same structure, `smart-search model list` or `smart-search model current` to inspect it, and `smart-search model remove ROUTE_ID` to delete an entry. API keys are masked in all inspection output. Existing `XAI_*` and `OPENAI_COMPATIBLE_*` settings remain valid when `SMART_SEARCH_MODEL_ROUTES` is absent. The first local `model add` preserves saved legacy provider settings as `legacy-xai-responses` and `legacy-openai-compatible` routes before appending the new route. It does not copy environment-controlled legacy settings into the local config file; define `SMART_SEARCH_MODEL_ROUTES` in the environment for that setup.
 
 ### Zhipu REST and Coding Plan MCP
 

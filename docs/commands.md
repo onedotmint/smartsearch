@@ -120,6 +120,8 @@ The same list can be edited directly in the local file reported by `smart-search
 
 Supported providers are `openai-compatible` and `xai-responses`. xAI routes may set `tools` to `web_search`, `x_search`, or both. OpenAI-compatible routes may set `stream` and same-endpoint `fallback_models`. `model list`, `model current`, `config list`, and `doctor` mask route API keys.
 
+On the first local `model add`, saved legacy `XAI_*` and `OPENAI_COMPATIBLE_*` main-search settings are retained as `legacy-xai-responses` and `legacy-openai-compatible` routes before the new route. This migration never copies environment-controlled legacy settings into the local file. When a legacy provider is controlled by the environment, define the complete `SMART_SEARCH_MODEL_ROUTES` array in the environment instead.
+
 ## Provider-specific commands
 
 These commands are explicit tools for focused discovery or extraction. They are not interchangeable fallback providers.
