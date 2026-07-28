@@ -339,6 +339,99 @@ def test_direct_json_model_routes_are_discoverable_and_invalid_entries_fail_clos
     assert invalid["error_type"] == "config_error"
 
 
+@pytest.mark.parametrize(
+    ("routes_value", "secret"),
+    [
+        ({"api_key": "invalid-array-secret"}, "invalid-array-secret"),
+        (
+            [
+                {
+                    "id": "broken",
+                    "provider": "openai-compatible",
+                    "api_url": "https://invalid.example/v1?api-key=invalid-route-secret",
+                }
+            ],
+            "invalid-route-secret",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_saved_model_route_configuration_errors_are_not_parameter_errors(monkeypatch, tmp_path, routes_value, secret):
+    """
+    /*
+     * ==============================================================================
+     * 步骤4：验证保存路由错误分类
+     * ==============================================================================
+     * 目标：让损坏的本地模型路由在所有读取和管理入口统一返回 config_error。
+     * 数据源：非法数组值或缺少必填字段的已保存 SMART_SEARCH_MODEL_ROUTES。
+     * 操作：
+     * 1) 调用 model list/current/add/remove 与 config list。
+     * 2) 校验不改写原文件，也不把保存内容中的凭据带入错误输出。
+     * ==============================================================================
+    */
+    """
+    logger.info("步骤4开始：验证保存路由错误分类")
+    config_file = _reset_model_config(monkeypatch, tmp_path)
+    config_file.write_text(
+        json.dumps({"SMART_SEARCH_MODEL_ROUTES": routes_value}),
+        encoding="utf-8",
+    )
+    before = config_file.read_text(encoding="utf-8")
+
+    # 4.1 保存内容损坏时，读取和写入入口都必须先报告配置错误。
+    results = {
+        "list": service.model_list(),
+        "current": service.current_model(),
+        "add": service.model_add(
+            "new-route",
+            "openai-compatible",
+            "https://new.example/v1",
+            "new-route-secret",
+            "new-model",
+        ),
+        "remove": service.model_remove("broken"),
+        "config": service.config_list(),
+        "doctor": await service.doctor(),
+    }
+    for result in results.values():
+        assert result["ok"] is False
+        assert result["error_type"] == "config_error"
+    assert config_file.read_text(encoding="utf-8") == before
+    assert secret not in json.dumps(results, ensure_ascii=False)
+    logger.info("步骤4结束：保存路由错误分类验证完成")
+
+
+def test_model_route_command_parameter_errors_remain_parameter_errors(monkeypatch, tmp_path):
+    """
+    /*
+     * ==============================================================================
+     * 步骤5：验证命令参数错误分类
+     * ==============================================================================
+     * 目标：区分已保存配置损坏与本次 model 命令参数非法。
+     * 数据源：空 route ID 和不存在的 route ID。
+     * 操作：
+     * 1) 让 model add 校验当前提交的空 ID。
+     * 2) 让 model remove 校验不存在的 route ID。
+     * ==============================================================================
+    */
+    """
+    logger.info("步骤5开始：验证命令参数错误分类")
+    _reset_model_config(monkeypatch, tmp_path)
+
+    # 5.1 当前命令参数非法时仍应返回 parameter_error。
+    invalid_add = service.model_add(
+        "",
+        "openai-compatible",
+        "https://new.example/v1",
+        "new-route-secret",
+        "new-model",
+    )
+    missing_remove = service.model_remove("missing-route")
+    assert invalid_add["error_type"] == "parameter_error"
+    assert missing_remove["error_type"] == "parameter_error"
+    logger.info("步骤5结束：命令参数错误分类验证完成")
+
+
 def test_model_command_supports_add_list_current_remove(monkeypatch):
     parser = cli.build_parser()
     add_args = parser.parse_args(
@@ -600,7 +693,7 @@ def test_model_route_inspection_redacts_url_credentials(monkeypatch, tmp_path):
     """
     logger.info("步骤1开始：验证模型路由展示脱敏")
     config_file = _reset_model_config(monkeypatch, tmp_path)
-    primary_url = "https://primary-user:primary-password@primary.example/v1?api_key=primary-query-secret&region=cn"
+    primary_url = "https://primary-user:primary-password@primary.example/v1?api-key=primary-query-secret&region=cn"
     backup_url = "https://backup-user:backup-password@backup.example/v1?token=backup-query-secret&region=us"
 
     # 1.1 创建两条路由，覆盖各个模型管理结果的 route 输出。
@@ -672,7 +765,7 @@ async def test_model_route_url_credentials_are_redacted_in_doctor_and_routing_me
     logger.info("步骤2开始：验证诊断与路由元数据脱敏")
     _reset_model_config(monkeypatch, tmp_path)
     service_support.reset_runtime_breakers()
-    primary_url = "https://primary-user:primary-password@primary.example/v1?api_key=primary-query-secret&region=cn"
+    primary_url = "https://primary-user:primary-password@primary.example/v1?api-key=primary-query-secret&region=cn"
     backup_url = "https://backup-user:backup-password@backup.example/v1?token=backup-query-secret&region=us"
     monkeypatch.setenv(
         "SMART_SEARCH_MODEL_ROUTES",

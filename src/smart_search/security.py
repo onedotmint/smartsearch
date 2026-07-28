@@ -52,13 +52,13 @@ def redact_url_credentials(value: str) -> str:
 
     # 1.2 仅改写敏感查询参数，非敏感参数保留原始形式。
     query_items = parse_qsl(parsed.query, keep_blank_values=True)
-    has_sensitive_query = any(key.lower() in _SENSITIVE_KEY_NAMES for key, _ in query_items)
+    has_sensitive_query = any(is_sensitive_key(key) for key, _ in query_items)
     if not has_userinfo and not has_sensitive_query:
         return value
 
     redacted_query = []
     for key, item in query_items:
-        if key.lower() in _SENSITIVE_KEY_NAMES:
+        if is_sensitive_key(key):
             item = "[REDACTED]"
         redacted_query.append((key, item))
     result = urlunsplit(

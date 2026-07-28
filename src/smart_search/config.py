@@ -20,6 +20,10 @@ class ConfigStorageError(ValueError):
     """Raised when the local configuration cannot be safely persisted."""
 
 
+class ModelRoutesConfigurationError(ValueError):
+    """Raised when a saved SMART_SEARCH_MODEL_ROUTES value is invalid."""
+
+
 @dataclass(frozen=True)
 class ConfigSnapshot:
     """Immutable file-plus-environment configuration view for one runtime boundary."""
@@ -493,13 +497,42 @@ class Config:
         snapshot = self._get_config_snapshot()
         if self._MODEL_ROUTES_KEY not in snapshot.values:
             return []
-        return self._parse_model_routes_value(snapshot.values.get(self._MODEL_ROUTES_KEY))
+        try:
+            return self._parse_model_routes_value(snapshot.values.get(self._MODEL_ROUTES_KEY))
+        except ValueError as exc:
+            raise ModelRoutesConfigurationError(str(exc)) from exc
 
     def get_model_routes(self, *, masked: bool = True) -> list[dict[str, Any]]:
         routes = self.model_routes
         if not masked:
             return routes
         return self._mask_nested_secrets(routes)  # type: ignore[return-value]
+
+    def validate_saved_model_routes(self) -> None:
+        """
+        /*
+         * ================================================================================
+         * 步骤3：校验已保存模型路由
+         * ================================================================================
+         * 目标：让 config list 把损坏的本地路由文件识别为配置错误。
+         * 数据源：config.json 中未合并环境变量的 SMART_SEARCH_MODEL_ROUTES。
+         * 操作：
+         * 1) 路由键不存在时保持 legacy 配置兼容。
+         * 2) 路由键存在时复用统一解析器，并保留配置错误分类。
+         * ================================================================================
+        */
+        """
+        logger.info("步骤3开始：校验已保存模型路由")
+        snapshot = self._get_config_snapshot()
+        if self._MODEL_ROUTES_KEY not in snapshot.file_values:
+            logger.info("步骤3结束：未保存模型路由，无需校验")
+            return
+        try:
+            self._parse_model_routes_value(snapshot.file_values[self._MODEL_ROUTES_KEY])
+        except ValueError as exc:
+            logger.info("步骤3结束：已保存模型路由校验失败")
+            raise ModelRoutesConfigurationError(str(exc)) from exc
+        logger.info("步骤3结束：已保存模型路由校验完成")
 
     def set_model_routes(self, routes: object) -> list[dict[str, Any]]:
         """

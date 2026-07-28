@@ -19,7 +19,7 @@ from .capability_service import (
     intent_router_status,
     validate_minimum_profile,
 )
-from .config import ConfigStorageError, config
+from .config import ConfigStorageError, ModelRoutesConfigurationError, config
 from .logger import logger
 from .provider_diagnostics import (
     _test_context7_connection,
@@ -569,6 +569,15 @@ async def doctor() -> dict[str, Any]:
     elif not info.get("config_storage_ok", True):
         info["error_type"] = "config_error"
         info["error"] = info.get("config_storage_error") or "配置存储不可用。请设置 SMART_SEARCH_CONFIG_DIR 指向可写且受保护的配置目录。"
+    elif info.get("SMART_SEARCH_MODEL_ROUTES") == "<invalid SMART_SEARCH_MODEL_ROUTES>":
+        # 4.2 已保存路由损坏属于本地配置问题，不能误报为命令参数错误。
+        route_errors = [
+            error
+            for error in info.get("config_parameter_errors", [])
+            if "SMART_SEARCH_MODEL_ROUTES" in error
+        ]
+        info["error"] = "; ".join(route_errors) or "Invalid SMART_SEARCH_MODEL_ROUTES."
+        info["error_type"] = "config_error"
     elif info.get("config_parameter_errors"):
         info["error"] = "; ".join(info["config_parameter_errors"])
         info["error_type"] = "parameter_error"
@@ -629,7 +638,7 @@ def _model_routes_result(action: str) -> dict[str, Any]:
             "ok": False,
             "action": action,
             "error_type": "config_error",
-            "error": str(exc),
+            "error": sanitize_data(str(exc)),
             "routes": [],
             "model_routes": [],
             "route_count": 0,
@@ -739,6 +748,16 @@ def model_add(
         }
         logger.info("步骤2结束：模型路由添加失败，id=%s", route_id)
         return result
+    except ModelRoutesConfigurationError as exc:
+        result = {
+            "ok": False,
+            "action": "add",
+            "error_type": "config_error",
+            "error": sanitize_data(str(exc)),
+            "config_file": str(config.config_file),
+        }
+        logger.info("步骤2结束：已保存模型路由无效，id=%s", route_id)
+        return result
     except ValueError as exc:
         result = {
             "ok": False,
@@ -781,6 +800,16 @@ def model_remove(route_id: str) -> dict[str, Any]:
         }
         logger.info("步骤3结束：模型路由删除失败，id=%s", route_id)
         return result
+    except ModelRoutesConfigurationError as exc:
+        result = {
+            "ok": False,
+            "action": "remove",
+            "error_type": "config_error",
+            "error": sanitize_data(str(exc)),
+            "config_file": str(config.config_file),
+        }
+        logger.info("步骤3结束：已保存模型路由无效，id=%s", route_id)
+        return result
     except ValueError as exc:
         result = {
             "ok": False,
@@ -799,14 +828,44 @@ def config_path() -> dict[str, Any]:
     return config.config_path_info()
 
 def config_list(show_secrets: bool = False) -> dict[str, Any]:
+    """
+    /*
+     * ==============================================================================
+     * 步骤4：读取已保存配置
+     * ==============================================================================
+     * 目标：让 config list 对损坏模型路由返回 config_error 而不是伪成功占位值。
+     * 数据源：配置目录状态和 config.json 中的已保存配置。
+     * 操作：
+     * 1) 先检查配置目录是否可用。
+     * 2) 校验原始保存路由，再返回脱敏后的配置值。
+     * ==============================================================================
+    */
+    """
+    logger.info("步骤4开始：读取已保存配置")
     path_info = config.config_path_info()
     if not path_info.get("ok"):
-        return {**path_info, "values": {}}
-    return {
+        result = {**path_info, "values": {}}
+        logger.info("步骤4结束：配置目录不可用")
+        return result
+    try:
+        config.validate_saved_model_routes()
+    except ModelRoutesConfigurationError as exc:
+        result = {
+            "ok": False,
+            "error_type": "config_error",
+            "error": sanitize_data(str(exc)),
+            "config_file": path_info["config_file"],
+            "values": {},
+        }
+        logger.info("步骤4结束：已保存模型路由无效")
+        return result
+    result = {
         "ok": True,
         "config_file": path_info["config_file"],
         "values": config.get_saved_config(masked=not show_secrets),
     }
+    logger.info("步骤4结束：已保存配置读取完成")
+    return result
 
 def config_set(key: str, value: str) -> dict[str, Any]:
     try:
