@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 import pytest
@@ -195,3 +196,160 @@ async def test_research_without_explicit_evidence_dir_does_not_persist_artifacts
     assert result["evidence_items"][0]["content"] == "known URL body"
     assert not default_root.exists()
     logger.info("默认 artifact 边界测试完成")
+
+
+@pytest.mark.asyncio
+async def test_research_known_urls_limit_concurrency_and_preserve_order(monkeypatch, tmp_path):
+    """
+    /*
+     * ==============================================================================
+     * 步骤6：校验已知 URL 的受控并发和稳定归并
+     * ==============================================================================
+     * 目标：多个独立 URL 同时读取时不超过固定上限，结果仍按输入顺序输出。
+     * 数据源：五个已知 URL、带不同时延的 fake fetch provider 和 artifact 目录。
+     * 操作：
+     * 1) 统计同时运行的 fetch 数量。
+     * 2) 验证 evidence、stage result 和 artifact 名称仍保持计划顺序。
+     * ==============================================================================
+     */
+    """
+    logger.info("开始测试已知 URL 受控并发和稳定归并")
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-secret")
+    monkeypatch.setenv("JINA_API_KEY", "jina-secret")
+    urls = [f"https://concurrency.example.com/page-{index}" for index in range(1, 6)]
+    active = 0
+    max_active = 0
+
+    async def fake_fetch(url, fallback="auto", preferred_order=None):
+        nonlocal active, max_active
+
+        # 6.1 用交错时延强制任务完成顺序不同于输入顺序。
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.02 if url.endswith("page-1") else 0.005)
+        active -= 1
+        return (
+            {"ok": True, "url": url, "provider": "jina", "content": f"body for {url}"},
+            [service_support._attempt("web_fetch", "jina", "ok", time.time(), result_count=1)],
+        )
+
+    monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)
+
+    result = await service.research(" ".join(urls), evidence_dir=str(tmp_path), fallback="off")
+
+    assert 1 < max_active <= 4
+    assert [item["url"] for item in result["evidence_items"]] == urls
+    known_stage_urls = [item["url"] for item in result["stage_results"] if item["stage"] == "known_url_fetch"]
+    assert known_stage_urls == urls
+    assert [path.name for path in sorted(tmp_path.glob("*-fetch-jina.md"))] == [
+        f"{index:02d}-fetch-jina.md" for index in range(1, 6)
+    ]
+    logger.info("已知 URL 受控并发和稳定归并测试完成")
+
+
+@pytest.mark.asyncio
+async def test_research_candidates_deduplicate_normalized_urls_without_losing_query(monkeypatch, tmp_path):
+    """
+    /*
+     * ==============================================================================
+     * 步骤7：校验 candidate 规范化去重和 query 保留
+     * ==============================================================================
+     * 目标：等价 candidate 只发起一次 fetch，业务 query 参数继续区分页面。
+     * 数据源：带默认端口/fragment 的 URL、等价 URL 和带 query 的同路径 URL。
+     * 操作：
+     * 1) mock discovery 返回三个 candidate。
+     * 2) 验证仅首个等价 URL 与 query 变体进入 fetch 和 citation。
+     * ==============================================================================
+     */
+    """
+    logger.info("开始测试 candidate 规范化去重和 query 保留")
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-secret")
+    monkeypatch.setenv("JINA_API_KEY", "jina-secret")
+    first_url = "https://EXAMPLE.com:443/path/#fragment"
+    duplicate_url = "https://example.com/path"
+    query_url = "https://example.com/path?locale=zh"
+    fetch_calls: list[str] = []
+
+    async def fake_web_search(query, count=5, providers="auto", fallback="auto"):
+        return (
+            [
+                {"url": first_url, "title": "First", "provider": "tavily"},
+                {"url": duplicate_url, "title": "Duplicate", "provider": "tavily"},
+                {"url": query_url, "title": "Query", "provider": "tavily"},
+            ],
+            [service_support._attempt("web_search", "tavily", "ok", time.time(), result_count=3)],
+        )
+
+    async def fake_fetch(url, fallback="auto", preferred_order=None):
+        fetch_calls.append(url)
+        # 7.1 用交错时延验证 candidate 也按计划索引归并。
+        await asyncio.sleep(0.02 if url == first_url else 0.005)
+        return (
+            {"ok": True, "url": url, "provider": "jina", "content": f"body for {url}"},
+            [service_support._attempt("web_fetch", "jina", "ok", time.time(), result_count=1)],
+        )
+
+    monkeypatch.setattr(research_service, "_run_web_search_fallback", fake_web_search)
+    monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)
+
+    result = await service.research("today AI news", evidence_dir=str(tmp_path), fallback="auto")
+
+    assert fetch_calls == [first_url, query_url]
+    assert [item["url"] for item in result["evidence_items"]] == [first_url, query_url]
+    assert [item["url"] for item in result["citations"]] == [first_url, query_url]
+    candidate_stage_urls = [item["url"] for item in result["stage_results"] if item["stage"] == "candidate_fetch"]
+    assert candidate_stage_urls == [first_url, query_url]
+    assert [path.name for path in sorted(tmp_path.glob("fetch-*-jina.md"))] == [
+        "fetch-01-jina.md",
+        "fetch-02-jina.md",
+    ]
+    logger.info("candidate 规范化去重和 query 保留测试完成")
+
+
+@pytest.mark.asyncio
+async def test_research_cancelled_fetch_does_not_cancel_other_known_urls(monkeypatch, tmp_path):
+    """
+    /*
+     * ==============================================================================
+     * 步骤8：校验单条 fetch 取消隔离
+     * ==============================================================================
+     * 目标：一个 URL 的取消只转成该 URL 的失败状态，其他独立 URL 继续产出 evidence。
+     * 数据源：一个主动取消的 URL、其等价变体和一个成功的 fake fetch。
+     * 操作：
+     * 1) 同批调度取消 URL、其等价变体和成功 URL。
+     * 2) 验证成功 URL 保留 evidence，取消 URL 保留 stage error 和 gap。
+     * ==============================================================================
+     */
+    """
+    logger.info("开始测试单条 fetch 取消隔离")
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-secret")
+    monkeypatch.setenv("JINA_API_KEY", "jina-secret")
+    cancelled_url = "https://CANCEL.example.com:443/page/#fragment"
+    cancelled_duplicate_url = "https://cancel.example.com/page"
+    successful_url = "https://success.example.com/page"
+    fetch_calls: list[str] = []
+
+    async def fake_fetch(url, fallback="auto", preferred_order=None):
+        fetch_calls.append(url)
+        if url == cancelled_url:
+            raise asyncio.CancelledError()
+        return (
+            {"ok": True, "url": url, "provider": "jina", "content": "surviving body"},
+            [service_support._attempt("web_fetch", "jina", "ok", time.time(), result_count=1)],
+        )
+
+    monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)
+
+    result = await service.research(
+        f"{cancelled_url} {cancelled_duplicate_url} {successful_url}",
+        evidence_dir=str(tmp_path),
+        fallback="off",
+    )
+
+    assert fetch_calls == [cancelled_url, successful_url]
+    assert [item["url"] for item in result["evidence_items"]] == [successful_url]
+    known_stages = [item for item in result["stage_results"] if item["stage"] == "known_url_fetch"]
+    assert [item["ok"] for item in known_stages] == [False, True]
+    assert known_stages[0]["error_type"] == "cancelled"
+    assert any(gap["url"] == cancelled_url for gap in result["gaps"])
+    logger.info("单条 fetch 取消隔离测试完成")

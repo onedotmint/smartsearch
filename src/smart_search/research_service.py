@@ -1,5 +1,6 @@
 """Offline Deep Research planning and live evidence workflow."""
 
+import asyncio
 import hashlib
 import json
 import os
@@ -25,7 +26,7 @@ from .intent_router import IntentRouteResult, IntentRouter, build_rules_route
 from .logger import logger
 from .provider_search_commands import context7_docs, context7_library, exa_search
 from .provider_vertical_commands import anysearch_search
-from .runtime_cache import allow_synthesis, attach_metrics, observe_command, observe_stage
+from .runtime_cache import allow_synthesis, attach_metrics, normalize_url, observe_command, observe_stage
 from .search_service import _run_web_fetch_fallback, _run_web_search_fallback
 from .security import sanitize_text
 from .service_support import (
@@ -52,6 +53,8 @@ from .service_support import (
     _normalize_source_results,
     _provider_names_from_attempts,
 )
+
+RESEARCH_FETCH_CONCURRENCY = 4
 
 def _research_fetch_order(query: str, url: str = "", capability_status: dict[str, Any] | None = None) -> list[str]:
     providers = _configured_for_capability("web_fetch", capability_status)
@@ -386,14 +389,139 @@ def _evidence_only_synthesis(
     logger.info("evidence-only synthesis 完成: evidence=%s", len(evidence_items))
     return result
 
+def _research_fetch_key(url: str) -> str:
+    """
+    /*
+     * ================================================================================
+     * 步骤1：生成 research URL 去重键
+     * ================================================================================
+     * 目标：让等价公开 URL 在同一次 research 中只进入一个 fetch 批次。
+     * 数据源：已知 URL 或 discovery candidate 的原始 URL。
+     * 操作：
+     * 1) 复用 runtime_cache.normalize_url() 的公开 URL 规则。
+     * 2) 敏感或无法规范化的 URL 保留原始字符串，只做精确去重。
+     * ================================================================================
+     */
+    """
+    # 1.1 不把敏感 URL 写入新的规范化键，沿用原始字符串边界。
+    normalized = normalize_url(url)
+    return normalized or url
+
+
+def _prepare_research_fetch_entries(
+    entries: list[dict[str, Any]],
+    *,
+    seen_keys: set[str],
+) -> list[dict[str, Any]]:
+    """
+    /*
+     * ================================================================================
+     * 步骤2：按 URL 去重构建 research fetch 批次
+     * ================================================================================
+     * 目标：保留第一个原始 URL，同时阻止等价变体重复消耗 fetch 预算。
+     * 数据源：带计划索引、URL 和 provider 顺序的 fetch 条目。
+     * 操作：
+     * 1) 用规范化键判断是否已经由更早条目拥有。
+     * 2) 复制首个条目并保留其原始索引，供后续稳定归并。
+     * ================================================================================
+     */
+    """
+    logger.info("开始构建 research fetch 批次: input=%s", len(entries))
+    prepared: list[dict[str, Any]] = []
+    for entry in entries:
+        # 2.1 读取并清理展示/请求使用的原始 URL。
+        url = str(entry.get("url") or "").strip()
+        if not url:
+            continue
+
+        # 2.2 首个规范化键拥有本次 fetch；失败后也不允许变体重试。
+        dedupe_key = _research_fetch_key(url)
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        prepared.append({**entry, "url": url, "dedupe_key": dedupe_key})
+
+    logger.info("research fetch 批次构建完成: scheduled=%s", len(prepared))
+    return prepared
+
+
+async def _run_research_fetch_batch(
+    entries: list[dict[str, Any]],
+    *,
+    fallback: str,
+    stage: str,
+) -> list[dict[str, Any]]:
+    """
+    /*
+     * ================================================================================
+     * 步骤3：受控并发执行 research fetch 批次
+     * ================================================================================
+     * 目标：并发读取独立 URL，同时保持单个 URL 内的 capability fallback 串行。
+     * 数据源：已去重的 fetch 条目、fallback 模式和当前 research stage。
+     * 操作：
+     * 1) 用固定 semaphore 限制同时进入 web_fetch 的 URL 数量。
+     * 2) 用 gather(return_exceptions=True) 隔离单条异常或取消。
+     * 3) 按输入条目顺序返回结果，供调用方稳定合并 evidence 和 artifact。
+     * ================================================================================
+     */
+    """
+    logger.info("开始并发抓取 research URL: stage=%s count=%s", stage, len(entries))
+    if not entries:
+        logger.info("research URL 并发抓取完成: stage=%s success=0", stage)
+        return []
+
+    semaphore = asyncio.Semaphore(RESEARCH_FETCH_CONCURRENCY)
+
+    async def fetch_entry(entry: dict[str, Any]) -> dict[str, Any]:
+        # 3.1 每个 URL 独占一个限流槽位，内部 fallback 仍由共享 executor 串行处理。
+        async with semaphore:
+            with observe_stage(stage):
+                fetch_result, attempts = await _run_web_fetch_fallback(
+                    entry["url"],
+                    fallback=fallback,
+                    preferred_order=entry["preferred_order"],
+                )
+        error_type = "budget_exhausted" if any(attempt.get("status") == "budget_exhausted" for attempt in attempts) else ""
+        return {
+            "entry": entry,
+            "fetch_result": fetch_result,
+            "attempts": attempts,
+            "error_type": error_type,
+        }
+
+    # 3.2 gather 保留输入顺序；异常结果在归并时转成该 URL 的失败状态。
+    outcomes = await asyncio.gather(*(fetch_entry(entry) for entry in entries), return_exceptions=True)
+    results: list[dict[str, Any]] = []
+    for entry, outcome in zip(entries, outcomes):
+        if isinstance(outcome, BaseException):
+            error_type = "cancelled" if isinstance(outcome, asyncio.CancelledError) else type(outcome).__name__.lower()
+            results.append(
+                {
+                    "entry": entry,
+                    "fetch_result": None,
+                    "attempts": [],
+                    "error_type": error_type,
+                }
+            )
+        else:
+            results.append(outcome)
+
+    success_count = sum(1 for result in results if result["fetch_result"])
+    logger.info("research URL 并发抓取完成: stage=%s success=%s", stage, success_count)
+    return results
+
+
 def _select_candidate_urls(sources: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
     seen: set[str] = set()
     for source in sources:
         url = (source.get("url") or "").strip()
-        if not url or url.startswith("context7:") or url in seen:
+        if not url or url.startswith("context7:"):
             continue
-        seen.add(url)
+        dedupe_key = _research_fetch_key(url)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
         selected.append(source)
         if len(selected) >= limit:
             break
@@ -873,26 +1001,64 @@ async def research(
 
     persist_artifact("00-plan.json", plan)
 
+    """
+    /*
+     * ================================================================================
+     * 步骤2：并发抓取已知 URL
+     * ================================================================================
+     * 目标：缩短多个用户指定 URL 的总读取时间，保持首个 URL 的展示与 artifact 索引。
+     * 数据源：query 中抽取的 URL、web_fetch provider 顺序和 research fallback 模式。
+     * 操作：
+     * 1) 先规范化去重，首次成功或失败都拥有该 URL 键。
+     * 2) 受控并发执行，并按原始 URL 索引归并结果、attempt 和 gap。
+     * ================================================================================
+     */
+    """
     urls = _extract_urls(question)
     fetch_order = routes["capabilities"]["web_fetch"]["providers"]
-    if urls:
-        for index, url in enumerate(urls, 1):
-            with observe_stage("research.known_url_fetch"):
-                fetch_result, attempts = await _run_web_fetch_fallback(url, fallback=fallback_mode, preferred_order=fetch_order)
-            provider_attempts.extend(attempts)
-            stage_results.append({"stage": "known_url_fetch", "url": url, "ok": bool(fetch_result), "provider_attempts": attempts})
-            if fetch_result:
-                item = _research_evidence_item(
-                    url=fetch_result["url"],
-                    provider=fetch_result["provider"],
-                    title=fetch_result["url"],
-                    content=fetch_result["content"],
-                    subquestion_id="sq1",
-                )
-                evidence_items.append(item)
-                persist_artifact(f"{index:02d}-fetch-{fetch_result['provider']}.md", fetch_result["content"])
-            else:
-                gaps.append({"subquestion_id": "sq1", "reason": f"failed to fetch known URL: {url}", "url": url})
+    seen_fetch_keys: set[str] = set()
+    logger.info("开始并发抓取已知 URL: input=%s", len(urls))
+    known_entries = _prepare_research_fetch_entries(
+        [
+            {"index": index, "url": url, "preferred_order": fetch_order}
+            for index, url in enumerate(urls, 1)
+        ],
+        seen_keys=seen_fetch_keys,
+    )
+    known_results = await _run_research_fetch_batch(
+        known_entries,
+        fallback=fallback_mode,
+        stage="research.known_url_fetch",
+    )
+    for batch_result in known_results:
+        # 2.1 按原始计划顺序写回 result，避免网络完成顺序改变公开输出。
+        entry = batch_result["entry"]
+        url = entry["url"]
+        fetch_result = batch_result["fetch_result"]
+        attempts = batch_result["attempts"]
+        stage_result = {
+            "stage": "known_url_fetch",
+            "url": url,
+            "ok": bool(fetch_result),
+            "provider_attempts": attempts,
+        }
+        if batch_result["error_type"]:
+            stage_result["error_type"] = batch_result["error_type"]
+        provider_attempts.extend(attempts)
+        stage_results.append(stage_result)
+        if fetch_result:
+            item = _research_evidence_item(
+                url=fetch_result["url"],
+                provider=fetch_result["provider"],
+                title=fetch_result["url"],
+                content=fetch_result["content"],
+                subquestion_id="sq1",
+            )
+            evidence_items.append(item)
+            persist_artifact(f"{entry['index']:02d}-fetch-{fetch_result['provider']}.md", fetch_result["content"])
+        else:
+            gaps.append({"subquestion_id": "sq1", "reason": f"failed to fetch known URL: {url}", "url": url})
+    logger.info("已知 URL 并发抓取完成: scheduled=%s", len(known_entries))
 
     signals = routes["signals"]
     if signals["docs_api_intent"]:
@@ -957,21 +1123,63 @@ async def research(
             discovery_sources.extend(sources)
             stage_results.append({"stage": "vertical_discovery", "provider": "anysearch", "ok": True, "result_count": len(sources)})
 
+    """
+    /*
+     * ================================================================================
+     * 步骤5：并发抓取 discovery candidate URL
+     * ================================================================================
+     * 目标：并发验证独立候选页，避免重复读取已知 URL 或等价 candidate。
+     * 数据源：discovery_sources、已有 evidence、research provider 路由和 fallback 模式。
+     * 操作：
+     * 1) 继承已知 URL 的去重键，再保留每个 candidate 的首个原始索引。
+     * 2) 并发读取后按 candidate 顺序写入 evidence、citation 输入、gap 和 artifact。
+     * ================================================================================
+     */
+    """
     candidates = _select_candidate_urls(discovery_sources, limit=6)
-    fetched_urls = {item.get("url") for item in evidence_items}
+    for item in evidence_items:
+        # 5.1 既有 evidence 同样阻止等价 candidate 再次进入 fetch。
+        evidence_url = str(item.get("url") or "").strip()
+        if evidence_url:
+            seen_fetch_keys.add(_research_fetch_key(evidence_url))
+    logger.info("开始并发抓取 candidate URL: input=%s", len(candidates))
+    candidate_entries = _prepare_research_fetch_entries(
+        [
+            {
+                "index": index,
+                "url": candidate.get("url", ""),
+                "candidate": candidate,
+                "preferred_order": _research_fetch_order(question, candidate.get("url", "")),
+            }
+            for index, candidate in enumerate(candidates, 1)
+        ],
+        seen_keys=seen_fetch_keys,
+    )
+    candidate_results = await _run_research_fetch_batch(
+        candidate_entries,
+        fallback=fallback_mode,
+        stage="research.candidate_fetch",
+    )
     no_new_evidence = True
-    for index, candidate in enumerate(candidates, 1):
-        url = candidate.get("url", "")
-        if not url or url in fetched_urls:
-            continue
-        order = _research_fetch_order(question, url)
-        with observe_stage("research.candidate_fetch"):
-            fetch_result, attempts = await _run_web_fetch_fallback(url, fallback=fallback_mode, preferred_order=order)
+    for batch_result in candidate_results:
+        # 5.2 使用原始 candidate 索引归并，防止异步完成顺序污染公开结果。
+        entry = batch_result["entry"]
+        candidate = entry["candidate"]
+        url = entry["url"]
+        fetch_result = batch_result["fetch_result"]
+        attempts = batch_result["attempts"]
+        stage_result = {
+            "stage": "candidate_fetch",
+            "url": url,
+            "ok": bool(fetch_result),
+            "provider_attempts": attempts,
+        }
+        if batch_result["error_type"]:
+            stage_result["error_type"] = batch_result["error_type"]
         provider_attempts.extend(attempts)
-        stage_results.append({"stage": "candidate_fetch", "url": url, "ok": bool(fetch_result), "provider_attempts": attempts})
+        stage_results.append(stage_result)
         if fetch_result:
             no_new_evidence = False
-            fetched_urls.add(url)
             content = fetch_result.get("content", "")
             item = _research_evidence_item(
                 url=fetch_result["url"],
@@ -981,9 +1189,12 @@ async def research(
                 subquestion_id=candidate.get("subquestion_id", ""),
             )
             evidence_items.append(item)
-            persist_artifact(f"fetch-{index:02d}-{fetch_result['provider']}.md", content)
+            persist_artifact(f"fetch-{entry['index']:02d}-{fetch_result['provider']}.md", content)
+        elif batch_result["error_type"]:
+            gaps.append({"subquestion_id": "", "reason": f"candidate fetch {batch_result['error_type']}: {url}", "url": url})
         elif fallback_mode == "off":
             gaps.append({"subquestion_id": "", "reason": f"fetch failed with fallback off: {url}", "url": url})
+    logger.info("candidate URL 并发抓取完成: scheduled=%s", len(candidate_entries))
 
     if not evidence_items:
         gaps.append({"subquestion_id": "", "reason": "no fetched/read evidence items were produced"})
