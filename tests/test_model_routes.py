@@ -5,7 +5,7 @@ import pytest
 from smart_search import cli, operations_service, service, service_support
 from smart_search import search_service
 from smart_search.cli_contract import build_json_result
-from smart_search.cli_render import _format_doctor_markdown, _format_model_markdown
+from smart_search.cli_render import _format_config_markdown, _format_doctor_markdown, _format_model_markdown
 from smart_search.logger import logger
 from smart_search.utils import PromptConfigurationError
 
@@ -401,6 +401,96 @@ async def test_saved_model_route_configuration_errors_are_not_parameter_errors(m
     logger.info("步骤4结束：保存路由错误分类验证完成")
 
 
+def test_config_list_rejects_invalid_effective_model_routes_without_changing_saved_file(monkeypatch, tmp_path):
+    """
+    /*
+     * ==============================================================================
+     * 步骤5：验证环境路由错误分类
+     * ==============================================================================
+     * 目标：让 config list 校验环境覆盖后的生效模型路由，而不是只校验文件值。
+     * 数据源：有效的 config.json 路由和损坏的 SMART_SEARCH_MODEL_ROUTES 环境变量。
+     * 操作：
+     * 1) 保留原始保存文件并注入非 JSON 环境覆盖。
+     * 2) 验证 config list 返回 config_error 和空 values。
+     * ==============================================================================
+    */
+    """
+    logger.info("步骤5开始：验证环境路由错误分类")
+    config_file = _reset_model_config(monkeypatch, tmp_path)
+    config_file.write_text(
+        json.dumps(
+            {
+                "SMART_SEARCH_MODEL_ROUTES": [
+                    {
+                        "id": "saved-primary",
+                        "provider": "openai-compatible",
+                        "api_url": "https://saved.example/v1",
+                        "api_key": "saved-secret",
+                        "model": "saved-model",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = config_file.read_text(encoding="utf-8")
+    monkeypatch.setenv("SMART_SEARCH_MODEL_ROUTES", "not-json")
+
+    # 5.1 环境覆盖优先于文件读取，但不能让 config list 伪装成成功。
+    result = service.config_list()
+    assert result["ok"] is False
+    assert result["error_type"] == "config_error"
+    assert result["values"] == {}
+    assert config_file.read_text(encoding="utf-8") == before
+    logger.info("步骤5结束：环境路由错误分类验证完成")
+
+
+def test_config_list_validates_saved_model_routes_before_environment_override(monkeypatch, tmp_path):
+    """
+    /*
+     * ==============================================================================
+     * 步骤6：验证保存路由优先校验
+     * ==============================================================================
+     * 目标：避免有效环境覆盖掩盖已保存 SMART_SEARCH_MODEL_ROUTES 的损坏状态。
+     * 数据源：损坏的 config.json 路由和有效的环境路由数组。
+     * 操作：
+     * 1) 注入有效环境覆盖，但保留损坏的保存路由。
+     * 2) 验证 config list 仍返回 config_error 和空 values。
+     * ==============================================================================
+    */
+    """
+    logger.info("步骤6开始：验证保存路由优先校验")
+    config_file = _reset_model_config(monkeypatch, tmp_path)
+    config_file.write_text(
+        json.dumps({"SMART_SEARCH_MODEL_ROUTES": {"api_key": "saved-invalid-secret"}}),
+        encoding="utf-8",
+    )
+    before = config_file.read_text(encoding="utf-8")
+    monkeypatch.setenv(
+        "SMART_SEARCH_MODEL_ROUTES",
+        json.dumps(
+            [
+                {
+                    "id": "environment-primary",
+                    "provider": "openai-compatible",
+                    "api_url": "https://environment.example/v1",
+                    "api_key": "environment-secret",
+                    "model": "environment-model",
+                }
+            ]
+        ),
+    )
+
+    # 6.1 保存值损坏时，环境覆盖不能让 config list 绕过持久化配置诊断。
+    result = service.config_list()
+    assert result["ok"] is False
+    assert result["error_type"] == "config_error"
+    assert result["values"] == {}
+    assert "saved-invalid-secret" not in result["error"]
+    assert config_file.read_text(encoding="utf-8") == before
+    logger.info("步骤6结束：保存路由优先校验验证完成")
+
+
 def test_model_route_command_parameter_errors_remain_parameter_errors(monkeypatch, tmp_path):
     """
     /*
@@ -693,8 +783,14 @@ def test_model_route_inspection_redacts_url_credentials(monkeypatch, tmp_path):
     """
     logger.info("步骤1开始：验证模型路由展示脱敏")
     config_file = _reset_model_config(monkeypatch, tmp_path)
-    primary_url = "https://primary-user:primary-password@primary.example/v1?api-key=primary-query-secret&region=cn"
-    backup_url = "https://backup-user:backup-password@backup.example/v1?token=backup-query-secret&region=us"
+    primary_url = (
+        "https://primary-user:primary-password@primary.example/v1?region=cn;api-key=primary-query-secret"
+        "#access_token=primary-fragment-secret"
+    )
+    backup_url = (
+        "https://backup-user:backup-password@backup.example/v1?region=us;token=backup-query-secret"
+        "#access_token=backup-fragment-secret"
+    )
 
     # 1.1 创建两条路由，覆盖各个模型管理结果的 route 输出。
     added = service.model_add("primary", "openai-compatible", primary_url, "primary-api-secret", "primary-model")
@@ -705,7 +801,9 @@ def test_model_route_inspection_redacts_url_credentials(monkeypatch, tmp_path):
     config_result = service.config_list()
 
     # 1.2 断言所有展示和 Markdown 渲染都不包含 URL 或 API key 凭据。
-    rendered = _format_model_markdown(listed)
+    model_markdown = _format_model_markdown(listed)
+    current_markdown = _format_model_markdown(current)
+    config_markdown = _format_config_markdown(config_result)
     serialized = json.dumps(
         {
             "added": added,
@@ -713,7 +811,9 @@ def test_model_route_inspection_redacts_url_credentials(monkeypatch, tmp_path):
             "current": current,
             "removed": removed,
             "config": config_result,
-            "markdown": rendered,
+            "model_markdown": model_markdown,
+            "current_markdown": current_markdown,
+            "config_markdown": config_markdown,
         },
         ensure_ascii=False,
     )
@@ -721,10 +821,12 @@ def test_model_route_inspection_redacts_url_credentials(monkeypatch, tmp_path):
         "primary-user",
         "primary-password",
         "primary-query-secret",
+        "primary-fragment-secret",
         "primary-api-secret",
         "backup-user",
         "backup-password",
         "backup-query-secret",
+        "backup-fragment-secret",
         "backup-api-secret",
     ):
         assert secret not in serialized
@@ -747,6 +849,63 @@ def test_model_route_inspection_redacts_url_credentials(monkeypatch, tmp_path):
     logger.info("步骤1结束：模型路由展示脱敏验证完成")
 
 
+def test_config_list_show_secrets_keeps_model_route_credentials_redacted(monkeypatch, tmp_path):
+    """
+    /*
+     * ==============================================================================
+     * 步骤3：验证 show_secrets 路由边界
+     * ==============================================================================
+     * 目标：保留非路由配置的显式读取能力，同时不让模型路由成为凭据展示通道。
+     * 数据源：带 userinfo、分号查询参数和 fragment token 的已保存模型路由。
+     * 操作：
+     * 1) 以 show_secrets=True 读取服务层 config list 结果。
+     * 2) 验证路由字段脱敏、非路由密钥保持原值且文件未被修改。
+     * ==============================================================================
+    */
+    """
+    logger.info("步骤3开始：验证 show_secrets 路由边界")
+    config_file = _reset_model_config(monkeypatch, tmp_path)
+    route_url = (
+        "https://route-user:route-password@route.example/v1?region=cn;api-key=route-query-secret"
+        "#access_token=route-fragment-secret"
+    )
+    config_file.write_text(
+        json.dumps(
+            {
+                "XAI_API_KEY": "non-route-secret",
+                "SMART_SEARCH_MODEL_ROUTES": [
+                    {
+                        "id": "primary",
+                        "provider": "openai-compatible",
+                        "api_url": route_url,
+                        "api_key": "route-api-secret",
+                        "model": "route-model",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = config_file.read_text(encoding="utf-8")
+
+    # 3.1 service 结果即使供内部 setup 使用，也不能携带模型路由凭据。
+    result = service.config_list(show_secrets=True)
+    serialized = json.dumps(result, ensure_ascii=False)
+
+    assert result["ok"] is True
+    assert result["values"]["XAI_API_KEY"] == "non-route-secret"
+    for secret in (
+        "route-user",
+        "route-password",
+        "route-query-secret",
+        "route-fragment-secret",
+        "route-api-secret",
+    ):
+        assert secret not in serialized
+    assert config_file.read_text(encoding="utf-8") == before
+    logger.info("步骤3结束：show_secrets 路由边界验证完成")
+
+
 @pytest.mark.asyncio
 async def test_model_route_url_credentials_are_redacted_in_doctor_and_routing_metadata(monkeypatch, tmp_path):
     """
@@ -765,8 +924,14 @@ async def test_model_route_url_credentials_are_redacted_in_doctor_and_routing_me
     logger.info("步骤2开始：验证诊断与路由元数据脱敏")
     _reset_model_config(monkeypatch, tmp_path)
     service_support.reset_runtime_breakers()
-    primary_url = "https://primary-user:primary-password@primary.example/v1?api-key=primary-query-secret&region=cn"
-    backup_url = "https://backup-user:backup-password@backup.example/v1?token=backup-query-secret&region=us"
+    primary_url = (
+        "https://primary-user:primary-password@primary.example/v1?region=cn;api-key=primary-query-secret"
+        "#access_token=primary-fragment-secret"
+    )
+    backup_url = (
+        "https://backup-user:backup-password@backup.example/v1?region=us;token=backup-query-secret"
+        "#access_token=backup-fragment-secret"
+    )
     monkeypatch.setenv(
         "SMART_SEARCH_MODEL_ROUTES",
         json.dumps(
@@ -819,10 +984,12 @@ async def test_model_route_url_credentials_are_redacted_in_doctor_and_routing_me
         "primary-user",
         "primary-password",
         "primary-query-secret",
+        "primary-fragment-secret",
         "primary-api-secret",
         "backup-user",
         "backup-password",
         "backup-query-secret",
+        "backup-fragment-secret",
         "backup-api-secret",
     ):
         assert secret not in serialized

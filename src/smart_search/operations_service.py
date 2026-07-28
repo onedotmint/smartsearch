@@ -837,7 +837,8 @@ def config_list(show_secrets: bool = False) -> dict[str, Any]:
      * 数据源：配置目录状态和 config.json 中的已保存配置。
      * 操作：
      * 1) 先检查配置目录是否可用。
-     * 2) 校验原始保存路由，再返回脱敏后的配置值。
+     * 2) 先校验原始保存路由，再校验环境覆盖后的生效路由。
+     * 3) 两层都有效时返回脱敏后的保存配置值。
      * ==============================================================================
     */
     """
@@ -849,6 +850,7 @@ def config_list(show_secrets: bool = False) -> dict[str, Any]:
         return result
     try:
         config.validate_saved_model_routes()
+        config.validate_effective_model_routes()
     except ModelRoutesConfigurationError as exc:
         result = {
             "ok": False,
@@ -857,12 +859,18 @@ def config_list(show_secrets: bool = False) -> dict[str, Any]:
             "config_file": path_info["config_file"],
             "values": {},
         }
-        logger.info("步骤4结束：已保存模型路由无效")
+        logger.info("步骤4结束：模型路由无效")
         return result
+    values = config.get_saved_config(masked=not show_secrets)
+    if show_secrets:
+        # 4.1 show_secrets 仅服务于非路由配置；路由仍是可展示的脱敏副本。
+        routes = values.get("SMART_SEARCH_MODEL_ROUTES")
+        if isinstance(routes, list):
+            values["SMART_SEARCH_MODEL_ROUTES"] = config._mask_nested_secrets(routes)
     result = {
         "ok": True,
         "config_file": path_info["config_file"],
-        "values": config.get_saved_config(masked=not show_secrets),
+        "values": values,
     }
     logger.info("步骤4结束：已保存配置读取完成")
     return result

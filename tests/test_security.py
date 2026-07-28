@@ -72,3 +72,36 @@ def test_redact_url_credentials_normalizes_sensitive_query_key_separators():
         assert f"{key}=%5BREDACTED%5D" in redacted
     assert "region=cn" in redacted
     logger.info("步骤3结束：查询参数名归一化验证完成")
+
+
+def test_redact_url_credentials_masks_semicolon_query_and_fragment_parameters():
+    """
+    /*
+     * ==============================================================================
+     * 步骤4：验证分号查询参数和 URL fragment 脱敏
+     * ==============================================================================
+     * 目标：堵住 parse_qsl 默认分隔符和 fragment 透传造成的 URL 凭据泄露。
+     * 数据源：含非敏感 region、分号分隔 api-key 和 fragment access_token 的 URL。
+     * 操作：
+     * 1) 直接验证 URL helper 的展示输出。
+     * 2) 验证文本清理复用相同的 URL 规则。
+     * ==============================================================================
+    */
+    """
+    logger.info("步骤4开始：验证分号查询参数和 URL fragment 脱敏")
+    raw_url = (
+        "https://relay.example/v1?region=cn;api-key=semicolon-secret"
+        "#access_token=fragment-secret;state=ready"
+    )
+
+    # 4.1 端点、非敏感查询参数和 fragment state 保持可诊断。
+    redacted = redact_url_credentials(raw_url)
+    assert "semicolon-secret" not in redacted
+    assert "fragment-secret" not in redacted
+    assert "region=cn" in redacted
+    assert "state=ready" in redacted
+    assert "api-key=%5BREDACTED%5D" in redacted
+    assert "access_token=%5BREDACTED%5D" in redacted
+    assert "semicolon-secret" not in sanitize_text(f"request failed: {raw_url}")
+    assert "fragment-secret" not in sanitize_text(f"request failed: {raw_url}")
+    logger.info("步骤4结束：分号查询参数和 URL fragment 脱敏验证完成")

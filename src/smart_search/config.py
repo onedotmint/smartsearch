@@ -21,7 +21,7 @@ class ConfigStorageError(ValueError):
 
 
 class ModelRoutesConfigurationError(ValueError):
-    """Raised when a saved SMART_SEARCH_MODEL_ROUTES value is invalid."""
+    """Raised when a saved or effective SMART_SEARCH_MODEL_ROUTES value is invalid."""
 
 
 @dataclass(frozen=True)
@@ -533,6 +533,32 @@ class Config:
             logger.info("步骤3结束：已保存模型路由校验失败")
             raise ModelRoutesConfigurationError(str(exc)) from exc
         logger.info("步骤3结束：已保存模型路由校验完成")
+
+    def validate_effective_model_routes(self) -> None:
+        """
+        /*
+         * ================================================================================
+         * 步骤4：校验生效模型路由
+         * ================================================================================
+         * 目标：让 config list 把环境覆盖中的损坏路由识别为配置错误。
+         * 数据源：合并 config.json 和环境变量后的 SMART_SEARCH_MODEL_ROUTES。
+         * 操作：
+         * 1) 路由键不存在时保持 legacy 配置兼容。
+         * 2) 路由键存在时复用统一解析器，环境值优先于文件值。
+         * ================================================================================
+        */
+        """
+        logger.info("步骤4开始：校验生效模型路由")
+        snapshot = self._get_config_snapshot()
+        if self._MODEL_ROUTES_KEY not in snapshot.values:
+            logger.info("步骤4结束：未配置生效模型路由，无需校验")
+            return
+        try:
+            self._parse_model_routes_value(snapshot.values[self._MODEL_ROUTES_KEY])
+        except ValueError as exc:
+            logger.info("步骤4结束：生效模型路由校验失败")
+            raise ModelRoutesConfigurationError(str(exc)) from exc
+        logger.info("步骤4结束：生效模型路由校验完成")
 
     def set_model_routes(self, routes: object) -> list[dict[str, Any]]:
         """

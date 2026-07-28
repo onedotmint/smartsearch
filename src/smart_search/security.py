@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 from typing import Any, Iterable
 
 
@@ -23,6 +23,22 @@ _SENSITIVE_KEY_PATTERN = re.compile(
 )
 _BEARER_PATTERN = re.compile(r"(?i)\b(Bearer|Basic)(\s+)([^\s,;\"']+)")
 _URL_PATTERN = re.compile(r"https?://[^\s<>'\"]+")
+_URL_PARAMETER_PATTERN = re.compile(r"(^|[&;?])([^=&;?#]+)(=)([^&;#]*)")
+
+
+def _redact_url_parameters(value: str) -> tuple[str, bool]:
+    """Mask sensitive query-like parameters while preserving their separators."""
+    has_sensitive_parameter = False
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal has_sensitive_parameter
+        separator, raw_key, equals, _ = match.groups()
+        if not is_sensitive_key(unquote_plus(raw_key)):
+            return match.group(0)
+        has_sensitive_parameter = True
+        return f"{separator}{raw_key}{equals}%5BREDACTED%5D"
+
+    return _URL_PARAMETER_PATTERN.sub(replace, value), has_sensitive_parameter
 
 
 def redact_url_credentials(value: str) -> str:
@@ -31,11 +47,11 @@ def redact_url_credentials(value: str) -> str:
      * ================================================================================
      * 步骤1：脱敏 URL 凭据
      * ================================================================================
-     * 目标：保留可识别的服务端点，同时移除 URL userinfo 和敏感查询参数。
+     * 目标：保留可识别的服务端点，同时移除 URL userinfo、查询参数和 fragment 凭据。
      * 数据源：模型路由、诊断消息和结构化输出中的 URL 字符串。
      * 操作：
      * 1) 用统一标记替换 userinfo，保留主机、端口和路径。
-     * 2) 仅替换敏感查询参数值，保留其他查询参数用于诊断。
+     * 2) 仅替换敏感查询和 fragment 参数值，保留其他参数用于诊断。
      * ================================================================================
     */
     """
@@ -50,24 +66,21 @@ def redact_url_credentials(value: str) -> str:
     if has_userinfo:
         redacted_netloc = f"[REDACTED]@{redacted_netloc.rsplit('@', 1)[1]}"
 
-    # 1.2 仅改写敏感查询参数，非敏感参数保留原始形式。
-    query_items = parse_qsl(parsed.query, keep_blank_values=True)
-    has_sensitive_query = any(is_sensitive_key(key) for key, _ in query_items)
-    if not has_userinfo and not has_sensitive_query:
+    # 1.2 支持 & 和 ; 分隔的查询参数，保留非敏感参数的原始形式。
+    redacted_query, has_sensitive_query = _redact_url_parameters(parsed.query)
+
+    # 1.3 fragment 也可能携带 OAuth token，按相同规则保留非敏感片段。
+    redacted_fragment, has_sensitive_fragment = _redact_url_parameters(parsed.fragment)
+    if not has_userinfo and not has_sensitive_query and not has_sensitive_fragment:
         return value
 
-    redacted_query = []
-    for key, item in query_items:
-        if is_sensitive_key(key):
-            item = "[REDACTED]"
-        redacted_query.append((key, item))
     result = urlunsplit(
         (
             parsed.scheme,
             redacted_netloc,
             parsed.path,
-            urlencode(redacted_query) if has_sensitive_query else parsed.query,
-            parsed.fragment,
+            redacted_query,
+            redacted_fragment,
         )
     )
     return result
