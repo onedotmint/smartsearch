@@ -104,7 +104,8 @@ class EvidenceBundle:
      * 数据源：搜索候选、fetch/read 内容、provider attempts 和 gap check。
      * 操作：
      * 1) 候选来源只能进入 discovery_candidates，不得直接生成 citation。
-     * 2) 只有含正文的 fetched evidence 才能生成 verified citation。
+     * 2) 只有同时具备非空 URL、正文和 Provider provenance 的 fetched
+     *    evidence 才能生成 verified citation。
      * 3) 统一保存 sources、gaps、degraded 和 provider attempts，供 flat JSON 适配。
      * ==============================================================================
      */
@@ -152,22 +153,23 @@ class EvidenceBundle:
          * ==============================================================================
          * 步骤5：记录已抓取证据
          * ==============================================================================
-         * 目标：只让真实 fetch/read 正文进入 synthesis 和 citation。
+         * 目标：只让带明确 provenance 的真实 fetch/read 正文进入 synthesis 和 citation。
          * 数据源：web_fetch、Context7 docs 或其他明确的 read 内容。
          * 操作：
-         * 1) 过滤空正文，避免 provider 空结果伪装成证据。
-         * 2) 标记 fetched/verified 并同步 source metadata。
+         * 1) 要求非空 URL、正文与 Provider，不信任调用方 preset verified。
+         * 2) 通过 admission 后由 bundle 标记 fetched/verified，并同步 source metadata。
          * ==============================================================================
          */
         """
         logger.info("开始记录 fetched evidence")
         for item in _copy_items(items):
-            content = str(item.get("content") or item.get("raw_content") or "")
-            if not content.strip():
+            content = EvidenceBundle._item_body(item)
+            if not EvidenceBundle._is_admissible_fetched_evidence(item, content=content):
                 continue
             evidence = dict(item)
             evidence["content"] = content
             evidence["content_len"] = len(content)
+            # Caller-supplied verified is ignored; only the admission predicate grants it.
             evidence["verified"] = True
             evidence["evidence_status"] = "fetched"
             if self._append_unique(self.fetched_evidence, evidence):
@@ -299,19 +301,57 @@ class EvidenceBundle:
             for key in ("id", "provider", "title", "content")
         )
 
+    @staticmethod
+    def _normalized_field(value: Any) -> str:
+        return str(value or "").strip()
+
+    @staticmethod
+    def _item_body(item: Mapping[str, Any]) -> str:
+        content = str(item.get("content") or "")
+        if content.strip():
+            return content
+        return str(item.get("raw_content") or "")
+
+    @staticmethod
+    def _is_admissible_fetched_evidence(
+        item: Mapping[str, Any],
+        *,
+        content: str | None = None,
+        require_verified: bool = False,
+    ) -> bool:
+        """
+        Admit fetched evidence only when URL, body, and Provider provenance are present.
+
+        source_type remains optional. Caller-supplied verified is never treated as authority
+        unless require_verified is used for citation defense-in-depth on already-stored items.
+        """
+        body = EvidenceBundle._item_body(item) if content is None else content
+        if not EvidenceBundle._normalized_field(item.get("url")):
+            return False
+        if not str(body or "").strip():
+            return False
+        if not EvidenceBundle._normalized_field(item.get("provider")):
+            return False
+        if require_verified and not item.get("verified"):
+            return False
+        return True
+
     def _build_citations(self) -> list[dict[str, str]]:
         citations: list[dict[str, str]] = []
         seen: set[str] = set()
         for item in self.fetched_evidence:
-            url = str(item.get("url") or "").strip()
-            if not url or url in seen or not item.get("verified"):
+            # Defense in depth: never emit empty-provider citations even if internal state is malformed.
+            if not EvidenceBundle._is_admissible_fetched_evidence(item, require_verified=True):
+                continue
+            url = EvidenceBundle._normalized_field(item.get("url"))
+            if url in seen:
                 continue
             seen.add(url)
             citations.append(
                 {
                     "url": url,
                     "title": str(item.get("title") or url),
-                    "provider": str(item.get("provider") or ""),
+                    "provider": EvidenceBundle._normalized_field(item.get("provider")),
                 }
             )
         return citations

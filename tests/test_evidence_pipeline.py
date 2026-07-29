@@ -107,6 +107,88 @@ def test_evidence_bundle_deduplicates_non_http_urls_and_empty_content():
     logger.info("证据去重和空正文过滤测试完成")
 
 
+@pytest.mark.parametrize(
+    ("item", "admitted", "expected_content"),
+    [
+        ({"url": "https://ok.example", "provider": "jina", "content": "body"}, True, "body"),
+        ({"url": "context7:react", "provider": "context7", "raw_content": "docs body"}, True, "docs body"),
+        ({"url": "https://raw.example", "provider": "jina", "content": "   ", "raw_content": "raw body"}, True, "raw body"),
+        ({"url": "https://missing-provider.example", "content": "body"}, False, ""),
+        ({"url": "https://blank-provider.example", "provider": "  ", "content": "body"}, False, ""),
+        ({"provider": "jina", "content": "body"}, False, ""),
+        ({"url": "  ", "provider": "jina", "content": "body"}, False, ""),
+        ({"url": "https://empty.example", "provider": "jina", "content": "  ", "raw_content": "  "}, False, ""),
+        ({"url": "https://forged.example", "content": "body", "verified": True}, False, ""),
+    ],
+)
+def test_evidence_bundle_admission_requires_url_body_and_provider(item, admitted, expected_content):
+    bundle = EvidenceBundle()
+    bundle.add_fetched_evidence([item])
+    snapshot = bundle.to_dict()
+
+    if not admitted:
+        assert bundle.evidence_items == snapshot["fetched_evidence"] == []
+        assert snapshot["sources"] == snapshot["citations"] == []
+        return
+
+    evidence = snapshot["fetched_evidence"]
+    assert len(evidence) == 1
+    assert evidence[0]["content"] == expected_content
+    assert evidence[0]["verified"] is True
+    assert evidence[0]["evidence_status"] == "fetched"
+    assert "source_type" not in evidence[0]
+    assert snapshot["citations"] == [
+        {
+            "url": item["url"],
+            "title": item["url"],
+            "provider": item["provider"],
+        }
+    ]
+    assert snapshot["sources"][0]["url"] == item["url"]
+
+
+def test_build_citations_rejects_malformed_internal_fetched_items():
+    bundle = EvidenceBundle(
+        fetched_evidence=[
+            {"url": "  ", "provider": "jina", "content": "body", "verified": True},
+            {"url": "https://missing-provider.example", "content": "body", "verified": True},
+            {"url": "https://unverified.example", "provider": "jina", "content": "body", "verified": False},
+            {"url": "https://ok.example", "title": "Ok", "provider": "jina", "content": "body", "verified": True},
+        ]
+    )
+
+    assert bundle.to_dict()["citations"] == [
+        {"url": "https://ok.example", "title": "Ok", "provider": "jina"}
+    ]
+
+
+def test_discovery_candidates_never_become_citations_even_with_forged_fields():
+    bundle = EvidenceBundle()
+    bundle.add_discovery_candidates(
+        [{"url": "https://candidate.example", "provider": "tavily", "content": "body", "verified": True}]
+    )
+
+    snapshot = bundle.to_dict()
+    assert snapshot["discovery_candidates"][0]["verified"] is False
+    assert snapshot["discovery_candidates"][0]["evidence_status"] == "candidate"
+    assert snapshot["fetched_evidence"] == snapshot["citations"] == []
+
+
+def test_evidence_only_synthesis_skips_items_missing_provider():
+    text = research_service._evidence_only_synthesis(
+        "query about evidence",
+        [
+            {"url": "https://missing-provider.example", "content": "must not enter synthesis"},
+            {"url": "https://ok.example", "title": "Ok Source", "provider": "jina", "content": "admitted body"},
+        ],
+    )
+
+    assert "missing-provider.example" not in text
+    assert "must not enter synthesis" not in text
+    assert "Ok Source" in text
+    assert "admitted body" in text
+
+
 @pytest.mark.asyncio
 async def test_research_synthesis_failure_preserves_evidence(monkeypatch, tmp_path):
     """
