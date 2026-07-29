@@ -323,7 +323,11 @@ def test_local_trellis_contracts_keep_current_ownership_boundaries():
     assert "@konbakuyomu/smart-search" not in current_specs
     assert provider_contract.index("Context7 first") < provider_contract.index("Exa only after")
     assert ".trellis/spec/cli/" not in local_architecture
-    assert "inject-workflow-state.js" not in workflow
+    # Generic Trellis documentation may name the OpenCode plugin, but this
+    # repository owns a Python injector and must not vendor or register a JS hook.
+    assert "inject-workflow-state.py" in workflow
+    assert ".codex/hooks/inject-workflow-state.js" not in workflow
+    assert "hooks/inject-workflow-state.js" not in workflow
     assert "session_auto_commit: false" in config
 
 
