@@ -859,9 +859,9 @@ def _format_markdown(command: str, data: dict[str, Any]) -> str:
         return _format_route_markdown(data)
     if command == "route-calibrate":
         return _format_route_calibrate_markdown(data)
-    if command == "research":
+    if command in {"research", "research-run"}:
         lines = [
-            "# Research Report",
+            "# Research Report" if command == "research" else "# Research Run Report",
             "",
             f"**Question:** {data.get('question', '')}",
             f"**Status:** {_status_label(data.get('ok'))}",
@@ -869,6 +869,8 @@ def _format_markdown(command: str, data: dict[str, Any]) -> str:
             f"**Evidence dir:** `{data.get('evidence_dir', '')}`",
             f"**Fallback used:** {bool(data.get('fallback_used'))}",
             f"**Degraded:** {bool(data.get('degraded'))}",
+            f"**Response mode:** {data.get('response_mode', 'synthesized' if command == 'research' else 'evidence')}",
+            f"**Synthesis enabled:** {bool(data.get('synthesis_enabled', command == 'research'))}",
             "",
             "## Answer",
             data.get("final_answer") or data.get("content") or "",
@@ -891,6 +893,50 @@ def _format_markdown(command: str, data: dict[str, Any]) -> str:
         return "\n".join(lines).strip() + "\n"
     if command == "doctor":
         return _format_doctor_markdown(data)
+    if command == "doctor-status":
+        lines = [
+            "# Smart Search Doctor Status",
+            "",
+            f"Overall: {_status_label(data.get('ok'))}",
+            f"Local only: {_yes_no(data.get('local_only', True))}",
+            f"Network behavior: `{data.get('network_behavior', 'no_provider_requests_or_probes')}`",
+            f"Config file: `{data.get('config_file', '')}`",
+            f"Config status: {data.get('config_status', '-')}",
+            f"Minimum profile: {_status_label(data.get('minimum_profile_ok'))} (`{data.get('minimum_profile', '')}`)",
+            f"Core evidence ready: {_status_label(data.get('core_evidence_ready'))}",
+        ]
+        missing = data.get("minimum_profile_missing") or []
+        if missing:
+            lines.append(f"Missing: `{', '.join(str(item) for item in missing)}`")
+        evidence_path = data.get("core_evidence_path") or {}
+        if evidence_path:
+            lines.extend(["", "## Core Evidence Path"])
+            for name, status in evidence_path.items():
+                if isinstance(status, dict):
+                    providers = ", ".join(status.get("providers") or []) or "-"
+                    lines.append(f"- {name}: {_status_label(status.get('ready'))} ({providers})")
+        return "\n".join(lines).strip() + "\n"
+    if command == "provider-probe":
+        lines = [
+            "# Provider Probe",
+            "",
+            f"Provider: `{data.get('provider', '')}`",
+            f"Status: {_status_label(data.get('ok'))} (`{data.get('status', '')}`)",
+            f"Configured: {_yes_no(data.get('configured'))}",
+            f"Enabled: {_yes_no(data.get('enabled'))}",
+            f"Eligible: {_yes_no(data.get('eligible'))}",
+            f"Network attempted: {_yes_no(data.get('network_attempted'))}",
+            f"Probe: `{data.get('probe_operation', '')}` / `{data.get('probe_capability', '')}`",
+            f"Message: {data.get('message', data.get('error', ''))}",
+        ]
+        routes = data.get("routes") or []
+        if routes:
+            lines.extend(["", "## Routes"])
+            for route in routes:
+                lines.append(
+                    f"- `{route.get('route_id', '')}`: {route.get('status', '')} ({route.get('response_time_ms', 0)} ms)"
+                )
+        return "\n".join(lines).strip() + "\n"
     if command == "diagnose":
         return _format_diagnose_markdown(data)
     if command == "smoke":
@@ -956,7 +1002,7 @@ def _plain_result_lines(data: dict[str, Any]) -> list[str]:
 
 
 def _format_content(command: str, data: dict[str, Any]) -> str:
-    if command in {"search", "fetch", "context7-docs", "research"}:
+    if command in {"search", "fetch", "context7-docs", "research", "research-run"}:
         content = data.get("content")
         if content:
             return str(content) + "\n"
@@ -1009,6 +1055,23 @@ def _format_content(command: str, data: dict[str, Any]) -> str:
             "This command only plans; execute the listed CLI steps to perform live research.",
         ]
         return "\n".join(lines) + "\n"
+    if command == "doctor-status":
+        lines = [
+            f"Doctor status {_status_label(data.get('ok'))}: local_only={_yes_no(data.get('local_only', True))}",
+            f"Minimum profile: {_status_label(data.get('minimum_profile_ok'))}",
+            f"Core evidence ready: {_status_label(data.get('core_evidence_ready'))}",
+        ]
+        if data.get("error"):
+            lines.append(f"Error: {_error_summary(data)}")
+        return "\n".join(lines).strip() + "\n"
+    if command == "provider-probe":
+        lines = [
+            f"Provider probe {_status_label(data.get('ok'))}: {data.get('provider', '')} status={data.get('status', '')}",
+            f"network_attempted={_yes_no(data.get('network_attempted'))}; operation={data.get('probe_operation', '')}",
+        ]
+        if data.get("message") or data.get("error"):
+            lines.append(f"Message: {data.get('message') or data.get('error')}")
+        return "\n".join(lines).strip() + "\n"
     if command == "doctor":
         configured = data.get("capability_status", {})
         capability_bits = []

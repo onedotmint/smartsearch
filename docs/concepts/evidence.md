@@ -5,14 +5,16 @@ Smart Search separates discovery from proof. A search result can help find a sou
 ## Evidence flow
 
 ```text
-search / provider discovery
-    -> discovery candidates
-    -> fetch known URLs
-    -> fetched evidence
-    -> citations and final answer
+schema-v2 search / provider discovery
+    -> evidence.candidates
+    -> explicit fetch of selected URLs
+    -> evidence.items (fetched/read evidence)
+    -> host-agent citations and final answer
 ```
 
-The default Deep Research policy is `fetch_before_claim`:
+The default Deep Research policy is `fetch_before_claim`. The Agent default uses schema-v2 `search` followed by explicit schema-v2 `fetch`; `evidence.candidates` are discovery only and `evidence.items` are the fetched/read evidence boundary. For staged work, `research run` returns admitted evidence, citations, and gaps without synthesizing by default.
+
+The evidence workflow is:
 
 1. Discover candidate URLs with `search`, `exa-search`, `zhipu-search`, `exa-similar`, or an explicit docs command.
 2. Fetch exact pages with `fetch` or a capability-owned reader.
@@ -48,4 +50,4 @@ The runtime cache never stores synthesis answers, credentials, prompts, errors, 
 
 ## Degraded results
 
-When provider or synthesis failures prevent complete coverage, keep the fetched evidence and report the missing support. `research` may finish with `degraded=true`, `synthesis_error`, or explicit gaps. It must not invent evidence, treat a discovery snippet as a citation, or silently call another capability as a substitute.
+When provider or synthesis failures prevent complete coverage, keep the fetched evidence and report the missing support. `research run` may finish with `degraded=true` or explicit gaps while intentionally leaving answer fields empty. Bare `research` and `research run --synthesize` may also report `synthesis_error`. Neither path may invent evidence, treat a discovery snippet as a citation, or silently call another capability as a substitute.

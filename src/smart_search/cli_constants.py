@@ -85,9 +85,12 @@ PUBLIC_COMMANDS = ("search", "fetch", "capabilities", "setup")
 # their established v1 command ids.
 NAMESPACE_COMMANDS: tuple[dict[str, str], ...] = (
     {"path": "research plan QUERY", "command": "deep", "tier": "core", "network": "offline", "legacy": "deep, dr"},
+    {"path": "research run QUERY", "command": "research-run", "tier": "advanced", "network": "live", "legacy": ""},
     {"path": "doctor probe", "command": "doctor", "tier": "advanced", "network": "live", "legacy": "doctor, d"},
+    {"path": "doctor status", "command": "doctor-status", "tier": "advanced", "network": "local", "legacy": ""},
     {"path": "provider list", "command": "provider-list", "tier": "advanced", "network": "local", "legacy": ""},
     {"path": "provider status", "command": "provider-status", "tier": "advanced", "network": "local", "legacy": ""},
+    {"path": "provider probe PROVIDER", "command": "provider-probe", "tier": "advanced", "network": "live", "legacy": ""},
     {"path": "provider routes current", "command": "model", "tier": "advanced", "network": "local", "legacy": "model current, mdl cur/c"},
     {"path": "provider routes list", "command": "model", "tier": "advanced", "network": "local", "legacy": "model list, mdl ls/l"},
     {"path": "provider routes add", "command": "model", "tier": "advanced", "network": "local", "legacy": "model add, mdl a"},
@@ -126,16 +129,19 @@ NAMESPACE_COMMANDS = tuple(
 )
 
 
-def _normalize_namespace_invocation(argv: list[str] | None) -> tuple[list[str], str | None]:
+def _normalize_namespace_invocation(
+    argv: list[str] | None,
+) -> tuple[list[str], str | None, dict[str, object]]:
     """Translate collision-safe namespace paths and retain their operation id."""
     args = list(argv or [])
+    attrs: dict[str, object] = {}
     if not args:
-        return args, None
+        return args, None, attrs
     index = 0
     while index < len(args) and args[index].startswith("-") and args[index] != "--":
         index += 2 if args[index] in {"--schema-version", "-schema-version"} else 1
     if index >= len(args):
-        return args, None
+        return args, None, attrs
     if args[index] == "doctor":
         options_with_values = {
             "--format",
@@ -157,12 +163,15 @@ def _normalize_namespace_invocation(argv: list[str] | None) -> tuple[list[str], 
                 continue
             if token == "probe":
                 normalized = args[:index] + ["doctor"] + args[index + 1 : probe_index] + args[probe_index + 1 :]
-                return normalized, "doctor-probe"
+                return normalized, "doctor-probe", attrs
+            if token == "status":
+                normalized = args[:index] + ["doctor"] + args[index + 1 : probe_index] + args[probe_index + 1 :]
+                return normalized, "doctor-status", attrs
             if not token.startswith("-"):
                 break
-        return args, None
+        return args, None, attrs
     if args[index] != "research":
-        return args, None
+        return args, None, attrs
 
     options_with_values = {
         "--budget",
@@ -180,6 +189,7 @@ def _normalize_namespace_invocation(argv: list[str] | None) -> tuple[list[str], 
     saw_help = False
     after_delimiter = False
     skip_value = False
+    synthesize_indexes: list[int] = []
     for token_index, token in enumerate(args[index + 1 :], start=index + 1):
         if skip_value:
             skip_value = False
@@ -190,6 +200,9 @@ def _normalize_namespace_invocation(argv: list[str] | None) -> tuple[list[str], 
         if not after_delimiter and token == "--help":
             saw_help = True
             continue
+        if not after_delimiter and token == "--synthesize":
+            synthesize_indexes.append(token_index)
+            continue
         if not after_delimiter and token in options_with_values:
             skip_value = True
             continue
@@ -197,14 +210,21 @@ def _normalize_namespace_invocation(argv: list[str] | None) -> tuple[list[str], 
             continue
         positionals.append((token_index, token))
 
-    # A legacy ``research plan`` is still a valid one-word query. Namespace
-    # dispatch needs the literal plan selector plus its own query, except that
-    # plan help intentionally selects the namespace-compatible deep help.
+    # A legacy ``research plan`` / ``research run`` is still a valid one-word
+    # query. Namespace dispatch needs the literal selector plus its own query,
+    # except that selector help intentionally selects the namespace path.
     if positionals and positionals[0][1] == "plan" and (len(positionals) > 1 or saw_help):
         plan_index = positionals[0][0]
         normalized = args[:index] + ["deep"] + args[index + 1 : plan_index] + args[plan_index + 1 :]
-        return normalized, "research-plan"
-    return args, None
+        return normalized, "research-plan", attrs
+    if positionals and positionals[0][1] == "run" and (len(positionals) > 1 or saw_help):
+        run_index = positionals[0][0]
+        drop_indexes = {run_index, *synthesize_indexes}
+        body = [token for token_index, token in enumerate(args[index + 1 :], start=index + 1) if token_index not in drop_indexes]
+        normalized = args[:index] + ["research"] + body
+        attrs["synthesize"] = bool(synthesize_indexes)
+        return normalized, "research-run", attrs
+    return args, None, attrs
 
 
 def normalize_namespace_argv(argv: list[str] | None) -> list[str]:
@@ -217,8 +237,10 @@ def namespace_operation_for_argv(argv: list[str] | None) -> str | None:
     return _normalize_namespace_invocation(argv)[1]
 
 
-def classify_namespace_argv(argv: list[str] | None) -> tuple[list[str], str | None]:
-    """Return normalized argv and its collision-safe namespace operation once."""
+def classify_namespace_argv(
+    argv: list[str] | None,
+) -> tuple[list[str], str | None, dict[str, object]]:
+    """Return normalized argv, collision-safe operation, and namespace attrs."""
     return _normalize_namespace_invocation(argv)
 
 

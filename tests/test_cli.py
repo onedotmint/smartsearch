@@ -663,6 +663,151 @@ def test_research_command_uses_service_and_outputs_json(monkeypatch, capsys, tmp
     assert captured == {"query": "React docs", "budget": "standard", "evidence_dir": str(tmp_path), "fallback": "off"}
     assert data["query_mode"] == "research"
     assert data["final_answer"] == "Evidence answer"
+    assert data["command"] == "research"
+
+
+def test_research_run_defaults_to_evidence_only(monkeypatch, capsys, tmp_path):
+    captured = {}
+
+    async def fake_research(query, budget="deep", evidence_dir="", fallback="auto", *, synthesize=None):
+        captured.update(
+            {
+                "query": query,
+                "budget": budget,
+                "evidence_dir": evidence_dir,
+                "fallback": fallback,
+                "synthesize": synthesize,
+            }
+        )
+        return {
+            "ok": True,
+            "mode": "deep_research_execution",
+            "query_mode": "research",
+            "question": query,
+            "final_answer": "",
+            "content": "",
+            "citations": [{"url": "https://example.com", "title": "Example", "provider": "jina"}],
+            "evidence_items": [{"url": "https://example.com", "provider": "jina", "content": "Evidence"}],
+            "gap_check": {"status": "closed", "gaps": []},
+            "provider_attempts": [],
+            "fallback_used": False,
+            "degraded": False,
+            "response_mode": "evidence",
+            "synthesis_enabled": False,
+            "route_policy_version": "research-router-v1",
+            "evidence_dir": evidence_dir,
+        }
+
+    monkeypatch.setattr(cli.service, "research", fake_research)
+    assert cli.main(["research", "run", "React docs", "--format", "json", "--evidence-dir", str(tmp_path)]) == cli.EXIT_OK
+    data = json.loads(capsys.readouterr().out)
+    assert captured["synthesize"] is False
+    assert data["command"] == "research-run"
+    assert data["final_answer"] == ""
+    assert data["content"] == ""
+
+    assert cli.main(["research", "run", "React docs", "--synthesize", "--format", "json"]) == cli.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["command"] == "research-run"
+    assert captured["synthesize"] is True
+
+
+def test_doctor_status_is_local_only(monkeypatch, capsys):
+    from smart_search import operations_service
+
+    def boom(*args, **kwargs):
+        raise AssertionError("doctor status must not probe providers")
+
+    monkeypatch.setattr(operations_service, "_test_exa_connection", boom)
+    monkeypatch.setattr(operations_service, "_test_tavily_connection", boom)
+    monkeypatch.setattr(operations_service, "_test_jina_connection", boom)
+    monkeypatch.setattr(operations_service, "_test_zhipu_connection", boom)
+    monkeypatch.setattr(operations_service, "_test_zhipu_mcp_connection", boom)
+    monkeypatch.setattr(operations_service, "_test_context7_connection", boom)
+    monkeypatch.setattr(operations_service, "_safe_test_main_provider_connection", boom)
+
+    code = cli.main(["doctor", "status", "--format", "json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code in {cli.EXIT_OK, cli.EXIT_CONFIG_ERROR, cli.EXIT_PARAMETER_ERROR}
+    assert payload["command"] == "doctor-status"
+    assert payload["data"]["local_only"] is True
+    assert payload["data"]["network_behavior"] == "no_provider_requests_or_probes"
+    assert "core_evidence_path" in payload["data"]
+
+
+def test_doctor_status_uses_the_minimum_profile_capability_snapshot(monkeypatch):
+    from smart_search import capability_service, operations_service
+
+    snapshot_calls = []
+    snapshot = {
+        "web_search": {"provider_status": []},
+        "docs_search": {"provider_status": []},
+        "web_fetch": {"provider_status": []},
+    }
+
+    def status_snapshot():
+        snapshot_calls.append("status")
+        return snapshot
+
+    def unexpected_second_snapshot():
+        raise AssertionError("doctor status must reuse the minimum-profile capability snapshot")
+
+    monkeypatch.setattr(capability_service, "get_capability_status", status_snapshot)
+    monkeypatch.setattr(operations_service, "get_capability_status", unexpected_second_snapshot)
+    result = operations_service.doctor_status()
+    assert snapshot_calls == ["status"]
+    assert result["capability_status"] == snapshot
+    assert result["local_only"] is True
+
+
+def test_provider_probe_unknown_is_parameter_error(monkeypatch, capsys):
+    from smart_search import operations_service
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("unknown provider must not probe")
+
+    monkeypatch.setattr(operations_service, "run_probe_adapter", boom)
+    code = cli.main(["provider", "probe", "not-a-provider", "--format", "json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == cli.EXIT_PARAMETER_ERROR
+    assert payload["command"] == "provider-probe"
+    assert payload["data"]["error_type"] == "parameter_error"
+    assert payload["data"]["network_attempted"] is False
+
+
+def test_provider_probe_ineligible_provider_is_local_failure(monkeypatch, capsys):
+    from smart_search import operations_service, provider_diagnostics
+
+    def unavailable(provider, capability=""):
+        assert provider == "exa"
+        return {
+            "provider": "exa",
+            "capabilities": ["docs_search"],
+            "configured": True,
+            "enabled": True,
+            "eligible": False,
+            "reason": "provider_not_eligible",
+        }
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("ineligible provider must not probe")
+
+    monkeypatch.setattr(provider_diagnostics, "_provider_availability", unavailable)
+    monkeypatch.setattr(operations_service, "run_probe_adapter", boom)
+    code = cli.main(["provider", "probe", "exa", "--format", "json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == cli.EXIT_CONFIG_ERROR
+    assert payload["data"]["status"] == "config_error"
+    assert payload["data"]["network_attempted"] is False
+    assert payload["data"]["response_time_ms"] == 0
+
+
+def test_provider_probe_registry_covers_each_real_provider():
+    from smart_search.capability_service import PROVIDER_REGISTRY
+    from smart_search.provider_diagnostics import PROVIDER_PROBE_REGISTRY, known_probe_providers
+
+    real_providers = set(PROVIDER_REGISTRY) - {"main-search"}
+    assert real_providers == set(PROVIDER_PROBE_REGISTRY)
+    assert real_providers == set(known_probe_providers())
 
 
 def test_research_markdown_and_content_output(monkeypatch, capsys):
@@ -2846,3 +2991,42 @@ def test_regression_uses_mock_smoke_when_packaged_tests_missing(monkeypatch, cap
     assert code == cli.EXIT_OK
     assert "Packaged install has no test files" in captured.err
     assert json.loads(captured.out)["mode"] == "mock"
+
+
+def test_provider_probe_isolation_and_zero_network_local_failures(monkeypatch, capsys):
+    from smart_search import operations_service, provider_diagnostics
+
+    calls: list[str] = []
+
+    for provider, disposition in list(provider_diagnostics.PROVIDER_PROBE_REGISTRY.items()):
+        if disposition.get("route_family"):
+            continue
+
+        async def adapter(provider_name=provider):
+            calls.append(provider_name)
+            return {"status": "ok", "message": f"{provider_name} ok", "response_time_ms": 1}
+
+        monkeypatch.setitem(provider_diagnostics.PROVIDER_PROBE_REGISTRY[provider], "adapter", adapter)
+
+    async def no_main(*args, **kwargs):
+        raise AssertionError("main-search family should not run for non-main probe")
+
+    monkeypatch.setattr(operations_service, "_safe_test_main_provider_connection", no_main)
+
+    code = cli.main(["provider", "probe", "exa", "--format", "json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code in {cli.EXIT_OK, cli.EXIT_CONFIG_ERROR, cli.EXIT_NETWORK_ERROR}
+    assert payload["command"] == "provider-probe"
+    assert payload["data"]["provider"] == "exa"
+    if payload["data"].get("network_attempted"):
+        assert calls == ["exa"]
+    else:
+        assert payload["data"]["status"] in {"not_configured", "disabled", "config_error"}
+        assert calls == []
+
+    calls.clear()
+    code = cli.main(["provider", "probe", "main-search", "--format", "json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == cli.EXIT_PARAMETER_ERROR
+    assert payload["data"]["network_attempted"] is False
+    assert calls == []

@@ -60,7 +60,7 @@ The executor uses capability-based orchestration and provider advantage routing:
 
 `research --fallback auto` permits same-capability fallback. `--fallback off` tries only the first eligible provider in each capability. Research provider overrides can reorder or disable providers only within their declared capabilities.
 
-Research JSON includes `final_answer`, `citations`, `evidence_items`, `gap_check`, `provider_attempts`, `fallback_used`, `degraded`, `route_policy_version`, and `evidence_dir`. The additive `evidence_bundle` groups `discovery_candidates`, `fetched_evidence`, `sources`, `citations`, `gaps`, and provider attempts. If synthesis fails, fetched evidence and citations remain in the result with `synthesis_error` and degraded gaps; the executor does not silently search or fetch again.
+Research JSON includes `final_answer`, `content`, `citations`, `evidence_items`, `gap_check`, `provider_attempts`, `fallback_used`, `degraded`, `response_mode`, `synthesis_enabled`, `route_policy_version`, and `evidence_dir`. The additive `evidence_bundle` groups `discovery_candidates`, `fetched_evidence`, `sources`, `citations`, `gaps`, and provider attempts. Prefer `research run` for Agent workflows: it defaults to evidence-only mode with empty answer fields and leaves final writing to the host. Bare `research` and `research run --synthesize` reuse evidence-only synthesis. If synthesis fails, fetched evidence and citations remain in the result with `synthesis_error` and degraded gaps; the executor does not silently search or fetch again.
 
 Good smoke prompts include:
 

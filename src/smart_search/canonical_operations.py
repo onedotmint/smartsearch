@@ -27,6 +27,7 @@ from .capability_taxonomy import (
     v2_availability_by_tier,
 )
 from .config import ConfigStorageError, ModelRoutesConfigurationError
+from .intent_router import project_evidence_routing
 from .operation_runtime import (
     _run_docs_search_fallback,
     _run_site_map,
@@ -667,15 +668,6 @@ def capability_status(*, request_id: str | None = None) -> V2Envelope:
         )
 
 
-def _docs_intent(query: str) -> bool:
-    lowered = query.lower()
-    markers = (
-        "api", "sdk", "docs", "documentation", "官方", "文档", "library", "framework",
-        "reference", "guide", "tutorial",
-    )
-    return any(marker in lowered for marker in markers)
-
-
 def _merge_candidates(*groups: Sequence[V2Candidate]) -> list[V2Candidate]:
     merged: list[V2Candidate] = []
     seen: set[str] = set()
@@ -701,7 +693,7 @@ async def composite_search(query: str, *, max_results: int = 5) -> V2Envelope:
     request_id = _request_id()
     source_req = SourceDiscoveryRequest(query=query, max_results=max_results)
     source = await source_discovery(source_req)
-    include_docs = _docs_intent(query)
+    include_docs = bool(project_evidence_routing(query).get("include_docs_discovery"))
     docs: V2Envelope | None = None
     if include_docs:
         docs = await docs_discovery(DocsDiscoveryRequest(query=query, max_results=max_results))

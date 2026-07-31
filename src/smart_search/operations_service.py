@@ -22,12 +22,16 @@ from .capability_service import (
 from .config import ConfigStorageError, ModelRoutesConfigurationError, config
 from .logger import logger
 from .provider_diagnostics import (
+    _error_type_for_status,
+    _normalize_probe_status,
     _test_context7_connection,
     _test_exa_connection,
     _test_jina_connection,
     _test_tavily_connection,
     _test_zhipu_connection,
     _test_zhipu_mcp_connection,
+    provider_probe_base,
+    run_probe_adapter,
 )
 from .provider_fetch_commands import fetch
 from .providers.openai_compatible import OpenAICompatibleSearchProvider, get_local_time_info
@@ -429,6 +433,244 @@ async def _safe_test_main_provider_connection(provider_config: dict[str, Any]) -
         return {"status": "error", "message": f"{provider_config['provider']} 网络错误: {str(e)}"}
     except Exception as e:
         return {"status": "error", "message": f"{provider_config['provider']} 未知错误: {str(e)}"}
+
+def doctor_status() -> dict[str, Any]:
+    """Local readiness only: config, capability snapshot, evidence path, router."""
+    info = config.get_config_info()
+    minimum = validate_minimum_profile()
+    capability_status = minimum.get("capability_status") or get_capability_status()
+    router_status = intent_router_status()
+
+    evidence_path: dict[str, Any] = {
+        "source_discovery": {"ready": False, "providers": []},
+        "docs_discovery": {"ready": False, "providers": []},
+        "content_fetch": {"ready": False, "providers": []},
+    }
+    try:
+        from .capability_taxonomy import list_provider_qualifications, map_v1_to_v2_capability
+
+        for v1_capability, v2_capability in (
+            ("web_search", "source_discovery"),
+            ("docs_search", "docs_discovery"),
+            ("web_fetch", "content_fetch"),
+        ):
+            ready_providers: list[str] = []
+            status = capability_status.get(v1_capability) or {}
+            provider_rows = status.get("provider_status") or []
+            eligible = {
+                str(row.get("provider"))
+                for row in provider_rows
+                if isinstance(row, dict) and row.get("eligible")
+            }
+            for record in list_provider_qualifications(capability=v2_capability, qualified_only=True):
+                provider = str(record.get("provider") or "")
+                if provider and provider in eligible and not record.get("experimental"):
+                    ready_providers.append(provider)
+            evidence_path[v2_capability] = {
+                "ready": bool(ready_providers),
+                "providers": ready_providers,
+                "legacy_capability": v1_capability,
+                "mapped": map_v1_to_v2_capability(v1_capability),
+            }
+    except Exception:
+        # Local status must remain offline and non-throwing even if taxonomy import fails.
+        pass
+
+    core_ready = bool(
+        evidence_path["source_discovery"]["ready"] and evidence_path["content_fetch"]["ready"]
+    )
+    config_storage_ok = bool(info.get("config_storage_ok", True))
+    config_parameters_ok = not bool(info.get("config_parameter_errors"))
+    minimum_ok = bool(minimum.get("ok", False))
+    # ok is local readiness only: storage/parameters + evidence path, never reachability.
+    ok = config_storage_ok and config_parameters_ok and core_ready
+
+    result = {
+        "ok": ok,
+        "operation": "doctor_status",
+        "local_only": True,
+        "network_behavior": "no_provider_requests_or_probes",
+        "config_file": info.get("config_file", ""),
+        "config_dir": info.get("config_dir", ""),
+        "config_dir_source": info.get("config_dir_source", ""),
+        "config_status": info.get("config_status", ""),
+        "config_storage_ok": config_storage_ok,
+        "config_storage_error": info.get("config_storage_error", ""),
+        "config_parameter_errors": list(info.get("config_parameter_errors") or []),
+        "config_sources": info.get("config_sources") or {},
+        "capability_status": capability_status,
+        "minimum_profile": minimum.get("profile", ""),
+        "minimum_profile_ok": minimum_ok,
+        "minimum_profile_missing": list(minimum.get("missing") or []),
+        "minimum_profile_missing_required": list(minimum.get("missing_required") or []),
+        "core_evidence_path": evidence_path,
+        "core_evidence_ready": core_ready,
+        "intent_router_status": router_status,
+    }
+    if ok:
+        result["error_type"] = ""
+        result["error"] = ""
+    elif not config_storage_ok:
+        result["error_type"] = "config_error"
+        result["error"] = info.get("config_storage_error") or "配置存储不可用。请设置 SMART_SEARCH_CONFIG_DIR 指向可写且受保护的配置目录。"
+    elif info.get("config_parameter_errors"):
+        result["error_type"] = "parameter_error"
+        result["error"] = "; ".join(info["config_parameter_errors"])
+    else:
+        result["error_type"] = "config_error"
+        result["error"] = "Core evidence path is not ready (source discovery + content fetch)."
+
+    sanitized = sanitize_data(result)
+    return sanitized if isinstance(sanitized, dict) else result
+
+
+async def provider_probe(provider: str) -> dict[str, Any]:
+    """Probe exactly one named provider or main-search route family."""
+    base = provider_probe_base(provider)
+    if base.get("error_type") == "parameter_error":
+        sanitized = sanitize_data(base)
+        return sanitized if isinstance(sanitized, dict) else base
+    if base.get("status") == "unsupported":
+        sanitized = sanitize_data(base)
+        return sanitized if isinstance(sanitized, dict) else base
+
+    if base.get("availability_reason") == "invalid_model_routes":
+        result = {
+            **base,
+            "ok": False,
+            "network_attempted": False,
+            "status": "config_error",
+            "error_type": "config_error",
+            "error": base.get("availability_error") or "Invalid SMART_SEARCH_MODEL_ROUTES",
+            "message": base.get("availability_error") or "Invalid SMART_SEARCH_MODEL_ROUTES",
+        }
+        sanitized = sanitize_data(result)
+        return sanitized if isinstance(sanitized, dict) else result
+
+    if not base.get("configured"):
+        result = {
+            **base,
+            "ok": False,
+            "network_attempted": False,
+            "status": "not_configured",
+            "error_type": "config_error",
+            "error": str(base.get("availability_reason") or "not_configured"),
+            "message": str(base.get("availability_reason") or "not_configured"),
+        }
+        sanitized = sanitize_data(result)
+        return sanitized if isinstance(sanitized, dict) else result
+
+    if not base.get("enabled"):
+        result = {
+            **base,
+            "ok": False,
+            "network_attempted": False,
+            "status": "disabled",
+            "error_type": "config_error",
+            "error": str(base.get("availability_reason") or "disabled"),
+            "message": str(base.get("availability_reason") or "disabled"),
+        }
+        sanitized = sanitize_data(result)
+        return sanitized if isinstance(sanitized, dict) else result
+
+    if not base.get("eligible"):
+        result = {
+            **base,
+            "ok": False,
+            "network_attempted": False,
+            "status": "config_error",
+            "error_type": "config_error",
+            "error": str(base.get("availability_error") or base.get("availability_reason") or "provider_not_eligible"),
+            "message": str(base.get("availability_error") or base.get("availability_reason") or "provider_not_eligible"),
+            "response_time_ms": 0,
+        }
+        sanitized = sanitize_data(result)
+        return sanitized if isinstance(sanitized, dict) else result
+
+    provider_id = str(base.get("provider") or "")
+    if base.get("route_family"):
+        try:
+            routes = [
+                item
+                for item in _main_search_provider_configs()
+                if item.get("provider") == provider_id
+            ]
+        except ValueError as exc:
+            result = {
+                **base,
+                "ok": False,
+                "network_attempted": False,
+                "status": "config_error",
+                "error_type": "config_error",
+                "error": str(exc),
+                "message": str(exc),
+                "routes": [],
+            }
+            sanitized = sanitize_data(result)
+            return sanitized if isinstance(sanitized, dict) else result
+
+        if not routes:
+            result = {
+                **base,
+                "ok": False,
+                "network_attempted": False,
+                "status": "not_configured",
+                "error_type": "config_error",
+                "error": f"No configured {provider_id} routes",
+                "message": f"No configured {provider_id} routes",
+                "routes": [],
+            }
+            sanitized = sanitize_data(result)
+            return sanitized if isinstance(sanitized, dict) else result
+
+        route_results: list[dict[str, Any]] = []
+        for route in routes:
+            probe = _normalize_probe_status(dict(await _safe_test_main_provider_connection(route)))
+            probe["route_id"] = route.get("route_id") or ""
+            probe["provider"] = provider_id
+            route_results.append(probe)
+        ok = any(item.get("status") == "ok" for item in route_results)
+        primary = next((item for item in route_results if item.get("status") == "ok"), route_results[0])
+        status = "ok" if ok else str(primary.get("status") or "network_error")
+        result = {
+            **base,
+            "ok": ok,
+            "network_attempted": True,
+            "status": status,
+            "error_type": _error_type_for_status(status, network_attempted=True),
+            "error": "" if ok else str(primary.get("message") or status),
+            "message": str(primary.get("message") or ("ok" if ok else status)),
+            "response_time_ms": primary.get("response_time_ms", 0),
+            "routes": route_results,
+        }
+        result.pop("availability_reason", None)
+        result.pop("availability_error", None)
+        result.pop("route_family", None)
+        sanitized = sanitize_data(result)
+        return sanitized if isinstance(sanitized, dict) else result
+
+    probe = await run_probe_adapter(provider_id)
+    status = str(probe.get("status") or "provider_error")
+    network_attempted = status not in {"not_configured", "disabled", "config_error", "unsupported"}
+    ok = status == "ok"
+    result = {
+        **base,
+        "ok": ok,
+        "network_attempted": network_attempted,
+        "status": status,
+        "error_type": _error_type_for_status(status, network_attempted=network_attempted),
+        "error": "" if ok else str(probe.get("message") or status),
+        "message": str(probe.get("message") or status),
+        "response_time_ms": probe.get("response_time_ms", 0),
+    }
+    if probe.get("experimental"):
+        result["experimental"] = True
+    result.pop("availability_reason", None)
+    result.pop("availability_error", None)
+    result.pop("route_family", None)
+    sanitized = sanitize_data(result)
+    return sanitized if isinstance(sanitized, dict) else result
+
 
 async def doctor() -> dict[str, Any]:
     # ================================================================================

@@ -435,3 +435,33 @@ async def test_research_cancelled_fetch_does_not_cancel_other_known_urls(monkeyp
     assert known_stages[0]["error_type"] == "cancelled"
     assert any(gap["url"] == cancelled_url for gap in result["gaps"])
     logger.info("单条 fetch 取消隔离测试完成")
+
+
+@pytest.mark.asyncio
+async def test_research_fetch_budget_exhaustion_uses_error_type(monkeypatch, tmp_path):
+    """Stage metadata must read attempt error_type=budget_exhausted, not status."""
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-secret")
+    monkeypatch.setenv("JINA_API_KEY", "jina-secret")
+
+    async def fake_fetch(url, fallback="auto", preferred_order=None):
+        attempt = service_support._attempt(
+            "web_fetch",
+            "jina",
+            "error",
+            time.time(),
+            error_type="budget_exhausted",
+            error="request budget exhausted",
+            retryable=False,
+        )
+        return None, [attempt]
+
+    monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)
+    result = await service.research(
+        "https://example.com/budget",
+        evidence_dir=str(tmp_path),
+        fallback="off",
+    )
+    known = [item for item in result["stage_results"] if item["stage"] == "known_url_fetch"]
+    assert known
+    assert known[0]["error_type"] == "budget_exhausted"
+    assert known[0]["ok"] is False

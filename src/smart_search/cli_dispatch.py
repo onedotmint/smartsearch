@@ -139,6 +139,15 @@ async def _run_async(args: argparse.Namespace) -> int:
             "deep": "deep",
         }.get(args.profile, args.budget)
         with _prompt_override_context(args):
+            if getattr(args, "namespace_operation", None) == "research-run":
+                data = await service.research(
+                    args.query,
+                    budget=research_budget,
+                    evidence_dir=args.evidence_dir,
+                    fallback=args.fallback,
+                    synthesize=bool(getattr(args, "synthesize", False)),
+                )
+                return _print_result("research-run", data, args.format, args.output)
             data = await service.research(
                 args.query,
                 budget=research_budget,
@@ -150,8 +159,18 @@ async def _run_async(args: argparse.Namespace) -> int:
         data = await service.smoke(args.mode)
         return _print_result("smoke", data, args.format, args.output)
     if args.command == "doctor":
+        if getattr(args, "namespace_operation", None) == "doctor-status":
+            from .operations_service import doctor_status
+
+            data = doctor_status()
+            return _print_result("doctor-status", data, args.format, args.output)
         data = await service.doctor()
         return _print_result("doctor", data, args.format, args.output)
+    if args.command == "provider-probe":
+        from .operations_service import provider_probe
+
+        data = await provider_probe(args.provider)
+        return _print_result("provider-probe", data, args.format, args.output)
     if args.command == "capabilities":
         data = service.capabilities()
         return _print_result("capabilities", data, args.format, args.output)
@@ -366,8 +385,8 @@ def _run_setup(args: argparse.Namespace) -> int:
             _write_stderr(
                 _t(
                     lang,
-                    "\n下一步建议:\n  smart-search doctor --format json\n  smart-search smoke --mock --format json\n",
-                    "\nNext steps:\n  smart-search doctor --format json\n  smart-search smoke --mock --format json\n",
+                    "\n下一步建议:\n  smart-search doctor status --format json\n  smart-search smoke --mock --format json\n  # 显式联网聚合检查: smart-search doctor probe --format json\n",
+                    "\nNext steps:\n  smart-search doctor status --format json\n  smart-search smoke --mock --format json\n  # explicit live aggregate check: smart-search doctor probe --format json\n",
                 )
             )
         data["minimum_profile_ok"] = minimum_result.get("ok", False)

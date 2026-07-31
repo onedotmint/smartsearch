@@ -44,7 +44,7 @@ Deep Research does not change default `smart-search search` behavior and does no
 
 Default orchestration:
 
-1. Run `smart-search doctor --format json` as preflight when configuration is uncertain.
+1. Run `smart-search doctor status --format json` as the local preflight when configuration is uncertain. Use `doctor probe` only for an explicit live aggregate check.
 2. Call `smart-search deep "question" --format json` to create an offline `research_plan`.
 3. Inspect `intent_signals`, `decomposition`, and `capability_plan`; do not choose fixed topic recipe ids.
 4. Execute planned `smart-search search ... --validation balanced --extra-sources 1..3` steps for broad discovery and read routing metadata.
@@ -92,7 +92,7 @@ Use this shape as the planning artifact:
   ],
   "preflight": {
     "tool": "doctor",
-    "command": "smart-search doctor --format json",
+    "command": "smart-search doctor status --format json",
     "when": "configuration or availability is uncertain"
   },
   "evidence_policy": "fetch_before_claim",
@@ -162,15 +162,24 @@ Prefer PowerShell-safe quoted commands in generated plans because Windows users 
 
 ## Live Executor Output
 
-Use this form when the user wants the CLI to execute the live workflow directly:
+Prefer the Agent-facing evidence-first namespace:
+
+```powershell
+smart-search research run "question" --budget deep --fallback auto --evidence-dir "<evidence-dir>" --format json --output "research.json"
+```
+
+`research run` reuses the established staged executor but defaults to evidence-only mode: admitted evidence, citations, gaps, and attempts are returned while `final_answer` and `content` stay empty (`response_mode=evidence`, `synthesis_enabled=false`). The host agent writes the final prose. Opt in to SmartSearch synthesis only with `--synthesize`.
+
+Bare compatibility form (still synthesizes by default):
 
 ```powershell
 smart-search research "question" --budget deep --fallback auto --evidence-dir "<evidence-dir>" --format json --output "research.json"
+smart-search research run "question" --synthesize --format json
 ```
 
 `research --fallback auto` permits same-capability fallback inside selected routes. `research --fallback off` tries only the first selected provider in each capability route and is for debugging or provider comparison. Dynamic routing may reorder providers only inside the same capability. Every attempt must record capability, provider, status, error type, latency, and result count.
 
-Research output includes `final_answer`, `citations`, `evidence_items`, `fetched_evidence`, `discovery_candidates`, `evidence_bundle`, `gap_check`, `provider_attempts`, `fallback_used`, `degraded`, `synthesis_error`, `artifacts_persisted`, `route_policy_version`, and `evidence_dir`. The synthesis is evidence-only. It may cite fetched/read evidence, but it must not cite unfetched discovery candidates as proof. If synthesis fails, preserve the evidence and citations, report `synthesis_error`, and return degraded gaps. If providers are exhausted or evidence cannot close, return the degraded gaps rather than inventing missing claims.
+Research output includes `final_answer`, `content`, `citations`, `evidence_items`, `fetched_evidence`, `discovery_candidates`, `evidence_bundle`, `gap_check`, `provider_attempts`, `fallback_used`, `degraded`, `synthesis_error`, `response_mode`, `synthesis_enabled`, `artifacts_persisted`, `route_policy_version`, and `evidence_dir`. When synthesis runs, it is evidence-only: it may cite fetched/read evidence, but it must not cite unfetched discovery candidates as proof. If synthesis fails, preserve the evidence and citations, report `synthesis_error`, and return degraded gaps. Intentional evidence-only mode does not invent a budget-exhaustion synthesis gap. If providers are exhausted or evidence cannot close, return the degraded gaps rather than inventing missing claims.
 
 Research provider advantage routing:
 

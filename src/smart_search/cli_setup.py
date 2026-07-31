@@ -396,8 +396,8 @@ def _prompt_main_search(values: dict[str, str], current: dict[str, str], lang: s
     _write_stderr(
         _t(
             lang,
-            "\n[1/3 必选] main_search 主搜索\n用途: 负责综合搜索回答和最终合成。\n推荐: 有 xAI key 选 xai；有中转服务选 openai；两者都配可以同能力兜底。\n",
-            "\n[1/3 Required] main_search primary search\nPurpose: broad search answers and final synthesis.\nRecommended: choose xai for an xAI key, openai for a relay, or both for same-capability fallback.\n",
+            "\n[1/3 标准档位] main_search（可选合成）\n用途: 兼容 v1 答案生成与显式 synthesis；evidence-first 默认路径不依赖它。\n推荐: 需要 legacy search 合成时再配 xAI 或 OpenAI-compatible。\n",
+            "\n[1/3 Standard profile] main_search (optional synthesis)\nPurpose: legacy v1 answer generation and explicit synthesis; the evidence-first default path does not require it.\nRecommended: configure xAI or OpenAI-compatible when you need legacy search synthesis.\n",
         )
     )
     selected = _prompt_provider_multi_select(
@@ -868,18 +868,18 @@ def _write_setup_examples(lang: str) -> None:
     _write_stderr(
         _t(
             lang,
-            "\n不知道怎么填: 先配齐 main_search + docs_search + web_fetch。\n"
-            "  main_search: xAI Responses，或 OpenAI-compatible（示例: https://api.openai.com/v1）\n"
-            "  docs_search: 文档/API 优先 Context7；官方域名、论文和低噪声发现再配 Exa。\n"
-            "  web_fetch: Tavily 官方地址是 https://api.tavily.com；号池填 https://<host>/api/tavily。\n"
-            "  intent embeddings: 推荐 SiliconFlow + Qwen/Qwen3-Embedding-8B，setup 会自动补 threshold=0.475、margin=0.053。\n"
-            "  key 都填你自己控制台里的；Zhipu / Firecrawl 可以之后再补。\n",
-            "\nIf unsure: first configure main_search + docs_search + web_fetch.\n"
-            "  main_search: xAI Responses, or OpenAI-compatible (example: https://api.openai.com/v1)\n"
-            "  docs_search: Context7 for docs/API first; add Exa for official domains, papers, and low-noise discovery.\n"
-            "  web_fetch: official Tavily endpoint is https://api.tavily.com; pooled endpoints use https://<host>/api/tavily.\n"
-            "  intent embeddings: recommended SiliconFlow + Qwen/Qwen3-Embedding-8B; setup auto-fills threshold=0.475 and margin=0.053.\n"
-            "  Use keys from your own provider consoles. Zhipu / Firecrawl can be added later.\n",
+            "\n不知道怎么填: 先配齐 evidence path（docs_search + web_search/source discovery + web_fetch）。\n"
+            "  source/docs discovery: 文档/API 优先 Context7；通用网页发现配 Tavily/Zhipu；官方域名与论文可加 Exa。\n"
+            "  web_fetch: Tavily 官方地址是 https://api.tavily.com；号池填 https://<host>/api/tavily；也可配 Jina。\n"
+            "  main_search/synthesis: 可选，仅用于 v1 答案生成与 research --synthesize。\n"
+            "  历史 standard 档位仍要求 main_search + docs_search + web_fetch。\n"
+            "  intent embeddings: 推荐 SiliconFlow + Qwen/Qwen3-Embedding-8B，setup 会自动补 threshold=0.475、margin=0.053。\n",
+            "\nIf unsure: first configure the evidence path (docs_search + web_search/source discovery + web_fetch).\n"
+            "  source/docs discovery: Context7 for docs/API; Tavily/Zhipu for general discovery; Exa for official domains/papers.\n"
+            "  web_fetch: official Tavily endpoint is https://api.tavily.com; pooled endpoints use https://<host>/api/tavily; Jina is also fine.\n"
+            "  main_search/synthesis: optional for v1 answer generation and research --synthesize.\n"
+            "  The historical standard profile still requires main_search + docs_search + web_fetch.\n"
+            "  intent embeddings: recommended SiliconFlow + Qwen/Qwen3-Embedding-8B; setup auto-fills threshold=0.475 and margin=0.053.\n",
         )
     )
 
@@ -897,8 +897,8 @@ def _run_guided_setup_prompts(
     _write_panel(
         _t(
             lang,
-            f"\nSmart Search 配置向导\n配置文件: {config_file}\n\n目标: standard 最低可用配置\n操作: 方向键移动，空格勾选，回车确认；API key 输入不显示。\n最低要求: main_search + docs_search + web_fetch 各至少一个 provider。\n",
-            f"\nSmart Search setup wizard\nConfig file: {config_file}\n\nGoal: standard minimum profile\nKeys: move with arrow keys, select with Space, confirm with Enter; API key input is hidden.\nMinimum: at least one provider in each of main_search + docs_search + web_fetch.\n",
+            f"\nSmart Search 配置向导\n配置文件: {config_file}\n\n目标: evidence-first 工作流 + 兼容 standard 档位\n操作: 方向键移动，空格勾选，回车确认；API key 输入不显示。\n证据路径: source/docs discovery + content fetch；main_search 合成可选。\n历史 standard 档位仍报告 main_search + docs_search + web_fetch。\n",
+            f"\nSmart Search setup wizard\nConfig file: {config_file}\n\nGoal: evidence-first workflow with standard profile compatibility\nKeys: move with arrow keys, select with Space, confirm with Enter; API key input is hidden.\nEvidence path: source/docs discovery + content fetch; main_search synthesis is optional.\nHistorical standard profile still reports main_search + docs_search + web_fetch.\n",
         ),
         lang,
     )

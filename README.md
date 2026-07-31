@@ -26,11 +26,13 @@ Prerequisites:
 
 ## First run
 
-Run the configuration check before the first provider call:
+Run the local readiness check before the first provider call:
 
 ```sh
-smart-search doctor --format markdown
+smart-search doctor status --format json
 ```
+
+Run `smart-search doctor probe --format markdown` only when an explicit live aggregate connectivity check is needed.
 
 Run a fast live search:
 
@@ -55,18 +57,19 @@ Search responses use a versioned JSON envelope. Provider text and URLs vary; the
 
 ### Opt-in v2 Core JSON API
 
-Phase 3 exposes an evidence-first Core API behind a root-global flag. It does not change default v1 behavior:
+The evidence-first Core API is the recommended Agent default. It is selected with a root-global flag:
 
 ```sh
+smart-search --schema-version 2 capabilities
 smart-search --schema-version 2 search "example query"
 smart-search --schema-version 2 fetch "https://example.com/page"
-smart-search --schema-version 2 capabilities
 ```
 
 `map` is available as the Advanced `site_discovery` operation; see the command reference for its v2 invocation.
 
 - v2 is **JSON-only** and returns the Phase 2 envelope (`status`, `operation`, `evidence`, `routing`, `attempts`, ...).
 - v2 `search` returns discovery candidates only; it never calls legacy `main_search` or accepts `--response-mode`.
+- Host agents write the final answer from fetched `evidence.items`; discovery candidates are not claim-level proof.
 - `capabilities` uses envelope-only meta operation `capability_status` (local inspection, no Provider network).
 - `--fail-on-degraded` and `--trace` are v2-only. Post-subcommand `--schema-version` placement is not supported.
 
@@ -74,33 +77,42 @@ smart-search --schema-version 2 capabilities
 
 | Need | Command | Network behavior |
 | --- | --- | --- |
-| Fast answer and broad discovery | `smart-search search QUERY` | Live search |
+| Evidence-first discovery and fetch (Agent default) | `smart-search --schema-version 2 search\|fetch\|capabilities` | Live discovery/fetch; capabilities is local |
+| Fast v1 answer and broad discovery | `smart-search search QUERY` | Live search with optional synthesis |
 | Explain the selected intent capabilities | `smart-search route QUERY` | No search/fetch provider call; hybrid may call configured router endpoints |
 | Read one known page | `smart-search fetch URL` | Live page fetch |
-| Build a research plan | `smart-search deep QUERY` | Offline planner |
-| Run staged research | `smart-search research QUERY` | Live discovery, fetch, gap check, and evidence-only synthesis |
-| Check configuration and connectivity | `smart-search doctor` | Masked diagnostics and provider checks |
+| Build a research plan | `smart-search deep QUERY` / `research plan QUERY` | Offline planner |
+| Run staged evidence research | `smart-search research run QUERY` | Live discovery, fetch, gaps; host writes the answer |
+| Run staged research with synthesis | `smart-search research run QUERY --synthesize` or bare `research` | Live discovery, fetch, and evidence-only synthesis |
+| Local readiness | `smart-search doctor status` | Local only; no provider probe |
+| Live aggregate connectivity | `smart-search doctor` / `doctor probe` | Masked diagnostics and provider checks |
+| One provider reachability check | `smart-search provider probe PROVIDER` | Exactly one provider/family |
 
-`deep` is offline planning. `research` is live execution. They are separate commands so a plan can be inspected before any provider or page request runs.
+`deep` / `research plan` are offline planning. `research run` is the Agent-facing evidence workflow. Bare `research` remains the legacy synthesized executor.
 
 ## Core examples
 
 ```sh
-# Fast answer
-smart-search search "React useEffect cleanup docs" --format json
+# Agent default evidence path
+smart-search --schema-version 2 capabilities
+smart-search --schema-version 2 search "React useEffect cleanup docs"
+smart-search --schema-version 2 fetch "https://react.dev/reference/react/useEffect"
 
-# Inspect routing without running search providers
-smart-search route "React useEffect cleanup docs" --router-mode rules --format markdown
+# Staged multi-source research without automatic synthesis
+smart-search research run "Compare two current API designs" --format json
 
-# Offline plan, then live execution
+# Offline plan, then legacy synthesized live execution
 smart-search research plan "Compare two current API designs" --budget standard --format json
 smart-search research "Compare two current API designs" --budget deep --format markdown
+
+# Local readiness, then explicit live checks
+smart-search doctor status --format json
+smart-search doctor probe --format markdown
+smart-search provider probe exa --format json
 
 # Local provider metadata and ordered backup routes
 smart-search provider status --format json
 smart-search provider routes list --format markdown
-smart-search provider routes add --id primary --provider openai-compatible --api-url "https://relay-a.example/v1" --api-key "key-a" --model "model-a"
-smart-search provider routes add --id backup --provider openai-compatible --api-url "https://relay-b.example/v1" --api-key "key-b" --model "model-b"
 
 # Compatibility entries remain valid
 smart-search deep "Compare two current API designs" --budget standard --format json
@@ -129,13 +141,15 @@ The public AI-agent contract is maintained in the [repository skill directory](h
 ## Troubleshooting
 
 ```sh
+smart-search doctor status --format json
 smart-search doctor --format markdown
+smart-search provider probe exa --format json
 smart-search diagnose openai-compatible --format markdown
 smart-search regression
 smart-search smoke --mock --format json
 ```
 
-`doctor probe` is the explicit live aggregate diagnostic; `provider list` and `provider status` are local-only metadata and eligibility views. Legacy `doctor`, `diagnose`, `regression`, and `smoke` remain compatible commands.
+`doctor status` is local readiness only. `doctor` / `doctor probe` are the live aggregate diagnostic. `provider probe PROVIDER` checks one named provider. `provider list` and `provider status` remain local-only metadata and eligibility views.
 
 ## Development
 

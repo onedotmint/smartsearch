@@ -31,10 +31,10 @@ The interactive wizard is the normal path:
 
 ```sh
 smart-search setup
-smart-search doctor --format markdown
+smart-search doctor status --format json
 ```
 
-`doctor` masks credentials and reports the configured capability profile. A command checks only the capabilities it needs. The default `standard` profile is fail-closed for the full diagnostic and expects one `main_search`, one `docs_search`, and one `web_fetch` provider.
+`doctor status` is local readiness only: configuration storage, capability eligibility, Core evidence path, and minimum-profile health. It does not probe providers. Use `doctor` / `doctor probe` only when you intentionally want a live aggregate connectivity check. A command checks only the capabilities it needs. The historical `standard` profile is fail-closed for the full diagnostic and still expects one `main_search`, one `docs_search`, and one `web_fetch` provider, while evidence-first workflows prioritize source/docs discovery plus content fetch.
 
 The configuration file is stored in the platform config directory:
 
@@ -58,13 +58,25 @@ See [Providers](providers.md) for the full capability and key matrix.
 
 ## Run the first search
 
+Agent default evidence path:
+
+```sh
+smart-search --schema-version 2 capabilities
+smart-search --schema-version 2 search "latest Python release"
+smart-search --schema-version 2 fetch "https://www.python.org/downloads/"
+```
+
+v2 search returns discovery candidates only. Host agents write the final answer from fetched evidence items.
+
+Compatibility v1 search remains available:
+
 ```sh
 smart-search search "latest Python release" --format json
 ```
 
 Use `--format markdown` for a report or `--format content` for a compact terminal result. Add `--extra-sources 2` when you want more discovery candidates, not when you need proof for a claim.
 
-A successful JSON response keeps the stable envelope:
+A successful v1 JSON response keeps the stable envelope:
 
 ```json
 {
@@ -105,13 +117,19 @@ Use the offline planner when an agent or a person should inspect the plan first:
 smart-search deep "Compare two current API designs" --budget standard --format json
 ```
 
-Use the live executor when the CLI should run discovery, fetch/read, gap check, and evidence-only synthesis:
+Use the Agent-facing staged executor when the host should receive admitted evidence and write the answer itself:
+
+```sh
+smart-search research run "Compare two current API designs" --budget deep --format json
+```
+
+Use bare `research` or `research run --synthesize` when the CLI should also run evidence-only synthesis:
 
 ```sh
 smart-search research "Compare two current API designs" --budget deep --format markdown
 ```
 
-The distinction is intentional. `deep` is not an executor; `research` is the live staged workflow. See [Search vs Deep Research vs Research](concepts/search-vs-deep-vs-research.md).
+The distinction is intentional. `deep` / `research plan` are not executors; `research run` is the evidence-first live staged workflow, and bare `research` remains the synthesized compatibility path. See [Search vs Deep Research vs Research](concepts/search-vs-deep-vs-research.md).
 
 ## Install the AI-agent skill
 

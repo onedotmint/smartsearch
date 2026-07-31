@@ -695,8 +695,51 @@ async def test_research_executes_staged_evidence_only_workflow(monkeypatch, tmp_
     assert result["evidence_items"][0]["url"] == "https://evidence.example.com/source"
     assert result["citations"] == [{"url": "https://evidence.example.com/source", "title": "Source", "provider": "jina"}]
     assert "Fetched body only" in result["final_answer"]
+    assert result["synthesis_enabled"] is True
+    assert result["response_mode"] == "synthesized"
     assert "zhipu" in [attempt["provider"] for attempt in result["provider_attempts"]]
     assert (tmp_path / "summary.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_research_synthesize_false_skips_synthesis(monkeypatch, tmp_path):
+    _configure_research_minimum(monkeypatch)
+    monkeypatch.setenv("ZHIPU_API_KEY", "zhipu-secret")
+
+    async def fake_web_search(query, count=5, providers="auto", fallback="auto"):
+        return (
+            [{"url": "https://evidence.example.com/source", "title": "Source", "provider": "zhipu"}],
+            [service_support._attempt("web_search", "zhipu", "ok", time.time(), result_count=1)],
+        )
+
+    async def fake_fetch(url, fallback="auto", preferred_order=None):
+        return (
+            {"ok": True, "url": url, "provider": "jina", "content": "# Evidence\nFetched body only."},
+            [service_support._attempt("web_fetch", "jina", "ok", time.time(), result_count=1)],
+        )
+
+    def boom(*args, **kwargs):
+        raise AssertionError("intentional evidence-only mode must not synthesize")
+
+    monkeypatch.setattr(research_service, "_run_web_search_fallback", fake_web_search)
+    monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)
+    monkeypatch.setattr(research_service, "_evidence_only_synthesis", boom)
+
+    result = await service.research(
+        "今天国内 AI 新闻",
+        evidence_dir=str(tmp_path),
+        fallback="auto",
+        synthesize=False,
+    )
+
+    assert result["ok"] is True
+    assert result["final_answer"] == ""
+    assert result["content"] == ""
+    assert result["response_mode"] == "evidence"
+    assert result["synthesis_enabled"] is False
+    assert result["citations"]
+    assert result["evidence_items"]
+    assert not any("budget exhausted before synthesis" in gap.get("reason", "") for gap in result["gaps"])
 
 
 @pytest.mark.asyncio

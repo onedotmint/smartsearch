@@ -419,6 +419,37 @@ def build_rules_route(
     )
 
 
+EVIDENCE_ROUTING_POLICY_VERSION = "evidence-routing-v1"
+
+
+def project_evidence_routing(query: str) -> dict[str, Any]:
+    """Deterministic rules-only projection for evidence-first v2 composition.
+
+    Always requests source_discovery. Adds docs_discovery only when shared rules
+    request docs_search. Never triggers embeddings, classifier, Provider I/O,
+    implicit fetch, vertical search, or answer synthesis.
+    """
+    route = build_rules_route(query, mode="rules")
+    requested_operations = ["source_discovery"]
+    reason_codes = ["source_discovery_always"]
+    if route.docs_intent or "docs_search" in route.required_capabilities:
+        requested_operations.append("docs_discovery")
+        reason_codes.append("docs_search_rules_match")
+    return {
+        "policy_version": EVIDENCE_ROUTING_POLICY_VERSION,
+        "requested_operations": list(requested_operations),
+        "include_docs_discovery": "docs_discovery" in requested_operations,
+        "reason_codes": list(reason_codes),
+        "legacy_capabilities": list(route.required_capabilities),
+        "signals": {
+            "docs_api_intent": bool(route.docs_intent),
+            "fetch_intent": bool(route.fetch_intent),
+            "vertical_intent": bool(route.intent_signals.get("vertical_intent")),
+            "web_current_intent": bool(route.web_current_intent),
+        },
+    }
+
+
 def _cosine_similarity(left: list[float], right: list[float]) -> float:
     if not left or not right or len(left) != len(right):
         return 0.0

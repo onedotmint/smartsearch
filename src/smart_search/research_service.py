@@ -35,7 +35,7 @@ from .research_plan_render import (
     quote_arg as _quote_arg,
     render_v1_steps,
 )
-from .search_service import _run_web_fetch_fallback, _run_web_search_fallback
+from .operation_runtime import _run_web_fetch_fallback, _run_web_search_fallback
 from .security import sanitize_text
 from .service_support import (
     DEEP_ALLOWED_TOOLS,
@@ -489,7 +489,11 @@ async def _run_research_fetch_batch(
                     fallback=fallback,
                     preferred_order=entry["preferred_order"],
                 )
-        error_type = "budget_exhausted" if any(attempt.get("status") == "budget_exhausted" for attempt in attempts) else ""
+        error_type = (
+            "budget_exhausted"
+            if any(attempt.get("error_type") == "budget_exhausted" for attempt in attempts)
+            else ""
+        )
         return {
             "entry": entry,
             "fetch_result": fetch_result,
@@ -1064,10 +1068,15 @@ async def research(
     budget: str = "deep",
     evidence_dir: str = "",
     fallback: str = "auto",
+    *,
+    synthesize: bool | None = None,
 ) -> dict[str, Any]:
     start = time.time()
     question = query.strip()
     fallback_mode = (fallback or "auto").strip().lower()
+    # None preserves the bare legacy research path; explicit False/True is research-run.
+    synthesis_enabled = True if synthesize is None else bool(synthesize)
+    response_mode = "synthesized" if synthesis_enabled else "evidence"
     if fallback_mode not in {"auto", "off"}:
         return {
             "ok": False,
@@ -1109,8 +1118,8 @@ async def research(
         "research",
         command_capabilities,
         budget=_deep_budget(budget or "deep"),
-        allow_synthesis=True,
-        response_mode="synthesized",
+        allow_synthesis=synthesis_enabled,
+        response_mode=response_mode,
     )
     if not command_capabilities.get("ok"):
         evidence_bundle = EvidenceBundle()
@@ -1384,7 +1393,10 @@ async def research(
     evidence_items = evidence_bundle.evidence_items
     discovery_sources = evidence_bundle.discovery_candidates
     synthesis_error = ""
-    if allow_synthesis():
+    if not synthesis_enabled:
+        # Intentional evidence-only mode skips synthesis budget and synthesizer.
+        final_answer = ""
+    elif allow_synthesis():
         with observe_stage("research.synthesis"):
             try:
                 final_answer = _evidence_only_synthesis(question, evidence_bundle)
@@ -1434,6 +1446,8 @@ async def research(
         "evidence_dir": evidence_root,
         "artifacts_persisted": persist_artifacts,
         "synthesis_error": synthesis_error,
+        "response_mode": response_mode,
+        "synthesis_enabled": synthesis_enabled,
         "capability_execution_plan": execution_plan.to_dict(),
         **capability_metadata,
         "degraded_reason": _combined_degraded_reason(evidence_bundle, capability_metadata),

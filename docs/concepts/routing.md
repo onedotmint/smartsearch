@@ -36,6 +36,10 @@ Classifier output cannot select providers. Unknown capabilities and provider nam
 
 `hybrid` is fail-open. Missing or failing remote router settings are recorded in `degraded_reason`, then local rules continue. A remote router failure does not become a provider error for the search command.
 
+## Evidence-first projection
+
+Schema-v2 composite `search` uses a deterministic rules-only projection of the same local rule source. It always requests `source_discovery` and adds `docs_discovery` only when local rules select `docs_search`. This projection does not invoke embeddings, classifiers, Providers, implicit fetch, vertical search, or answer synthesis. Its output is capability routing metadata, not a reachability check or a replacement for the full `route` command.
+
 Relevant settings:
 
 | Key | Meaning |

@@ -29,12 +29,14 @@ class NamespaceArgumentParser(SmartSearchArgumentParser):
     def parse_args(self, args=None, namespace=None):  # type: ignore[override]
         raw_args = list(sys.argv[1:] if args is None else args)
         if prescan_schema_version(raw_args).get("v2"):
-            normalized_args, operation = raw_args, None
+            normalized_args, operation, attrs = raw_args, None, {}
         else:
-            normalized_args, operation = classify_namespace_argv(raw_args)
+            normalized_args, operation, attrs = classify_namespace_argv(raw_args)
         parsed = super().parse_args(normalized_args, namespace)
         if operation is not None:
             parsed.namespace_operation = operation
+        for key, value in attrs.items():
+            setattr(parsed, key, value)
         return parsed
 
 
@@ -542,6 +544,13 @@ def build_parser(*, raise_on_error: bool = False) -> argparse.ArgumentParser:
     provider_status = provider_sub.add_parser("status", help="Show local provider eligibility without probing.")
     provider_status.set_defaults(command="provider-status", namespace_operation="provider-status")
     _add_format_args(provider_status)
+    provider_probe = provider_sub.add_parser(
+        "probe",
+        help="Probe one named provider's smallest supported connection operation.",
+    )
+    provider_probe.set_defaults(command="provider-probe", namespace_operation="provider-probe")
+    provider_probe.add_argument("provider", help="Runtime provider id from the provider registry.")
+    _add_format_args(provider_probe)
     routes = provider_sub.add_parser("routes", help="Manage ordered main-search routes.")
     routes_sub = routes.add_subparsers(dest="model_command", required=True, parser_class=_SubParser)
     for name in ("current", "list"):

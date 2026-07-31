@@ -21,8 +21,12 @@ ROOT = Path(__file__).parents[1]
     ("argv", "command", "operation"),
     [
         (["research", "plan", "topic"], "deep", "research-plan"),
+        (["research", "run", "topic"], "research", "research-run"),
         (["doctor", "probe"], "doctor", "doctor-probe"),
+        (["doctor", "status"], "doctor", "doctor-status"),
         (["provider", "list"], "provider-list", "provider-list"),
+        (["provider", "status"], "provider-status", "provider-status"),
+        (["provider", "probe", "exa"], "provider-probe", "provider-probe"),
         (["provider", "routes", "current"], "model", "provider-routes-current"),
         (["provider", "exa", "search", "topic"], "exa-search", "provider-exa-search"),
         (["provider", "context7", "docs", "/react", "hooks"], "context7-docs", "provider-context7-docs"),
@@ -43,17 +47,26 @@ def test_namespace_paths_normalize_to_v1_command(argv, command, operation):
 def test_collision_and_deferred_paths_remain_honest():
     parser = build_parser()
     assert parser.parse_args(["research", "plan"]).command == "research"
+    assert parser.parse_args(["research", "run"]).command == "research"
     assert parser.parse_args(["rs", "plan"]).command == "research"
     assert parser.parse_args(["research", "--budget", "quick", "plan", "topic"]).namespace_operation == "research-plan"
     assert parser.parse_args(["research", "plan", "--budget", "quick", "topic"]).namespace_operation == "research-plan"
     assert parser.parse_args(["research", "plan", "--", "-topic"]).namespace_operation == "research-plan"
     assert parser.parse_args(["doctor", "--format", "json", "probe"]).namespace_operation == "doctor-probe"
+    assert parser.parse_args(["doctor", "--format", "json", "status"]).namespace_operation == "doctor-status"
+    run_args = parser.parse_args(["research", "run", "topic"])
+    assert (run_args.command, run_args.namespace_operation, run_args.query) == ("research", "research-run", "topic")
+    assert getattr(run_args, "synthesize", False) is False
+    synth_args = parser.parse_args(["research", "run", "topic", "--synthesize"])
+    assert synth_args.namespace_operation == "research-run"
+    assert synth_args.synthesize is True
+    with pytest.raises(SystemExit):
+        parser.parse_args(["research", "topic", "--synthesize"])
     for argv in (
-        ["research", "run", "topic"],
-        ["doctor", "status"],
-        ["provider", "probe", "exa"],
         ["research-plan", "topic"],
         ["doctor-probe"],
+        ["doctor-status"],
+        ["research-run", "topic"],
     ):
         with pytest.raises(SystemExit):
             parser.parse_args(argv)

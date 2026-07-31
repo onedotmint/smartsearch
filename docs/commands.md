@@ -113,20 +113,26 @@ smart-search map "https://docs.example.com" --instructions "Find API reference p
 
 ```sh
 smart-search deep "Deep research recent Bitcoin market movement" --budget standard --format json
+smart-search research plan "Deep research recent Bitcoin market movement" --budget standard --format json
+smart-search research run "Deep research recent Bitcoin market movement" --budget deep --fallback auto --format json
+smart-search research run "Deep research recent Bitcoin market movement" --synthesize --format json
 smart-search research "Deep research recent Bitcoin market movement" --budget deep --fallback auto --format markdown
 ```
 
-`deep --budget` accepts `quick`, `standard`, or `deep` and remains offline. `research --budget` accepts the same values and runs the live executor. `research --fallback auto` permits same-capability fallback; `--fallback off` uses only the first eligible provider inside each capability.
+`deep --budget` accepts `quick`, `standard`, or `deep` and remains offline. `research plan` is the collision-safe namespace for the same offline planner. `research run` is the Agent-facing staged executor: it reuses the established research pipeline but defaults to evidence-only mode (`final_answer` and `content` are empty, `response_mode="evidence"`, `synthesis_enabled=false`). Pass `--synthesize` only when the host wants the existing evidence-only synthesizer. Bare `research QUERY` remains the legacy synthesized live executor. `research --fallback auto` permits same-capability fallback; `--fallback off` uses only the first eligible provider inside each capability. Phase 5 does not add a strict v2 research envelope.
 
 ### Compatibility namespaces
 
-Namespace leaves preserve the existing v1 renderer, JSON envelope, redaction, file-output behavior, and exit codes. Their JSON `command` is the corresponding legacy canonical command so scripts retain the same compatibility projection. Namespace names have no aliases; legacy commands and aliases remain supported.
+Namespace leaves preserve the existing v1 renderer, JSON envelope, redaction, file-output behavior, and exit codes unless a dedicated new command id is listed below. Namespace names have no aliases; legacy commands and aliases remain supported.
 
-| Namespace path | Legacy-compatible handler | Network behavior |
+| Namespace path | Command / handler | Network behavior |
 | --- | --- | --- |
 | `research plan QUERY` | `deep` | Offline planning |
+| `research run QUERY` | `research-run` over the research executor | Live staged evidence workflow; synthesis opt-in |
 | `doctor probe` | `doctor` | Live aggregate diagnostic |
+| `doctor status` | `doctor-status` | Local readiness only; no provider client or probe |
 | `provider list` / `provider status` | Local provider catalog | Local only; no provider client or probe |
+| `provider probe PROVIDER` | `provider-probe` | One explicit provider/family probe; no fallback |
 | `provider routes current\|list\|add\|remove` | `model` | Local config |
 | `provider exa search\|similar` | `exa-search` / `exa-similar` | Exact Exa operation |
 | `provider context7 library\|docs` | Context7 commands | Exact Context7 operation |
@@ -138,16 +144,19 @@ Examples:
 
 ```sh
 smart-search research plan "Compare two current API designs" --budget standard --format json
+smart-search research run "Compare two current API designs" --format json
+smart-search doctor status --format json
 smart-search doctor probe --format markdown
 smart-search provider list --format json
 smart-search provider status --format json
+smart-search provider probe exa --format json
 smart-search provider routes current --format json
 smart-search provider exa search "OpenAI Responses API documentation" --num-results 5 --format json
 smart-search dev route-explain "React useEffect docs" --router-mode rules --format json
 smart-search experimental anysearch search "CVE-2024-3094" --domain security.cve --format json
 ```
 
-`research run`, `doctor status`, and `provider probe` are intentionally unavailable in this release. They require dedicated owners and are not aliases for existing live workflows.
+`doctor status` reports local configuration and evidence-path readiness (`local_only=true`). Bare `doctor` and `doctor probe` remain the live aggregate diagnostic. `provider probe PROVIDER` validates the id against the runtime registry, checks local eligibility first, and then runs only that provider's smallest supported connection operation.
 
 ## Ordered model routes
 
