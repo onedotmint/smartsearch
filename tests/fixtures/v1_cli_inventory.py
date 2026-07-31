@@ -91,15 +91,9 @@ ALIAS_TO_CANONICAL: dict[str, str] = {
 # this literal rather than importing PUBLIC_COMMANDS so surface drift is caught.
 ROOT_HELP_COMMANDS: tuple[str, ...] = (
     "search",
-    "route",
     "fetch",
-    "map",
-    "deep",
-    "research",
-    "doctor",
+    "capabilities",
     "setup",
-    "config",
-    "skills",
 )
 
 NESTED_CANONICAL_SUBCOMMANDS: dict[str, tuple[str, ...]] = {
@@ -202,7 +196,10 @@ def inventory_from_parser(parser=None) -> dict[str, Any]:
     top = _command_subparsers(parser)
     canonical: set[str] = set()
     aliases: dict[str, str] = {}
+    legacy_names = set(CANONICAL_TOP_LEVEL_COMMANDS).union(ALIAS_TO_CANONICAL)
     for name, subparser in top.choices.items():
+        if name not in legacy_names:
+            continue
         command = subparser.get_default("command")
         if name == command:
             canonical.add(name)

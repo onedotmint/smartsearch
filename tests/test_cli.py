@@ -30,8 +30,10 @@ def test_help_contains_commands(capsys):
 
     out = capsys.readouterr().out
     assert "search" in out
-    assert "doctor" in out
+    assert "fetch" in out
+    assert "capabilities" in out
     assert "setup" in out
+    assert "doctor" not in out
     assert "regression" not in out
     assert "exa-search" not in out
     assert "route-calibrate" not in out

@@ -16,6 +16,8 @@ smart-search setup
 
 npm 包会在安装时创建隔离的 Python 运行时。源码 checkout 也支持直接使用 Python，见[入门指南](docs/getting-started.md)。
 
+根级 `--help` 有意只显示 `search`、`fetch`、`capabilities` 和 `setup`。使用 `smart-search --help-all` 可发现 Advanced、provider、developer、experimental 和 legacy-compatible 命令。
+
 前置条件：
 
 - 使用 npm 包需要 Node.js 18 或更高版本。
@@ -91,17 +93,17 @@ smart-search search "React useEffect cleanup docs" --format json
 smart-search route "React useEffect cleanup docs" --router-mode rules --format markdown
 
 # 先规划，再实时执行
-smart-search deep "比较两个当前 API 设计" --budget standard --format json
+smart-search research plan "比较两个当前 API 设计" --budget standard --format json
 smart-search research "比较两个当前 API 设计" --budget deep --format markdown
 
-# 安装或刷新 AI agent skill
-smart-search setup --non-interactive --install-skills codex,claude,cursor,hermes
-smart-search skills status --targets codex --format json
-smart-search skills update --targets codex --format json
+# 本地 provider 元数据和有序备用模型路由
+smart-search provider status --format json
+smart-search provider routes list --format markdown
+smart-search provider routes add --id primary --provider openai-compatible --api-url "https://relay-a.example/v1" --api-key "key-a" --model "model-a"
+smart-search provider routes add --id backup --provider openai-compatible --api-url "https://relay-b.example/v1" --api-key "key-b" --model "model-b"
 
-# 添加并查看按顺序备用的模型路由
-smart-search model add --id primary --provider openai-compatible --api-url "https://relay-a.example/v1" --api-key "key-a" --model "model-a"
-smart-search model add --id backup --provider openai-compatible --api-url "https://relay-b.example/v1" --api-key "key-b" --model "model-b"
+# 兼容入口仍可使用
+smart-search deep "比较两个当前 API 设计" --budget standard --format json
 smart-search model list --format markdown
 ```
 
@@ -135,7 +137,7 @@ smart-search regression
 smart-search smoke --mock --format json
 ```
 
-`doctor` 报告脱敏配置和连通性。`diagnose` 用于排查 OpenAI-compatible 搜索卡住或超时。`regression` 和 mock `smoke` 不需要 provider key。
+`doctor probe` 是显式的联网聚合诊断；`provider list` 和 `provider status` 是仅本地的元数据与资格视图。legacy `doctor`、`diagnose`、`regression` 和 `smoke` 仍保持兼容。
 
 ## 开发验证
 

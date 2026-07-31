@@ -54,6 +54,10 @@ Rules:
 - Apart from an explicit `--format json`, v2 rejects v1 command options before configuration or Provider work; `map` remains Advanced and accepts only its URL in this release.
 - Existing v1 command semantics, JSON wrapper, and Skill workflows are unchanged.
 
+## Command discovery
+
+Root `smart-search --help` intentionally advertises only `search`, `fetch`, `capabilities`, and `setup`. `map` is Advanced; provider, developer, experimental, and legacy-compatible entries remain callable but are not root-help commands. Run `smart-search --help-all` for the deterministic complete command inventory.
+
 ## Core commands
 
 | Command | Alias | Use |
@@ -114,7 +118,38 @@ smart-search research "Deep research recent Bitcoin market movement" --budget de
 
 `deep --budget` accepts `quick`, `standard`, or `deep` and remains offline. `research --budget` accepts the same values and runs the live executor. `research --fallback auto` permits same-capability fallback; `--fallback off` uses only the first eligible provider inside each capability.
 
-### Ordered model routes
+### Compatibility namespaces
+
+Namespace leaves preserve the existing v1 renderer, JSON envelope, redaction, file-output behavior, and exit codes. Their JSON `command` is the corresponding legacy canonical command so scripts retain the same compatibility projection. Namespace names have no aliases; legacy commands and aliases remain supported.
+
+| Namespace path | Legacy-compatible handler | Network behavior |
+| --- | --- | --- |
+| `research plan QUERY` | `deep` | Offline planning |
+| `doctor probe` | `doctor` | Live aggregate diagnostic |
+| `provider list` / `provider status` | Local provider catalog | Local only; no provider client or probe |
+| `provider routes current\|list\|add\|remove` | `model` | Local config |
+| `provider exa search\|similar` | `exa-search` / `exa-similar` | Exact Exa operation |
+| `provider context7 library\|docs` | Context7 commands | Exact Context7 operation |
+| `provider zhipu search` / `provider zhipu-mcp search\|reader` | Zhipu direct commands | Exact provider operation |
+| `dev route-explain`, `dev route-calibrate`, `dev diagnose openai-compatible`, `dev smoke`, `dev regression`, `dev skills status\|update` | Matching legacy command | Diagnostic, local, or explicit network behavior |
+| `experimental anysearch ...` / `experimental zread ...` | Matching explicit provider command | Experimental exact-provider operation |
+
+Examples:
+
+```sh
+smart-search research plan "Compare two current API designs" --budget standard --format json
+smart-search doctor probe --format markdown
+smart-search provider list --format json
+smart-search provider status --format json
+smart-search provider routes current --format json
+smart-search provider exa search "OpenAI Responses API documentation" --num-results 5 --format json
+smart-search dev route-explain "React useEffect docs" --router-mode rules --format json
+smart-search experimental anysearch search "CVE-2024-3094" --domain security.cve --format json
+```
+
+`research run`, `doctor status`, and `provider probe` are intentionally unavailable in this release. They require dedicated owners and are not aliases for existing live workflows.
+
+## Ordered model routes
 
 Model routes are tried in the order shown by `model list`. A failed timeout, network request, rate-limit, provider, parse, protocol, or empty-result attempt advances to the next route. Local configuration, parameter, and exhausted-budget errors stop the request.
 

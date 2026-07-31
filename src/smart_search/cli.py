@@ -19,6 +19,7 @@ from .cli_constants import (
     EXIT_PARAMETER_ERROR,
     EXIT_RUNTIME_ERROR,
     prescan_schema_version,
+    help_all_text,
 )
 from .cli_parser import build_parser
 
@@ -136,6 +137,9 @@ def _print_result(
 def main(argv: list[str] | None = None) -> int:
     global _CLI_FORCE_OUTPUT
     raw_argv = list(argv) if argv is not None else list(sys.argv[1:])
+    if raw_argv == ["--help-all"]:
+        sys.stdout.write(help_all_text())
+        return EXIT_OK
     prescan = prescan_schema_version(raw_argv)
     want_v2 = bool(prescan.get("v2"))
 

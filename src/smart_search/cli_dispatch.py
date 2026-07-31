@@ -6,6 +6,14 @@ from .capability_service import _minimum_profile_result
 from .cli import _exit_code, _print_result
 
 async def _run_async(args: argparse.Namespace) -> int:
+    if args.command == "provider-list":
+        from .provider_catalog import provider_catalog
+
+        return _print_result("provider-list", provider_catalog(include_status=False), args.format, args.output)
+    if args.command == "provider-status":
+        from .provider_catalog import provider_catalog
+
+        return _print_result("provider-status", provider_catalog(include_status=True), args.format, args.output)
     if args.command == "search":
         search_kwargs = {
             "platform": args.platform,

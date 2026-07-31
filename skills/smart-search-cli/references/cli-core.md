@@ -17,7 +17,7 @@
 - Private API keys should be saved with `smart-search setup` or `smart-search config set`; environment variables remain supported for CI and advanced users.
 - Do not depend on MCP inline `env` values or committed API-key environment variables for CLI use.
 - On Windows with mise, the managed package name is `npm:@onedotmint/smart-search`; the executable remains `smart-search`. Diagnose mise managed installs with `mise ls "npm:@onedotmint/smart-search"` and `mise which smart-search`.
-- The root `smart-search --help` lists core workflow commands only. Provider-specific, diagnostic, calibration, smoke, regression, and model commands remain callable and are documented here; use `smart-search COMMAND --help` for command-level details.
+- The root `smart-search --help` lists only `search`, `fetch`, `capabilities`, and `setup`. Run `smart-search --help-all` for complete namespace and legacy discovery; provider-specific, diagnostic, calibration, smoke, regression, and model commands remain callable.
 
 ## Commands
 
@@ -51,7 +51,11 @@
 - `smart-search model add --id ID [--provider xai-responses|openai-compatible] --api-url URL --api-key KEY --model MODEL [--tools CSV] [--fallback-models CSV] [--stream|--no-stream] [--format json|markdown|content] [--output PATH]`
 - `smart-search model remove ID [--format json|markdown|content] [--output PATH]`
 - `smart-search regression`
-- `smart-search smoke [--mode mock|live] [--mock] [--live] [--format json|markdown|content] [--output PATH]`
+- `smart-search research plan QUERY [--budget quick|standard|deep] [--evidence-dir PATH] [--format json|markdown|content] [--output PATH]` is the namespace-compatible offline plan entry and projects as legacy `deep`.
+- `smart-search doctor probe [--format json|markdown|content] [--output PATH]` is the explicit live aggregate diagnostic and projects as legacy `doctor`.
+- `smart-search provider list|status [--format json|markdown|content] [--output PATH]` is local-only metadata/eligibility inspection with no Provider client or probe.
+- `smart-search provider routes current|list|add|remove ...`, `provider exa search|similar`, `provider context7 library|docs`, `provider zhipu search`, and `provider zhipu-mcp search|reader` preserve their matching legacy command behavior.
+- `smart-search dev route-explain|route-calibrate|diagnose|smoke|regression|skills ...` and `smart-search experimental anysearch|zread ...` are namespace-compatible developer and explicit experimental entries with no new aliases.
 
 ## Aliases
 

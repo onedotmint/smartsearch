@@ -7,18 +7,35 @@ serialize without loading service, config, providers, or httpx.
 from __future__ import annotations
 
 import argparse
+import sys
 
 from .cli_constants import (
     COMMAND_ALIASES,
     CONFIG_COMMAND_ALIASES,
+    DEFAULT_SKILL_TARGET_IDS,
     MODEL_COMMAND_ALIASES,
     PUBLIC_COMMANDS,
     SKILLS_COMMAND_ALIASES,
     SmartSearchArgumentParser,
     ZHIPU_SEARCH_ENGINE_CHOICES,
+    classify_namespace_argv,
+    prescan_schema_version,
     _get_version,
 )
-from .skill_installer import DEFAULT_SKILL_TARGET_IDS
+
+class NamespaceArgumentParser(SmartSearchArgumentParser):
+    """Top-level parser that recognizes the two collision-safe namespace paths."""
+
+    def parse_args(self, args=None, namespace=None):  # type: ignore[override]
+        raw_args = list(sys.argv[1:] if args is None else args)
+        if prescan_schema_version(raw_args).get("v2"):
+            normalized_args, operation = raw_args, None
+        else:
+            normalized_args, operation = classify_namespace_argv(raw_args)
+        parsed = super().parse_args(normalized_args, namespace)
+        if operation is not None:
+            parsed.namespace_operation = operation
+        return parsed
 
 
 def _hide_advanced_command_help(subparsers: argparse._SubParsersAction) -> None:
@@ -47,7 +64,7 @@ def _add_format_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--research-prompt-file", default="", help="Use a local UTF-8 research Prompt file.")
 
 def build_parser(*, raise_on_error: bool = False) -> argparse.ArgumentParser:
-    parser = SmartSearchArgumentParser(
+    parser = NamespaceArgumentParser(
         prog="smart-search",
         description="Smart Search CLI for AI-agent web research.",
         raise_on_error=raise_on_error,
@@ -516,6 +533,180 @@ def build_parser(*, raise_on_error: bool = False) -> argparse.ArgumentParser:
         "regression", aliases=COMMAND_ALIASES["regression"], help="Run offline CLI regression tests."
     )
     regression_parser.set_defaults(command="regression")
+
+    provider = sub.add_parser("provider", help="Provider operations and local metadata.")
+    provider_sub = provider.add_subparsers(dest="provider_command", required=True, parser_class=_SubParser)
+    provider_list = provider_sub.add_parser("list", help="List provider metadata without probing.")
+    provider_list.set_defaults(command="provider-list", namespace_operation="provider-list")
+    _add_format_args(provider_list)
+    provider_status = provider_sub.add_parser("status", help="Show local provider eligibility without probing.")
+    provider_status.set_defaults(command="provider-status", namespace_operation="provider-status")
+    _add_format_args(provider_status)
+    routes = provider_sub.add_parser("routes", help="Manage ordered main-search routes.")
+    routes_sub = routes.add_subparsers(dest="model_command", required=True, parser_class=_SubParser)
+    for name in ("current", "list"):
+        item = routes_sub.add_parser(name)
+        item.set_defaults(command="model", model_command=name, namespace_operation=f"provider-routes-{name}")
+        _add_format_args(item)
+    route_add = routes_sub.add_parser("add")
+    route_add.set_defaults(command="model", model_command="add", namespace_operation="provider-routes-add")
+    route_add.add_argument("--id", dest="route_id", required=True)
+    route_add.add_argument("--provider", choices=["xai-responses", "openai-compatible"], default="openai-compatible")
+    route_add.add_argument("--api-url", required=True)
+    route_add.add_argument("--api-key", required=True)
+    route_add.add_argument("--model", dest="model_name", required=True)
+    route_add.add_argument("--tools", default="")
+    route_add.add_argument("--fallback-models", default="")
+    route_stream = route_add.add_mutually_exclusive_group()
+    route_stream.add_argument("--stream", dest="stream", action="store_true", default=False)
+    route_stream.add_argument("--no-stream", dest="stream", action="store_false")
+    _add_format_args(route_add)
+    route_remove = routes_sub.add_parser("remove")
+    route_remove.set_defaults(command="model", model_command="remove", namespace_operation="provider-routes-remove")
+    route_remove.add_argument("route_id")
+    _add_format_args(route_remove)
+
+    provider_exa = provider_sub.add_parser("exa", help="Run exact Exa operations.")
+    exa_sub = provider_exa.add_subparsers(dest="provider_exa_command", required=True, parser_class=_SubParser)
+    exa_search = exa_sub.add_parser("search")
+    exa_search.set_defaults(command="exa-search", namespace_operation="provider-exa-search")
+    exa_search.add_argument("query")
+    exa_search.add_argument("--num-results", type=int, default=5)
+    exa_search.add_argument("--search-type", choices=["neural", "keyword", "auto"], default="neural")
+    exa_search.add_argument("--include-text", action="store_true")
+    exa_search.add_argument("--include-highlights", action="store_true")
+    exa_search.add_argument("--start-published-date", default="")
+    exa_search.add_argument("--include-domains", nargs="+", default="")
+    exa_search.add_argument("--exclude-domains", nargs="+", default="")
+    exa_search.add_argument("--category", default="")
+    _add_format_args(exa_search)
+    exa_similar = exa_sub.add_parser("similar")
+    exa_similar.set_defaults(command="exa-similar", namespace_operation="provider-exa-similar")
+    exa_similar.add_argument("url")
+    exa_similar.add_argument("--num-results", type=int, default=5)
+    _add_format_args(exa_similar)
+
+    provider_context7 = provider_sub.add_parser("context7", help="Run exact Context7 operations.")
+    context7_sub = provider_context7.add_subparsers(dest="provider_context7_command", required=True, parser_class=_SubParser)
+    context7_library = context7_sub.add_parser("library")
+    context7_library.set_defaults(command="context7-library", namespace_operation="provider-context7-library")
+    context7_library.add_argument("name")
+    context7_library.add_argument("query", nargs="?", default="")
+    _add_format_args(context7_library)
+    context7_docs = context7_sub.add_parser("docs")
+    context7_docs.set_defaults(command="context7-docs", namespace_operation="provider-context7-docs")
+    context7_docs.add_argument("library_id")
+    context7_docs.add_argument("query")
+    _add_format_args(context7_docs)
+
+    provider_zhipu = provider_sub.add_parser("zhipu", help="Run exact Zhipu REST operations.")
+    zhipu_sub = provider_zhipu.add_subparsers(dest="provider_zhipu_command", required=True, parser_class=_SubParser)
+    zhipu_search_ns = zhipu_sub.add_parser("search")
+    zhipu_search_ns.set_defaults(command="zhipu-search", namespace_operation="provider-zhipu-search")
+    zhipu_search_ns.add_argument("query")
+    zhipu_search_ns.add_argument("--count", type=int, default=10)
+    zhipu_search_ns.add_argument("--search-engine", default="")
+    zhipu_search_ns.add_argument("--search-recency-filter", default="noLimit")
+    zhipu_search_ns.add_argument("--search-domain-filter", default="")
+    zhipu_search_ns.add_argument("--content-size", choices=["medium", "high"], default="medium")
+    _add_format_args(zhipu_search_ns)
+    provider_mcp = provider_sub.add_parser("zhipu-mcp", help="Run exact Zhipu Coding Plan MCP operations.")
+    mcp_sub = provider_mcp.add_subparsers(dest="provider_mcp_command", required=True, parser_class=_SubParser)
+    mcp_search = mcp_sub.add_parser("search")
+    mcp_search.set_defaults(command="zhipu-mcp-search", namespace_operation="provider-zhipu-mcp-search")
+    mcp_search.add_argument("query")
+    mcp_search.add_argument("--count", type=int, default=5)
+    _add_format_args(mcp_search)
+    mcp_reader = mcp_sub.add_parser("reader")
+    mcp_reader.set_defaults(command="zhipu-mcp-reader", namespace_operation="provider-zhipu-mcp-reader")
+    mcp_reader.add_argument("url")
+    _add_format_args(mcp_reader)
+
+    dev = sub.add_parser("dev", help="Developer diagnostics and local maintenance commands.")
+    dev_sub = dev.add_subparsers(dest="dev_command", required=True, parser_class=_SubParser)
+    route_explain = dev_sub.add_parser("route-explain")
+    route_explain.set_defaults(command="route", namespace_operation="dev-route-explain")
+    route_explain.add_argument("query")
+    route_explain.add_argument("--validation", choices=["fast", "balanced", "strict"], default="")
+    route_explain.add_argument("--router-mode", choices=["hybrid", "rules", "off"], default="")
+    _add_format_args(route_explain)
+    route_calibrate = dev_sub.add_parser("route-calibrate")
+    route_calibrate.set_defaults(command="route-calibrate", namespace_operation="dev-route-calibrate")
+    route_calibrate.add_argument("--models", default="")
+    _add_format_args(route_calibrate)
+    diagnose = dev_sub.add_parser("diagnose")
+    diagnose_sub = diagnose.add_subparsers(dest="diagnose_target", required=True, parser_class=_SubParser)
+    diagnose_openai = diagnose_sub.add_parser("openai-compatible")
+    diagnose_openai.set_defaults(command="diagnose", diagnose_target="openai-compatible", namespace_operation="dev-diagnose-openai-compatible")
+    diagnose_openai.add_argument("--timeout", type=float, default=30, metavar="SECONDS")
+    diagnose_openai.add_argument("--format", choices=["json", "markdown"], default="markdown")
+    diagnose_openai.add_argument("--output", default="")
+    diagnose_openai.add_argument("--force", action="store_true")
+    smoke = dev_sub.add_parser("smoke")
+    smoke.set_defaults(command="smoke", namespace_operation="dev-smoke")
+    smoke_mode = smoke.add_mutually_exclusive_group()
+    smoke_mode.add_argument("--mode", choices=["mock", "live"], default=None)
+    smoke_mode.add_argument("--mock", dest="mode", action="store_const", const="mock")
+    smoke_mode.add_argument("--live", dest="mode", action="store_const", const="live")
+    smoke.set_defaults(mode="mock")
+    _add_format_args(smoke)
+    regression = dev_sub.add_parser("regression")
+    regression.set_defaults(command="regression", namespace_operation="dev-regression")
+    dev_skills = dev_sub.add_parser("skills")
+    dev_skills_sub = dev_skills.add_subparsers(dest="skills_command", required=True, parser_class=_SubParser)
+    for name in ("status", "update"):
+        item = dev_skills_sub.add_parser(name)
+        item.set_defaults(command="skills", skills_command=name, namespace_operation=f"dev-skills-{name}")
+        item.add_argument("--targets", default=",".join(DEFAULT_SKILL_TARGET_IDS))
+        item.add_argument("--all", action="store_true")
+        item.add_argument("--skills-root", default="")
+        _add_format_args(item)
+
+    experimental = sub.add_parser("experimental", help="Explicit experimental provider operations.")
+    experimental_sub = experimental.add_subparsers(dest="experimental_command", required=True, parser_class=_SubParser)
+    anysearch = experimental_sub.add_parser("anysearch")
+    any_sub = anysearch.add_subparsers(dest="anysearch_command", required=True, parser_class=_SubParser)
+    any_domains = any_sub.add_parser("domains")
+    any_domains.set_defaults(command="anysearch-domains", namespace_operation="experimental-anysearch-domains")
+    any_domains.add_argument("domain", nargs="?", default="")
+    _add_format_args(any_domains)
+    any_search = any_sub.add_parser("search")
+    any_search.set_defaults(command="anysearch-search", namespace_operation="experimental-anysearch-search")
+    any_search.add_argument("query")
+    any_search.add_argument("--domain", default="")
+    any_search.add_argument("--sub-domain", default="")
+    any_search.add_argument("--max-results", type=int, default=5)
+    _add_format_args(any_search)
+    any_extract = any_sub.add_parser("extract")
+    any_extract.set_defaults(command="anysearch-extract", namespace_operation="experimental-anysearch-extract")
+    any_extract.add_argument("url")
+    any_extract.add_argument("--max-length", type=int, default=20000)
+    _add_format_args(any_extract)
+    any_batch = any_sub.add_parser("batch")
+    any_batch.set_defaults(command="anysearch-batch", namespace_operation="experimental-anysearch-batch")
+    any_batch.add_argument("queries", nargs="+")
+    any_batch.add_argument("--max-results", type=int, default=3)
+    _add_format_args(any_batch)
+    zread = experimental_sub.add_parser("zread")
+    zread_sub = zread.add_subparsers(dest="zread_command", required=True, parser_class=_SubParser)
+    zread_doc = zread_sub.add_parser("search-doc")
+    zread_doc.set_defaults(command="zhipu-mcp-search-doc", namespace_operation="experimental-zread-search-doc")
+    zread_doc.add_argument("repo")
+    zread_doc.add_argument("query")
+    zread_doc.add_argument("--max-results", type=int, default=5)
+    _add_format_args(zread_doc)
+    zread_tree = zread_sub.add_parser("repo-structure")
+    zread_tree.set_defaults(command="zhipu-mcp-repo-structure", namespace_operation="experimental-zread-repo-structure")
+    zread_tree.add_argument("repo")
+    zread_tree.add_argument("--ref", default="")
+    _add_format_args(zread_tree)
+    zread_file = zread_sub.add_parser("read-file")
+    zread_file.set_defaults(command="zhipu-mcp-read-file", namespace_operation="experimental-zread-read-file")
+    zread_file.add_argument("repo")
+    zread_file.add_argument("path")
+    zread_file.add_argument("--ref", default="")
+    _add_format_args(zread_file)
+
     _hide_advanced_command_help(sub)
     return parser
 

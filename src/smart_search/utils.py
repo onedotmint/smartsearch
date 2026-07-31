@@ -5,9 +5,10 @@ from contextvars import ContextVar
 import os
 from pathlib import Path
 import re
-from typing import Iterator, List
+from typing import TYPE_CHECKING, Iterator, List
 
-from .providers.base import SearchResult
+if TYPE_CHECKING:
+    from .providers.base import SearchResult
 
 
 _URL_PATTERN = re.compile(r'https?://[^\s<>"\'`，。、；：！？》）】\)]+')

@@ -7,6 +7,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from .cli_constants import DEFAULT_SKILL_TARGET_IDS as _DEFAULT_SKILL_TARGET_IDS
+
 
 SKILL_NAME = "smart-search-cli"
 PACKAGE_ROOT_ENV = "SMART_SEARCH_PACKAGE_ROOT"
@@ -44,7 +46,7 @@ SKILL_TARGETS: tuple[SkillTarget, ...] = (
 )
 
 SKILL_TARGET_BY_ID = {target.target_id: target for target in SKILL_TARGETS}
-DEFAULT_SKILL_TARGET_IDS = [target.target_id for target in SKILL_TARGETS if target.default]
+DEFAULT_SKILL_TARGET_IDS = list(_DEFAULT_SKILL_TARGET_IDS)
 
 _TARGET_ALIASES = {
     "agents": "codex",

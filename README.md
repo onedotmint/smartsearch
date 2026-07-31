@@ -16,6 +16,8 @@ smart-search setup
 
 The npm package creates an isolated Python runtime during installation. Direct Python use is also supported; see [Getting started](docs/getting-started.md).
 
+Root help intentionally shows only `search`, `fetch`, `capabilities`, and `setup`. Use `smart-search --help-all` to discover Advanced, provider, developer, experimental, and legacy-compatible commands.
+
 Prerequisites:
 
 - Node.js 18 or newer for the npm package.
@@ -91,17 +93,17 @@ smart-search search "React useEffect cleanup docs" --format json
 smart-search route "React useEffect cleanup docs" --router-mode rules --format markdown
 
 # Offline plan, then live execution
-smart-search deep "Compare two current API designs" --budget standard --format json
+smart-search research plan "Compare two current API designs" --budget standard --format json
 smart-search research "Compare two current API designs" --budget deep --format markdown
 
-# Install or refresh the AI-agent skill
-smart-search setup --non-interactive --install-skills codex,claude,cursor,hermes
-smart-search skills status --targets codex --format json
-smart-search skills update --targets codex --format json
+# Local provider metadata and ordered backup routes
+smart-search provider status --format json
+smart-search provider routes list --format markdown
+smart-search provider routes add --id primary --provider openai-compatible --api-url "https://relay-a.example/v1" --api-key "key-a" --model "model-a"
+smart-search provider routes add --id backup --provider openai-compatible --api-url "https://relay-b.example/v1" --api-key "key-b" --model "model-b"
 
-# Add and inspect ordered backup model routes
-smart-search model add --id primary --provider openai-compatible --api-url "https://relay-a.example/v1" --api-key "key-a" --model "model-a"
-smart-search model add --id backup --provider openai-compatible --api-url "https://relay-b.example/v1" --api-key "key-b" --model "model-b"
+# Compatibility entries remain valid
+smart-search deep "Compare two current API designs" --budget standard --format json
 smart-search model list --format markdown
 ```
 
@@ -133,7 +135,7 @@ smart-search regression
 smart-search smoke --mock --format json
 ```
 
-`doctor` reports masked configuration and connectivity. `diagnose` is for OpenAI-compatible search hangs or timeouts. `regression` and mock `smoke` do not require provider credentials.
+`doctor probe` is the explicit live aggregate diagnostic; `provider list` and `provider status` are local-only metadata and eligibility views. Legacy `doctor`, `diagnose`, `regression`, and `smoke` remain compatible commands.
 
 ## Development
 
