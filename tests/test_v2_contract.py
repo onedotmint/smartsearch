@@ -33,10 +33,15 @@ from smart_search.v2_contract import (
     V2Routing,
     V2Status,
     V2TraceEvent,
+    V2_CAPABILITY_OPERATION_IDS,
     V2_ENVELOPE_JSON_SCHEMA,
+    V2_ENVELOPE_OPERATION_IDS,
+    V2_META_OPERATION_CAPABILITY_STATUS,
+    V2_META_OPERATION_IDS,
     V2_OPERATION_IDS,
     V2_SCHEMA_VERSION,
     V2_TOP_LEVEL_FIELDS,
+    capability_status_result,
     exit_code_for,
     parser_error_result,
     safe_trace,
@@ -161,6 +166,11 @@ def test_v2_operation_ids_match_phase_1_taxonomy():
     from smart_search.capability_taxonomy import V2_CAPABILITY_IDS
 
     assert V2_OPERATION_IDS == V2_CAPABILITY_IDS
+    assert V2_CAPABILITY_OPERATION_IDS == V2_CAPABILITY_IDS
+    assert V2_META_OPERATION_IDS == (V2_META_OPERATION_CAPABILITY_STATUS,)
+    assert V2_ENVELOPE_OPERATION_IDS == V2_CAPABILITY_OPERATION_IDS + V2_META_OPERATION_IDS
+    assert V2_META_OPERATION_CAPABILITY_STATUS not in V2_CAPABILITY_OPERATION_IDS
+    assert V2_META_OPERATION_CAPABILITY_STATUS not in V2_CAPABILITY_IDS
 
 
 def test_importing_v2_contract_does_not_load_config_or_create_config_dir(tmp_path):
@@ -600,27 +610,30 @@ def imported_modules(path: Path) -> set[str]:
 
 
 def test_v2_contract_import_isolation_is_bidirectional():
-    for name in ("cli.py", "cli_parser.py", "cli_dispatch.py", "cli_contract.py", "service.py"):
+    # v1 dispatch/contract/service must not import v2_contract. Atomic Phase 3
+    # exposure is limited to cli.py (lazy), cli_v2, api_v2, and canonical modules.
+    for name in ("cli_dispatch.py", "cli_contract.py", "service.py", "cli_parser.py"):
         imports = imported_modules(ROOT / "src" / "smart_search" / name)
-        assert not any("v2_contract" in item for item in imports)
+        assert not any("v2_contract" in item for item in imports), name
     imports = imported_modules(ROOT / "src" / "smart_search" / "v2_contract.py")
     allowed_local = {".security"}
     assert {item for item in imports if item.startswith(".")} <= allowed_local
     assert not any(fragment in item for item in imports for fragment in ("cli", "service", "config", "provider"))
 
 
-def test_v1_parser_schema_and_service_facade_remain_unwired():
+def test_v1_service_facade_remains_free_of_v2_exports():
     from smart_search import service
     from smart_search.cli_contract import SCHEMA_VERSION
     from smart_search.cli_parser import build_parser
 
     parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["search", "query", "--schema-version", "2"])
-    assert "--schema-version" not in parser.format_help()
+    help_text = parser.format_help()
+    assert "--schema-version" in help_text
+    args = parser.parse_args(["--schema-version", "2", "search", "query"])
+    assert args.schema_version == "2"
     assert SCHEMA_VERSION == "1"
     assert V2_SCHEMA_VERSION == "2"
-    for name in ("V2Envelope", "serialize_result", "parser_error_result", "v2_contract"):
+    for name in ("V2Envelope", "serialize_result", "parser_error_result", "v2_contract", "api_v2"):
         assert name not in service.__all__
         assert not hasattr(service, name)
 
@@ -641,3 +654,113 @@ def test_raw_unknown_fields_and_types_are_rejected(complete_empty):
         with pytest.raises(V2ContractError):
             validate_envelope_dict(raw)
         assert list(SCHEMA_VALIDATOR.iter_errors(raw))
+
+
+def test_capability_status_complete_and_failed_are_valid():
+    complete = capability_status_result(
+        result={"capabilities": {"source_discovery": {"qualified_providers": ["tavily"]}}},
+        reason_codes=("local_inspection",),
+    )
+    assert complete.operation == V2_META_OPERATION_CAPABILITY_STATUS
+    assert complete.command == "capabilities"
+    assert complete.status == V2Status.COMPLETE
+    assert complete.attempts == ()
+    assert complete.degradation == ()
+    assert complete.evidence.candidates == ()
+    assert complete.routing.requested_capabilities == ()
+    output = serialize_result(complete)
+    validate_envelope_dict(output)
+    SCHEMA_VALIDATOR.validate(output)
+
+    failed = capability_status_result(
+        status=V2Status.FAILED,
+        error=V2Error(V2ErrorCode.CONFIGURATION_ERROR, "no config", False, {}),
+    )
+    assert failed.operation == V2_META_OPERATION_CAPABILITY_STATUS
+    failed_out = serialize_result(failed)
+    validate_envelope_dict(failed_out)
+    SCHEMA_VALIDATOR.validate(failed_out)
+
+    arg_failed = capability_status_result(
+        status=V2Status.FAILED,
+        error=V2Error(V2ErrorCode.INVALID_ARGUMENT, "bad arg", False, {"flag": "x"}),
+    )
+    assert arg_failed.operation == V2_META_OPERATION_CAPABILITY_STATUS
+    serialize_result(arg_failed)
+
+
+def test_capability_status_rejects_degraded_and_nonempty_shape():
+    with pytest.raises(V2ContractError):
+        capability_status_result(status=V2Status.DEGRADED)
+
+    model = capability_status_result()
+    with pytest.raises(V2ContractError):
+        validate_result(replace(
+            model,
+            evidence=V2Evidence(candidates=(V2Candidate("c1", "https://x", "tavily", "T", ""),)),
+        ))
+    with pytest.raises(V2ContractError):
+        validate_result(replace(
+            model,
+            attempts=(V2Attempt("source_discovery", "tavily", "ok", None, 1, 0),),
+        ))
+    with pytest.raises(V2ContractError):
+        validate_result(replace(
+            model,
+            routing=V2Routing(("source_discovery",), (), "v2", ()),
+        ))
+    with pytest.raises(V2ContractError):
+        validate_result(replace(model, command="search"))
+
+
+def test_capability_status_forbidden_in_capability_bearing_fields():
+    with pytest.raises(V2ContractError):
+        validate_result(envelope(
+            routing=V2Routing(
+                (V2_META_OPERATION_CAPABILITY_STATUS,),
+                (V2_META_OPERATION_CAPABILITY_STATUS,),
+                "v2",
+                ("x",),
+            ),
+        ))
+    with pytest.raises(V2ContractError):
+        validate_result(envelope(
+            attempts=(V2Attempt(V2_META_OPERATION_CAPABILITY_STATUS, "local", "ok", None, 1, 0),),
+        ))
+    with pytest.raises(V2ContractError):
+        validate_result(envelope(
+            V2Status.DEGRADED,
+            degradation=(V2Degradation("partial", V2_META_OPERATION_CAPABILITY_STATUS, "bad"),),
+        ))
+    with pytest.raises(V2ContractError):
+        validate_result(envelope(
+            evidence=V2Evidence(gaps=(V2Gap("g", "msg", V2_META_OPERATION_CAPABILITY_STATUS),)),
+        ))
+    with pytest.raises(V2ContractError):
+        safe_trace([{"operation": V2_META_OPERATION_CAPABILITY_STATUS, "capability": "", "provider": "",
+                     "status": "", "error_code": "", "evidence_id": "", "reason_codes": [], "elapsed_ms": 0}])
+    with pytest.raises(V2ContractError):
+        safe_trace([{"operation": "", "capability": V2_META_OPERATION_CAPABILITY_STATUS, "provider": "",
+                     "status": "", "error_code": "", "evidence_id": "", "reason_codes": [], "elapsed_ms": 0}])
+
+
+def test_identified_capabilities_parser_error_keeps_capability_status_operation():
+    model = parser_error_result(
+        "capabilities",
+        V2_META_OPERATION_CAPABILITY_STATUS,
+        "unknown flag for capabilities",
+    )
+    assert model.operation == V2_META_OPERATION_CAPABILITY_STATUS
+    assert model.routing.requested_capabilities == ()
+    assert model.routing.executed_capabilities == ()
+    assert model.attempts == ()
+    output = serialize_result(model)
+    SCHEMA_VALIDATOR.validate(output)
+
+
+def test_unidentified_parser_error_uses_operation_null():
+    model = parser_error_result("unknown", None, "unrecognized arguments")
+    assert model.operation is None
+    assert model.routing.requested_capabilities == ()
+    output = serialize_result(model)
+    SCHEMA_VALIDATOR.validate(output)

@@ -20,6 +20,40 @@ Most commands accept:
 
 Remote prompt URLs are rejected. Local prompt overrides apply only to the current command.
 
+## Opt-in schema version 2
+
+Root-global flags (before the subcommand):
+
+| Option | Meaning |
+| --- | --- |
+| `--schema-version 1\|2` | Select the result schema. Default remains `1`. |
+| `--fail-on-degraded` | v2 only: exit `6` for degraded envelopes without changing JSON. |
+| `--trace` | v2 only: attach redacted non-stable `meta.trace` events. |
+
+Supported v2 Core commands:
+
+```sh
+smart-search --schema-version 2 search QUERY
+smart-search --schema-version 2 fetch URL
+smart-search --schema-version 2 capabilities
+```
+
+Advanced v2 command:
+
+```sh
+smart-search --schema-version 2 map URL
+```
+
+Rules:
+
+- v2 output is JSON only (`--format markdown|content` is `INVALID_ARGUMENT`).
+- v2 `search` has no `response_mode`; any `--response-mode` fails before network I/O.
+- v2 `search` is evidence-first discovery (candidates + routing/attempts). It never routes through legacy `main_search`.
+- v2 `capabilities` uses envelope operation `capability_status` with empty evidence/attempts/routing capability arrays and no Provider calls.
+- Only the root-global flag placement is supported: `smart-search --schema-version 2 <command>`.
+- Apart from an explicit `--format json`, v2 rejects v1 command options before configuration or Provider work; `map` remains Advanced and accepts only its URL in this release.
+- Existing v1 command semantics, JSON wrapper, and Skill workflows are unchanged.
+
 ## Core commands
 
 | Command | Alias | Use |

@@ -12,7 +12,7 @@ from .capability_service import (
     _provider_status_for_capability,
     _skipped_provider_attempt,
 )
-from .runtime_cache import add_request
+from .runtime_cache import CacheExecution, add_request
 from .service_support import (
     _attempt,
     _budget_exhausted_attempt,
@@ -137,8 +137,8 @@ def _cache_execution(
             factory,
         )
     if operation.cache_kind in {"", "none"}:
-        async def uncached() -> Any:
-            return await factory()
+        async def uncached() -> CacheExecution:
+            return CacheExecution(await factory())
 
         return uncached()
     raise ValueError(f"Unsupported capability cache kind: {operation.cache_kind}")

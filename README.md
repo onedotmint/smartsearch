@@ -51,6 +51,23 @@ smart-search 0.1.0
 
 Search responses use a versioned JSON envelope. Provider text and URLs vary; the stable shape is `schema_version`, `command`, `data`, and `meta`.
 
+### Opt-in v2 Core JSON API
+
+Phase 3 exposes an evidence-first Core API behind a root-global flag. It does not change default v1 behavior:
+
+```sh
+smart-search --schema-version 2 search "example query"
+smart-search --schema-version 2 fetch "https://example.com/page"
+smart-search --schema-version 2 capabilities
+```
+
+`map` is available as the Advanced `site_discovery` operation; see the command reference for its v2 invocation.
+
+- v2 is **JSON-only** and returns the Phase 2 envelope (`status`, `operation`, `evidence`, `routing`, `attempts`, ...).
+- v2 `search` returns discovery candidates only; it never calls legacy `main_search` or accepts `--response-mode`.
+- `capabilities` uses envelope-only meta operation `capability_status` (local inspection, no Provider network).
+- `--fail-on-degraded` and `--trace` are v2-only. Post-subcommand `--schema-version` placement is not supported.
+
 ## Choose a workflow
 
 | Need | Command | Network behavior |

@@ -544,20 +544,16 @@ def test_v1_capability_status_keys_remain_legacy_names():
         assert v2_id not in status
 
 
-def test_no_v2_schema_dispatch_or_service_export_from_taxonomy():
-    parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["search", "query", "--schema-version", "2"])
-    help_text = parser.format_help()
-    assert "--schema-version" not in help_text
+def test_taxonomy_not_exported_from_service_facade():
+    # Taxonomy stays internal; stable service facade is unchanged even after
+    # Phase 3 opt-in v2 CLI exposure through api_v2.
     assert SCHEMA_VERSION == "1"
-
-    # Taxonomy stays internal; stable service facade is unchanged.
     assert not hasattr(service, "list_v2_capabilities")
     assert not hasattr(service, "v2_core_availability")
     assert not hasattr(service, "get_provider_qualification")
     assert "list_v2_capabilities" not in service.__all__
     assert "capability_taxonomy" not in service.__all__
+    assert "api_v2" not in service.__all__
 
 
 def test_qualification_does_not_participate_in_v1_eligibility():

@@ -1,4 +1,9 @@
-"""Shared CLI imports, constants, streams, and pure helpers."""
+"""Shared CLI imports, constants, streams, and pure helpers.
+
+Heavy service imports remain available for v1 dispatch/setup/render paths.
+Parser construction should prefer cli_constants so v2 parser-error paths can
+run without loading service, config, providers, or httpx.
+"""
 
 import argparse
 import asyncio
@@ -13,7 +18,31 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from .cli_constants import (
+    CLIParseError,
+    COMMAND_ALIASES,
+    CONFIG_COMMAND_ALIASES,
+    EXIT_CONFIG_ERROR,
+    EXIT_NETWORK_ERROR,
+    EXIT_OK,
+    EXIT_PARAMETER_ERROR,
+    EXIT_RUNTIME_ERROR,
+    FIRECRAWL_DEFAULT_API_URL,
+    MODEL_COMMAND_ALIASES,
+    PUBLIC_COMMANDS,
+    SKILLS_COMMAND_ALIASES,
+    SmartSearchArgumentParser,
+    TAVILY_DEFAULT_API_URL,
+    V2_SUPPORTED_COMMANDS,
+    ZHIPU_DEFAULT_API_URL,
+    ZHIPU_SEARCH_ENGINE_CHOICES,
+    _get_version,
+)
+
+# Eager service import for v1 dispatch/setup. Parser isolation is preserved
+# because cli_parser/cli_constants do not import this module.
 from . import service
+
 from .cli_render import (
     _json,
     _json_stdout_safe,
@@ -69,74 +98,7 @@ from .logger import configure_cli_logging, logger
 from .utils import PromptConfigurationError, prompt_overrides
 
 
-EXIT_OK = 0
-EXIT_PARAMETER_ERROR = 2
-EXIT_CONFIG_ERROR = 3
-EXIT_NETWORK_ERROR = 4
-EXIT_RUNTIME_ERROR = 5
-
 _CLI_FORCE_OUTPUT = False
-
-COMMAND_ALIASES = {
-    "search": ["s"],
-    "route": ["rt"],
-    "fetch": ["f"],
-    "map": ["m"],
-    "exa-search": ["exa", "x"],
-    "exa-similar": ["xs"],
-    "zhipu-search": ["z", "zp"],
-    "zhipu-mcp-search": ["zmcp-search"],
-    "zhipu-mcp-reader": ["zmcp-reader"],
-    "zhipu-mcp-search-doc": ["zmcp-doc"],
-    "zhipu-mcp-repo-structure": ["zmcp-tree"],
-    "zhipu-mcp-read-file": ["zmcp-file"],
-    "anysearch-domains": ["as-domains"],
-    "anysearch-search": ["as-search", "as"],
-    "anysearch-extract": ["as-extract"],
-    "anysearch-batch": ["as-batch"],
-    "context7-library": ["c7", "ctx7"],
-    "context7-docs": ["c7d", "c7docs", "ctx7-docs"],
-    "deep": ["dr"],
-    "research": ["rs"],
-    "route-calibrate": ["route-cal", "rcal"],
-    "smoke": ["sm"],
-    "doctor": ["d"],
-    "diagnose": ["diag"],
-    "model": ["mdl"],
-    "setup": ["init"],
-    "skills": ["skill"],
-    "config": ["cfg"],
-    "regression": ["reg"],
-}
-
-CONFIG_COMMAND_ALIASES = {
-    "path": ["p"],
-    "list": ["ls", "l"],
-    "set": ["s"],
-    "unset": ["rm", "u"],
-}
-
-MODEL_COMMAND_ALIASES = {
-    "current": ["cur", "c"],
-    "list": ["ls", "l"],
-    "add": ["a"],
-    "remove": ["rm", "r"],
-}
-
-SKILLS_COMMAND_ALIASES = {
-    "status": ["st"],
-    "update": ["up"],
-}
-
-TAVILY_DEFAULT_API_URL = "https://api.tavily.com"
-FIRECRAWL_DEFAULT_API_URL = "https://api.firecrawl.dev/v2"
-ZHIPU_DEFAULT_API_URL = "https://open.bigmodel.cn/api"
-ZHIPU_SEARCH_ENGINE_CHOICES = [
-    "search_std",
-    "search_pro",
-    "search_pro_sogou",
-    "search_pro_quark",
-]
 
 _STATIC_SMART_SEARCH_BANNER = r"""
  ____                       _     ____                      _
@@ -145,31 +107,6 @@ _STATIC_SMART_SEARCH_BANNER = r"""
  ___) | | | | | | (_| | |  | |_   ___) |  __/ (_| | | | (__| | | |
 |____/|_| |_| |_|\__,_|_|   \__| |____/ \___|\__,_|_|  \___|_| |_|
 """.strip("\n")
-
-def _get_version() -> str:
-    root = Path(__file__).resolve().parents[2]
-    package_json = root / "package.json"
-    try:
-        version = json.loads(package_json.read_text(encoding="utf-8")).get("version", "")
-        if version:
-            return str(version)
-    except (OSError, json.JSONDecodeError):
-        pass
-
-    pyproject = root / "pyproject.toml"
-    try:
-        for line in pyproject.read_text(encoding="utf-8").splitlines():
-            if line.startswith("version = "):
-                return line.split("=", 1)[1].strip().strip('"')
-    except OSError:
-        pass
-
-    try:
-        return metadata.version("smart-search")
-    except metadata.PackageNotFoundError:
-        pass
-
-    return "unknown"
 
 def _search_timeout_result(query: str, timeout: float, search_kwargs: dict[str, Any] | None = None) -> dict[str, Any]:
     seconds = _format_seconds(timeout)

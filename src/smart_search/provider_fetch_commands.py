@@ -298,7 +298,7 @@ async def fetch(url: str) -> dict[str, Any]:
      * ================================================================================
      */
     """
-    from .search_service import _run_web_fetch_fallback
+    from .operation_runtime import _run_web_fetch_fallback
 
     start = time.time()
     minimum = validate_minimum_profile()

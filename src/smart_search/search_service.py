@@ -14,7 +14,6 @@ from .capability_service import (
     validate_command_capabilities,
     validate_minimum_profile,
 )
-from .capability_executor import CapabilityOperation, execute_capability
 from .config import config
 from .evidence import EvidenceBundle
 from .intent_router import IntentRouter
@@ -40,7 +39,6 @@ from .providers.base import classify_provider_exception, coerce_provider_result
 from .providers.openai_compatible import OpenAICompatibleSearchProvider
 from .providers.xai_responses import XAIResponsesSearchProvider
 from .runtime_cache import (
-    add_fetch,
     add_request,
     current_context,
     mark_budget_exhausted,
@@ -227,182 +225,15 @@ def extra_results_to_sources(
 
     return sources
 
-async def _run_web_fetch_fallback(
-    url: str,
-    fallback: str = "auto",
-    preferred_order: list[str] | None = None,
-) -> tuple[dict[str, Any] | None, list[dict]]:
-    """
-    /*
-     * ================================================================================
-     * 步骤1：执行 web_fetch capability
-     * ================================================================================
-     * 目标：保留 fetch provider 顺序和证据内容语义，复用共享执行生命周期。
-     * 数据源：web_fetch provider chain、URL 和 fetch fallback 参数。
-     * 操作：
-     * 1) provider-specific adapter 只负责调用和结果归一化。
-     * 2) executor 负责 fetch budget、request budget、cache 和 attempts。
-     * ================================================================================
-     */
-    """
+# Neutral capability runners live in operation_runtime; re-export for v1 callers
+# and existing monkeypatch points (search_service._run_*).
+from .operation_runtime import (  # noqa: E402
+    _run_docs_search_fallback,
+    _run_vertical_search_fallback,
+    _run_web_fetch_fallback,
+    _run_web_search_fallback,
+)
 
-    async def run_provider(provider: str, outcome: dict[str, Any]) -> dict[str, Any]:
-        # 1.1 调用 owning provider adapter 并转换为统一 fetch payload。
-        if provider == "tavily":
-            content = await call_tavily_extract(url)
-            return {"content": sanitize_text(content or ""), "url": url, "provider": provider}
-        if provider == "jina":
-            data = await jina_fetch(url)
-            outcome.update(data if isinstance(data, dict) else {})
-            return {
-                "content": sanitize_text(data.get("content") or "") if data.get("ok") else "",
-                "url": url,
-                "provider": provider,
-                "error_type": data.get("error_type", ""),
-                "error": data.get("error", ""),
-            }
-        if provider == "zhipu-mcp-reader":
-            data = await zhipu_mcp_reader(url)
-            outcome.update(data if isinstance(data, dict) else {})
-            return {
-                "content": sanitize_text(data.get("content") or "") if data.get("ok") else "",
-                "url": url,
-                "provider": provider,
-                "error_type": data.get("error_type", ""),
-                "error": data.get("error", ""),
-            }
-        content = await call_firecrawl_scrape(url)
-        return {"content": sanitize_text(content or ""), "url": url, "provider": provider}
-
-    operation = CapabilityOperation(
-        capability="web_fetch",
-        input_value=url,
-        cache_kind="fetch",
-        cache_options={"format": "markdown"},
-        run=run_provider,
-        empty_value=lambda provider: {
-            "content": "",
-            "url": url,
-            "provider": provider,
-            "error_type": "budget_exhausted" if provider == "request-budget" else "",
-            "error": "request budget exhausted" if provider == "request-budget" else "",
-        },
-        is_success=lambda value: isinstance(value, dict) and bool(str(value.get("content") or "").strip()),
-        result_count=lambda _value: 1,
-    )
-    execution = await execute_capability(
-        operation,
-        fallback=fallback,
-        preferred_order=preferred_order,
-        reserve_fetch=add_fetch,
-    )
-    fetch_result = execution.value if isinstance(execution.value, dict) and execution.value.get("content") else None
-    if fetch_result is not None:
-        fetch_result = {"ok": True, **fetch_result}
-    return fetch_result, execution.attempts
-
-async def _run_web_search_fallback(
-    query: str,
-    count: int = 5,
-    providers: str = "auto",
-    fallback: str = "auto",
-) -> tuple[list[dict], list[dict]]:
-    async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
-        # 2.1 调用 web_search provider 并归一化 source 列表。
-        if provider == "zhipu":
-            data = await zhipu_search(query, count=count)
-            outcome.update(data if isinstance(data, dict) else {})
-            return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
-        if provider == "zhipu-mcp":
-            data = await zhipu_mcp_search(query, count=count)
-            outcome.update(data if isinstance(data, dict) else {})
-            return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
-        if provider == "tavily":
-            return _normalize_source_results(await call_tavily_search(query, count), provider)
-        return _normalize_source_results(await call_firecrawl_search(query, count), provider)
-
-    operation = CapabilityOperation(
-        capability="web_search",
-        input_value=query,
-        cache_options={"count": count},
-        run=run_provider,
-        empty_value=lambda _provider: [],
-        is_success=lambda value: isinstance(value, list) and bool(value),
-        result_count=lambda value: len(value) if isinstance(value, list) else 0,
-    )
-    execution = await execute_capability(
-        operation,
-        provider_filter=providers,
-        fallback=fallback,
-    )
-    return execution.value if isinstance(execution.value, list) else [], execution.attempts
-
-async def _run_docs_search_fallback(
-    query: str,
-    providers: str = "auto",
-    fallback: str = "auto",
-) -> tuple[list[dict], list[dict]]:
-    async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
-        # 3.1 调用 docs_search provider 并归一化候选来源。
-        if provider == "exa":
-            data = await exa_search(query, num_results=5, include_highlights=True)
-            outcome.update(data if isinstance(data, dict) else {})
-            return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
-        data = await context7_library(query, query)
-        outcome.update(data if isinstance(data, dict) else {})
-        return [
-            {
-                "url": f"context7:{item.get('id')}",
-                "title": item.get("title") or item.get("id") or "Context7",
-                "description": item.get("description") or "",
-                "provider": provider,
-            }
-            for item in data.get("results", [])
-            if isinstance(data, dict) and data.get("ok") and item.get("id")
-        ]
-
-    operation = CapabilityOperation(
-        capability="docs_search",
-        input_value=query,
-        cache_options={"include_highlights": True, "num_results": 5},
-        run=run_provider,
-        empty_value=lambda _provider: [],
-        is_success=lambda value: isinstance(value, list) and bool(value),
-        result_count=lambda value: len(value) if isinstance(value, list) else 0,
-    )
-    execution = await execute_capability(
-        operation,
-        provider_filter=providers,
-        fallback=fallback,
-    )
-    return execution.value if isinstance(execution.value, list) else [], execution.attempts
-
-async def _run_vertical_search_fallback(
-    query: str,
-    providers: str = "auto",
-    fallback: str = "auto",
-) -> tuple[list[dict], list[dict]]:
-    async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
-        # 4.1 调用 vertical_search provider 并保留结构化候选。
-        data = await anysearch_search(query, max_results=5)
-        outcome.update(data if isinstance(data, dict) else {})
-        return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
-
-    operation = CapabilityOperation(
-        capability="vertical_search",
-        input_value=query,
-        cache_options={"max_results": 5},
-        run=run_provider,
-        empty_value=lambda _provider: [],
-        is_success=lambda value: isinstance(value, list) and bool(value),
-        result_count=lambda value: len(value) if isinstance(value, list) else 0,
-    )
-    execution = await execute_capability(
-        operation,
-        provider_filter=providers,
-        fallback=fallback,
-    )
-    return execution.value if isinstance(execution.value, list) else [], execution.attempts
 
 def _resolve_search_profile(
     profile: str,

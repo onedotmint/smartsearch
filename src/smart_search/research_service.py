@@ -27,6 +27,14 @@ from .logger import logger
 from .provider_search_commands import context7_docs, context7_library, exa_search
 from .provider_vertical_commands import anysearch_search
 from .runtime_cache import allow_synthesis, attach_metrics, normalize_url, observe_command, observe_stage
+from .research_plan import ResearchPlanOperation, build_research_plan
+from .research_plan_render import (
+    build_projection_context,
+    path_join as _path_join,
+    projection_entry,
+    quote_arg as _quote_arg,
+    render_v1_steps,
+)
 from .search_service import _run_web_fetch_fallback, _run_web_search_fallback
 from .security import sanitize_text
 from .service_support import (
@@ -567,30 +575,6 @@ def _default_evidence_dir(query: str) -> str:
     timestamp = time.strftime("%Y%m%d-%H%M")
     return str(Path(tempfile.gettempdir()) / "smart-search-evidence" / f"{timestamp}-{_slugify_query(query)}")
 
-def _quote_arg(value: str) -> str:
-    escaped = value.replace("`", "``").replace("$", "`$").replace('"', '`"')
-    return f'"{escaped}"'
-
-def _path_join(base: str, filename: str) -> str:
-    return str(Path(base) / filename)
-
-def _deep_step(
-    step_id: str,
-    subquestion_id: str,
-    tool: str,
-    purpose: str,
-    command: str,
-    output_path: str,
-) -> dict[str, str]:
-    return {
-        "id": step_id,
-        "subquestion_id": subquestion_id,
-        "tool": tool,
-        "purpose": purpose,
-        "command": command,
-        "output_path": output_path,
-    }
-
 def _deep_capability(capability: str, tools: list[str], reason: str) -> dict[str, Any]:
     return {"capability": capability, "tools": tools, "reason": reason}
 
@@ -612,6 +596,13 @@ def _is_deep_complex(query: str, budget: str) -> bool:
     return budget == "deep" or _contains_any(query, DEEP_HIGH_COMPLEXITY_KEYWORDS) or object_separators >= 2
 
 def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir: str = "") -> dict[str, Any]:
+    """
+    Offline Deep Research planner.
+
+    Builds one structured ResearchPlan plus a non-serialized v1 projection
+    context, then derives frozen steps[]/command/output_path from the renderer.
+    Heuristics and all other v1 plan fields remain unchanged.
+    """
     start = time.time()
     question = query.strip()
     budget = _deep_budget(budget)
@@ -649,29 +640,59 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
 
     decomposition: list[dict[str, Any]] = []
     capability_plan: list[dict[str, Any]] = []
-    steps: list[dict[str, str]] = []
+    structured_ops: list[ResearchPlanOperation] = []
+    projection_entries: list[Any] = []
+    pending_tools: list[str] = []
 
-    def add_step(sub_id: str, tool: str, purpose: str, command: str, filename: str) -> None:
-        step_id = f"s{len(steps) + 1}"
-        steps.append(_deep_step(step_id, sub_id, tool, purpose, command, _path_join(evidence_root, filename)))
+    def next_op_id(prefix: str) -> str:
+        return f"{prefix}-{len(structured_ops) + 1}"
 
     def next_filename(suffix: str) -> str:
-        return f"{len(steps) + 1:02d}-{suffix}"
+        return f"{len(structured_ops) + 1:02d}-{suffix}"
 
-    def command_search(q: str, extra_sources: int = 2) -> str:
-        return f"smart-search search {_quote_arg(q)} --validation balanced --extra-sources {extra_sources} --format json --output {_quote_arg(_path_join(evidence_root, next_filename('search.json')))}"
-
-    def command_exa(q: str) -> str:
-        return f"smart-search exa-search {_quote_arg(q)} --num-results 5 --format json --output {_quote_arg(_path_join(evidence_root, next_filename('exa.json')))}"
-
-    def command_zhipu(q: str) -> str:
-        return f"smart-search zhipu-search {_quote_arg(q)} --count 5 --format json --output {_quote_arg(_path_join(evidence_root, next_filename('zhipu.json')))}"
-
-    def command_fetch(target: str = "<key-url>") -> str:
-        return f"smart-search fetch {_quote_arg(target)} --format markdown --output {_quote_arg(_path_join(evidence_root, next_filename('fetch.md')))}"
+    def add_structured(
+        *,
+        operation: str,
+        renderer_kind: str,
+        purpose: str,
+        subquestion_id: str,
+        input_data: dict[str, Any],
+        constraints: dict[str, Any] | None = None,
+        depends_on: list[str] | None = None,
+        args: dict[str, Any] | None = None,
+        output_suffix: str,
+        tool_for_filter: str | None = None,
+    ) -> None:
+        tool_name = tool_for_filter
+        if tool_name is None:
+            from .research_plan_render import RENDERER_KIND_TO_TOOL
+            tool_name = RENDERER_KIND_TO_TOOL[renderer_kind]
+        if tool_name not in DEEP_ALLOWED_TOOLS:
+            return
+        op = ResearchPlanOperation(
+            id=next_op_id(operation.replace("_", "-")),
+            operation=operation,
+            input=input_data,
+            constraints=constraints or {},
+            depends_on=tuple(depends_on or ()),
+        )
+        entry = projection_entry(
+            op,
+            renderer_kind=renderer_kind,
+            purpose=purpose,
+            subquestion_id=subquestion_id,
+            args=args or dict(input_data),
+            output_suffix=output_suffix,
+        )
+        structured_ops.append(op)
+        projection_entries.append(entry)
+        pending_tools.append(tool_name)
 
     def has_capability(name: str) -> bool:
         return any(item.get("capability") == name for item in capability_plan)
+
+    def has_tool(tool: str) -> bool:
+        return tool in pending_tools
 
     if known_url:
         url = urls[0]
@@ -700,9 +721,37 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
                 _deep_capability("broad_discovery", ["search"], "Broaden the context if the fetched page leaves gaps."),
             ]
         )
-        add_step("sq1", "fetch", "fetch user supplied URL first", f"smart-search fetch {_quote_arg(url)} --format markdown --output {_quote_arg(_path_join(evidence_root, '01-fetch.md'))}", "01-fetch.md")
-        add_step("sq2", "exa-similar", "find adjacent sources from the provided URL", f"smart-search exa-similar {_quote_arg(url)} --num-results 5 --format json --output {_quote_arg(_path_join(evidence_root, '02-similar.json'))}", "02-similar.json")
-        add_step("sq2", "search", "broad discovery for missing context", command_search(question, 1), "03-search.json")
+        add_structured(
+            operation="content_fetch",
+            renderer_kind="fetch",
+            purpose="fetch user supplied URL first",
+            subquestion_id="sq1",
+            input_data={"resource": url},
+            args={"url": url},
+            output_suffix="01-fetch.md",
+        )
+        fetch_id = structured_ops[-1].id if structured_ops else ""
+        add_structured(
+            operation="source_discovery",
+            renderer_kind="exa_similar",
+            purpose="find adjacent sources from the provided URL",
+            subquestion_id="sq2",
+            input_data={"resource": url, "mode": "similar"},
+            args={"url": url, "num_results": 5},
+            depends_on=[fetch_id] if fetch_id else [],
+            output_suffix="02-similar.json",
+        )
+        add_structured(
+            operation="source_discovery",
+            renderer_kind="search",
+            purpose="broad discovery for missing context",
+            subquestion_id="sq2",
+            input_data={"query": question},
+            constraints={"max_results": 1},
+            args={"query": question, "extra_sources": 1},
+            depends_on=[fetch_id] if fetch_id else [],
+            output_suffix="03-search.json",
+        )
     else:
         decomposition.append(
             _deep_subquestion(
@@ -713,7 +762,18 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
             )
         )
         capability_plan.append(_deep_capability("broad_discovery", ["search"], "Find the initial answer shape and candidate sources."))
-        add_step("sq1", "search", "broad discovery and routing metadata", command_search(question, 1 if budget == "quick" else 3), "01-search.json")
+        extra = 1 if budget == "quick" else 3
+        add_structured(
+            operation="source_discovery",
+            renderer_kind="search",
+            purpose="broad discovery and routing metadata",
+            subquestion_id="sq1",
+            input_data={"query": question},
+            constraints={"max_results": extra},
+            args={"query": question, "extra_sources": extra},
+            output_suffix="01-search.json",
+        )
+        primary_id = structured_ops[-1].id if structured_ops else ""
 
         if docs_intent:
             decomposition.append(
@@ -732,19 +792,26 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
                 )
             )
             library_hint = " ".join(re.findall(r"[A-Za-z][A-Za-z0-9_.-]*", question)[:2]) or "<library-name>"
-            add_step(
-                "sq2",
-                "context7-library",
-                "resolve library id for docs/API intent",
-                f"smart-search context7-library {_quote_arg(library_hint)} {_quote_arg(question)} --format json --output {_quote_arg(_path_join(evidence_root, next_filename('context7-library.json')))}",
-                next_filename("context7-library.json"),
+            add_structured(
+                operation="docs_discovery",
+                renderer_kind="context7_library",
+                purpose="resolve library id for docs/API intent",
+                subquestion_id="sq2",
+                input_data={"query": question, "library_hint": library_hint, "mode": "library"},
+                args={"library": library_hint, "query": question},
+                depends_on=[primary_id] if primary_id else [],
+                output_suffix=next_filename("context7-library.json"),
             )
-            add_step(
-                "sq2",
-                "context7-docs",
-                "retrieve docs after selecting the best library_id",
-                f"smart-search context7-docs {_quote_arg('<library_id>')} {_quote_arg(question)} --format json --output {_quote_arg(_path_join(evidence_root, next_filename('context7-docs.json')))}",
-                next_filename("context7-docs.json"),
+            lib_id = structured_ops[-1].id if structured_ops else primary_id
+            add_structured(
+                operation="docs_discovery",
+                renderer_kind="context7_docs",
+                purpose="retrieve docs after selecting the best library_id",
+                subquestion_id="sq2",
+                input_data={"query": question, "mode": "docs"},
+                args={"library_id": "<library_id>", "query": question},
+                depends_on=[lib_id] if lib_id else [],
+                output_suffix=next_filename("context7-docs.json"),
             )
             if _contains_any(question, DEEP_EXA_DISCOVERY_KEYWORDS):
                 capability_plan.append(
@@ -754,7 +821,16 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
                         "Use Exa for official-domain or low-noise supplemental docs discovery.",
                     )
                 )
-                add_step("sq2", "exa-search", "official-domain docs source discovery", command_exa(f"{question} official docs"), next_filename("exa.json"))
+                add_structured(
+                    operation="docs_discovery",
+                    renderer_kind="exa_search",
+                    purpose="official-domain docs source discovery",
+                    subquestion_id="sq2",
+                    input_data={"query": f"{question} official docs"},
+                    args={"query": f"{question} official docs", "num_results": 5},
+                    depends_on=[lib_id] if lib_id else [],
+                    output_suffix=next_filename("exa.json"),
+                )
 
         if recency_requirement != "none" or locale_domain_scope == "china":
             sub_id = f"sq{len(decomposition) + 1}"
@@ -769,7 +845,16 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
             capability_plan.append(
                 _deep_capability("current_or_locale_source_discovery", ["zhipu-search"], "Reinforce Chinese, domestic, or current web evidence.")
             )
-            add_step(sub_id, "zhipu-search", "current or locale-specific source discovery", command_zhipu(question), f"{len(steps) + 1:02d}-zhipu.json")
+            add_structured(
+                operation="source_discovery",
+                renderer_kind="zhipu_search",
+                purpose="current or locale-specific source discovery",
+                subquestion_id=sub_id,
+                input_data={"query": question, "locale": "zh"},
+                args={"query": question, "count": 5},
+                depends_on=[primary_id] if primary_id else [],
+                output_suffix=f"{len(structured_ops) + 1:02d}-zhipu.json",
+            )
 
         if complex_query:
             while len(decomposition) < (2 if budget != "deep" else 4):
@@ -792,7 +877,16 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
                     _deep_capability("cross_validation", ["search"], "Compare independent sources before final claims; supplemental tools depend on intent.")
                 )
             if budget == "deep" and _contains_any(question, DEEP_EXA_DISCOVERY_KEYWORDS):
-                add_step("sq3", "exa-search", "low-noise evidence for tradeoffs and risks", command_exa(f"{question} risks limitations comparison"), next_filename("exa.json"))
+                add_structured(
+                    operation="docs_discovery",
+                    renderer_kind="exa_search",
+                    purpose="low-noise evidence for tradeoffs and risks",
+                    subquestion_id="sq3",
+                    input_data={"query": f"{question} risks limitations comparison"},
+                    args={"query": f"{question} risks limitations comparison", "num_results": 5},
+                    depends_on=[primary_id] if primary_id else [],
+                    output_suffix=next_filename("exa.json"),
+                )
 
         if cross_validation_need == "high":
             if not has_capability("cross_validation"):
@@ -804,43 +898,122 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
             if recency_requirement != "none" or locale_domain_scope == "china" or zh_current_intent:
                 if "zhipu-search" not in cross_validation_tools:
                     cross_validation_tools.append("zhipu-search")
-                if not any(step["tool"] == "zhipu-search" for step in steps):
-                    add_step(target_subquestion, "zhipu-search", "current or locale-specific cross-source discovery", command_zhipu(question), next_filename("zhipu.json"))
+                if not has_tool("zhipu-search"):
+                    add_structured(
+                        operation="source_discovery",
+                        renderer_kind="zhipu_search",
+                        purpose="current or locale-specific cross-source discovery",
+                        subquestion_id=target_subquestion,
+                        input_data={"query": question, "locale": "zh"},
+                        args={"query": question, "count": 5},
+                        depends_on=[primary_id] if primary_id else [],
+                        output_suffix=next_filename("zhipu.json"),
+                    )
             elif docs_intent:
                 if "context7-library" not in cross_validation_tools:
                     cross_validation_tools.extend(["context7-library", "context7-docs"])
             elif _contains_any(question, DEEP_EXA_DISCOVERY_KEYWORDS):
                 if "exa-search" not in cross_validation_tools:
                     cross_validation_tools.append("exa-search")
-                if not any(step["tool"] == "exa-search" for step in steps):
-                    add_step(target_subquestion, "exa-search", "official-domain or low-noise cross-source discovery", command_exa(question), next_filename("exa.json"))
+                if not has_tool("exa-search"):
+                    add_structured(
+                        operation="docs_discovery",
+                        renderer_kind="exa_search",
+                        purpose="official-domain or low-noise cross-source discovery",
+                        subquestion_id=target_subquestion,
+                        input_data={"query": question},
+                        args={"query": question, "num_results": 5},
+                        depends_on=[primary_id] if primary_id else [],
+                        output_suffix=next_filename("exa.json"),
+                    )
 
         capability_plan.append(_deep_capability("page_evidence", ["fetch"], "Fetch key URLs before claim-level conclusions."))
-        add_step("sq1" if len(decomposition) == 1 else decomposition[-1]["id"], "fetch", "fetch key URLs before final claims", command_fetch(), next_filename("fetch.md"))
+        fetch_sub = "sq1" if len(decomposition) == 1 else decomposition[-1]["id"]
+        discovery_ids = [op.id for op in structured_ops if op.operation in {"source_discovery", "docs_discovery"}]
+        add_structured(
+            operation="content_fetch",
+            renderer_kind="fetch",
+            purpose="fetch key URLs before final claims",
+            subquestion_id=fetch_sub,
+            input_data={"candidate_refs": discovery_ids[:1]} if discovery_ids else {"resource": "<key-url>"},
+            constraints={"max_items": 3} if discovery_ids else {},
+            args={"url": "<key-url>"},
+            depends_on=discovery_ids[:1],
+            output_suffix=next_filename("fetch.md"),
+        )
 
     for item in capability_plan:
         item["tools"] = [tool for tool in item["tools"] if tool in DEEP_ALLOWED_TOOLS]
-    steps = [step for step in steps if step["tool"] in DEEP_ALLOWED_TOOLS]
+
     if budget == "quick" and len(decomposition) > 2:
         decomposition = decomposition[:2]
-    if budget == "quick" and len(steps) > 4:
-        limited_steps = steps[:4]
-        if not any(step["tool"] == "fetch" for step in limited_steps):
-            first_fetch = next((step for step in steps if step["tool"] == "fetch"), None)
-            if first_fetch:
-                first_fetch = dict(first_fetch)
-                fetch_path = _path_join(evidence_root, "04-fetch.md")
-                first_fetch["command"] = f"smart-search fetch {_quote_arg('<key-url>')} --format markdown --output {_quote_arg(fetch_path)}"
-                first_fetch["output_path"] = fetch_path
-                limited_steps = steps[:3] + [first_fetch]
-        steps = limited_steps[:4]
+
+    # Apply quick-budget step limit before building the immutable plan.
+    if budget == "quick" and len(structured_ops) > 4:
+        kept_ops = list(structured_ops[:4])
+        kept_entries = list(projection_entries[:4])
+        kept_tools = list(pending_tools[:4])
+        if "fetch" not in kept_tools:
+            fetch_index = next((i for i, tool in enumerate(pending_tools) if tool == "fetch"), None)
+            if fetch_index is not None:
+                fetch_op = structured_ops[fetch_index]
+                fetch_entry = projection_entries[fetch_index]
+                # Rebuild fetch entry with the frozen quick-budget path/name.
+                from .research_plan_render import LegacyPlanProjectionEntry, RENDERER_KIND_TO_TOOL
+                fetch_path_name = "04-fetch.md"
+                rebuilt_op = ResearchPlanOperation(
+                    id=fetch_op.id,
+                    operation="content_fetch",
+                    input={"resource": "<key-url>"},
+                    constraints={},
+                    depends_on=(),
+                )
+                rebuilt_entry = LegacyPlanProjectionEntry(
+                    operation_id=rebuilt_op.id,
+                    renderer_kind="fetch",
+                    tool=RENDERER_KIND_TO_TOOL["fetch"],
+                    purpose=fetch_entry.purpose,
+                    subquestion_id=(
+                        fetch_entry.subquestion_id
+                        if fetch_entry.subquestion_id in {item["id"] for item in decomposition}
+                        else (decomposition[-1]["id"] if decomposition else "sq1")
+                    ),
+                    args={"url": "<key-url>"},
+                    output_suffix=fetch_path_name,
+                )
+                kept_ops = list(structured_ops[:3]) + [rebuilt_op]
+                kept_entries = list(projection_entries[:3]) + [rebuilt_entry]
+                kept_tools = list(pending_tools[:3]) + ["fetch"]
+        structured_ops = kept_ops[:4]
+        projection_entries = kept_entries[:4]
+        pending_tools = kept_tools[:4]
+
     if budget == "quick":
         valid_subquestion_ids = {item["id"] for item in decomposition}
         fallback_subquestion_id = decomposition[-1]["id"] if decomposition else "sq1"
-        for index, step in enumerate(steps, start=1):
-            step["id"] = f"s{index}"
-            if step.get("subquestion_id") not in valid_subquestion_ids:
-                step["subquestion_id"] = fallback_subquestion_id
+        from .research_plan_render import LegacyPlanProjectionEntry
+        fixed_entries = []
+        for entry in projection_entries:
+            sub_id = entry.subquestion_id if entry.subquestion_id in valid_subquestion_ids else fallback_subquestion_id
+            if sub_id != entry.subquestion_id:
+                fixed_entries.append(
+                    LegacyPlanProjectionEntry(
+                        operation_id=entry.operation_id,
+                        renderer_kind=entry.renderer_kind,
+                        tool=entry.tool,
+                        purpose=entry.purpose,
+                        subquestion_id=sub_id,
+                        args=dict(entry.args),
+                        output_suffix=entry.output_suffix,
+                    )
+                )
+            else:
+                fixed_entries.append(entry)
+        projection_entries = fixed_entries
+
+    research_plan = build_research_plan(structured_ops)
+    projection = build_projection_context(evidence_root, projection_entries)
+    steps = render_v1_steps(research_plan, projection)
 
     execution_plan = _capability_plan(
         "deep",
@@ -883,6 +1056,7 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
         "evidence_dir": evidence_root,
         "elapsed_ms": _elapsed_ms(start),
     }
+
 
 @observe_command
 async def research(

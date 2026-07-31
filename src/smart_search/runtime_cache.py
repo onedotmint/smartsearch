@@ -647,7 +647,7 @@ def _command_budget_arguments(func: Callable[..., Any], args: tuple[Any, ...], k
         bound_arguments = dict(kwargs)
 
     command = func.__name__
-    if command == "search":
+    if command in {"search", "source_discovery", "docs_discovery", "composite_search"}:
         timeout_seconds = bound_arguments.get("timeout_seconds")
         if timeout_seconds is None:
             timeout_seconds = 120.0
@@ -657,11 +657,18 @@ def _command_budget_arguments(func: Callable[..., Any], args: tuple[Any, ...], k
             "max_retry_attempts": 8,
             "max_fetches": 2,
         }
-    if command == "fetch":
+    if command in {"fetch", "content_fetch"}:
         return {
             "timeout_seconds": 90.0,
             "max_provider_attempts": 8,
             "max_retry_attempts": 8,
+            "max_fetches": 1,
+        }
+    if command == "site_discovery":
+        return {
+            "timeout_seconds": 160.0,
+            "max_provider_attempts": 4,
+            "max_retry_attempts": 4,
             "max_fetches": 1,
         }
     if command == "research":
@@ -702,7 +709,13 @@ def observe_command(func: F) -> F:
     """
 
     @wraps(func)
-    async def wrapped(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    async def wrapped(*args: Any, **kwargs: Any) -> Any:
+        # Composite canonical operations share one command context. Nested
+        # decorated handlers must not reset deadlines, budgets, metrics, or the
+        # shared HTTP client.
+        if current_context() is not None:
+            return await func(*args, **kwargs)
+
         budget_args = _command_budget_arguments(func, args, kwargs)
         metrics = RuntimeMetrics()
         started_at = metrics.clock()

@@ -51,6 +51,23 @@ smart-search 0.1.0
 
 搜索响应使用带版本号的 JSON envelope。provider 返回的正文和 URL 会变化；稳定结构是 `schema_version`、`command`、`data` 和 `meta`。
 
+### 可选的 v2 Core JSON API
+
+Phase 3 通过根级全局 flag 暴露 evidence-first Core API，不改变默认 v1 行为：
+
+```sh
+smart-search --schema-version 2 search "示例查询"
+smart-search --schema-version 2 fetch "https://example.com/page"
+smart-search --schema-version 2 capabilities
+```
+
+`map` 作为 Advanced `site_discovery` operation 提供；v2 用法见命令参考。
+
+- v2 **仅支持 JSON**，返回 Phase 2 envelope（`status`、`operation`、`evidence`、`routing`、`attempts` 等）。
+- v2 `search` 只返回 discovery candidates；不会调用 legacy `main_search`，也不接受 `--response-mode`。
+- `capabilities` 使用 envelope-only 元操作 `capability_status`（本地只读检查，不发 Provider 网络请求）。
+- `--fail-on-degraded` 与 `--trace` 仅用于 v2。不承诺 subcommand 之后的 `--schema-version` 位置。
+
 ## 选择工作流
 
 | 需求 | 命令 | 网络行为 |

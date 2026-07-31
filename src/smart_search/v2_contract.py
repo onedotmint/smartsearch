@@ -20,13 +20,24 @@ V2_TOP_LEVEL_FIELDS = (
     "schema_version", "ok", "status", "command", "operation", "result",
     "evidence", "routing", "attempts", "degradation", "error", "meta",
 )
-V2_OPERATION_IDS = (
+# Capability operations mirror the Phase 1 taxonomy (exactly five ids).
+V2_CAPABILITY_OPERATION_IDS = (
     "source_discovery",
     "docs_discovery",
     "content_fetch",
     "site_discovery",
     "answer_synthesis",
 )
+# Envelope-only meta operation for identified v2 capabilities inspection.
+# Not a Provider capability and never valid in Research Plan / routing /
+# attempt / degradation / gap / trace capability-bearing fields.
+V2_META_OPERATION_IDS = (
+    "capability_status",
+)
+V2_ENVELOPE_OPERATION_IDS = V2_CAPABILITY_OPERATION_IDS + V2_META_OPERATION_IDS
+# Back-compat alias: capability operation domain used by taxonomy comparisons.
+V2_OPERATION_IDS = V2_CAPABILITY_OPERATION_IDS
+V2_META_OPERATION_CAPABILITY_STATUS = "capability_status"
 
 EXIT_SUCCESS = 0
 EXIT_INVALID_ARGUMENT = 2
@@ -284,7 +295,8 @@ class V2Envelope:
 
 
 _NONBLANK = {"type": "string", "pattern": r"\S"}
-_CAPABILITY = {"enum": list(V2_OPERATION_IDS)}
+_CAPABILITY = {"enum": list(V2_CAPABILITY_OPERATION_IDS)}
+_ENVELOPE_OPERATION = {"enum": list(V2_ENVELOPE_OPERATION_IDS)}
 _ERROR_CODES = [code.value for code in V2ErrorCode]
 
 
@@ -307,6 +319,34 @@ def _error_schema() -> dict[str, Any]:
     return schema
 
 
+_EMPTY_EVIDENCE = {
+    "allOf": [
+        {"$ref": "#/$defs/evidence"},
+        {"properties": {
+            "candidates": {"maxItems": 0},
+            "items": {"maxItems": 0},
+            "citations": {"maxItems": 0},
+            "gaps": {"maxItems": 0},
+        }},
+    ],
+}
+_EMPTY_ROUTING = {
+    "allOf": [
+        {"$ref": "#/$defs/routing"},
+        {"properties": {
+            "requested_capabilities": {"maxItems": 0},
+            "executed_capabilities": {"maxItems": 0},
+        }},
+    ],
+}
+_CAPABILITY_STATUS_SHAPE = {
+    "operation": {"const": V2_META_OPERATION_CAPABILITY_STATUS},
+    "evidence": _EMPTY_EVIDENCE,
+    "routing": _EMPTY_ROUTING,
+    "attempts": {"maxItems": 0},
+    "degradation": {"maxItems": 0},
+}
+
 V2_ENVELOPE_JSON_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://smart-search.local/schema/v2/envelope.json",
@@ -316,7 +356,7 @@ V2_ENVELOPE_JSON_SCHEMA: dict[str, Any] = {
         "ok": {"type": "boolean"},
         "status": {"enum": [status.value for status in V2Status]},
         "command": _NONBLANK,
-        "operation": {"oneOf": [_CAPABILITY, {"type": "null"}]},
+        "operation": {"oneOf": [_ENVELOPE_OPERATION, {"type": "null"}]},
         "result": {"type": "object"},
         "evidence": {"$ref": "#/$defs/evidence"},
         "routing": {"$ref": "#/$defs/routing"},
@@ -337,6 +377,11 @@ V2_ENVELOPE_JSON_SCHEMA: dict[str, Any] = {
             "degradation": {"maxItems": 0},
         }},
         {"properties": {
+            "status": {"const": "complete"}, "ok": {"const": True},
+            "error": {"type": "null"},
+            **_CAPABILITY_STATUS_SHAPE,
+        }},
+        {"properties": {
             "status": {"const": "degraded"}, "ok": {"const": True},
             "operation": _CAPABILITY, "error": {"type": "null"},
             "degradation": {"minItems": 1},
@@ -348,6 +393,7 @@ V2_ENVELOPE_JSON_SCHEMA: dict[str, Any] = {
             },
             "oneOf": [
                 {"properties": {"operation": _CAPABILITY}},
+                {"properties": dict(_CAPABILITY_STATUS_SHAPE)},
                 {"properties": {
                     "operation": {"type": "null"},
                     "error": {"allOf": [
@@ -457,10 +503,33 @@ def _nonblank(value: Any, name: str) -> None:
 
 
 def _capability(value: Any, name: str, *, allow_empty: bool = False) -> None:
+    """Validate a capability-bearing field (routing/attempt/gap/degradation/trace)."""
     if allow_empty and value == "":
         return
-    if value not in V2_OPERATION_IDS:
+    if value not in V2_CAPABILITY_OPERATION_IDS:
         raise V2ContractError(f"{name} is not a stable v2 capability: {value!r}")
+
+
+def _envelope_operation(value: Any, name: str = "operation") -> None:
+    """Validate top-level envelope.operation (capability or meta)."""
+    if value not in V2_ENVELOPE_OPERATION_IDS:
+        raise V2ContractError(f"{name} is not a stable v2 envelope operation: {value!r}")
+
+
+def _is_capability_status(operation: Any) -> bool:
+    return operation == V2_META_OPERATION_CAPABILITY_STATUS
+
+
+def _require_capability_status_empty_shape(result: V2Envelope) -> None:
+    """capability_status envelopes must keep evidence/routing/attempts empty."""
+    if result.evidence.candidates or result.evidence.items or result.evidence.citations or result.evidence.gaps:
+        raise V2ContractError("capability_status requires empty evidence arrays")
+    if result.routing.requested_capabilities or result.routing.executed_capabilities:
+        raise V2ContractError("capability_status requires empty routing capability arrays")
+    if result.attempts:
+        raise V2ContractError("capability_status requires empty attempts")
+    if result.degradation:
+        raise V2ContractError("capability_status requires empty degradation")
 
 
 def _exact_int(value: Any, name: str) -> None:
@@ -646,7 +715,17 @@ def validate_result(result: V2Envelope) -> V2Envelope:
         ):
             raise V2ContractError("operation=null is restricted to pre-dispatch INVALID_ARGUMENT")
     else:
-        _capability(result.operation, "operation")
+        _envelope_operation(result.operation, "operation")
+        if _is_capability_status(result.operation):
+            if status is V2Status.DEGRADED:
+                raise V2ContractError("capability_status cannot be degraded")
+            if result.command != "capabilities":
+                raise V2ContractError(
+                    "capability_status is only valid for the capabilities command"
+                )
+            _require_capability_status_empty_shape(result)
+        elif status is V2Status.DEGRADED and result.operation not in V2_CAPABILITY_OPERATION_IDS:
+            raise V2ContractError("degraded operation must be a capability operation")
 
     _validate_json_value(result.result, "result")
     if result.error:
@@ -875,17 +954,58 @@ def parser_error_result(
     command: str, operation: str | None, message: str,
     details: Mapping[str, Any] | None = None, *, request_id: str = "parser-error",
 ) -> V2Envelope:
-    """Build a pure pre-dispatch INVALID_ARGUMENT result."""
+    """Build a pure pre-dispatch INVALID_ARGUMENT result.
+
+    When ``operation`` is a capability id it may appear in routing.requested.
+    Meta operations (capability_status) and null keep routing capability arrays
+    empty because they are not Provider capabilities.
+    """
+    if operation in V2_CAPABILITY_OPERATION_IDS:
+        requested: tuple[str, ...] = (operation,)
+    else:
+        requested = ()
     result = V2Envelope(
         V2Status.FAILED, command, operation, {}, V2Evidence(),
-        V2Routing(
-            (operation,) if operation else (), (), "v2-parser-1", ("invalid_argument",),
-        ),
+        V2Routing(requested, (), "v2-parser-1", ("invalid_argument",)),
         (), (),
         V2Error(V2ErrorCode.INVALID_ARGUMENT, message, False, details or {}),
         V2Meta(request_id, 0),
     )
     return validate_result(result)
+
+
+def capability_status_result(
+    *,
+    status: V2Status | str = V2Status.COMPLETE,
+    result: Mapping[str, Any] | None = None,
+    error: V2Error | None = None,
+    request_id: str = "capability-status",
+    duration_ms: int = 0,
+    reason_codes: Sequence[str] = (),
+) -> V2Envelope:
+    """Build a pure local capability_status envelope (no Provider work)."""
+    status_value = V2Status(_value(status) or V2Status.COMPLETE.value)
+    if status_value is V2Status.DEGRADED:
+        raise V2ContractError("capability_status cannot be degraded")
+    if status_value is V2Status.FAILED and error is None:
+        raise V2ContractError("failed capability_status requires an error")
+    if status_value is V2Status.COMPLETE and error is not None:
+        raise V2ContractError("complete capability_status requires error=null")
+    envelope = V2Envelope(
+        status=status_value,
+        command="capabilities",
+        operation=V2_META_OPERATION_CAPABILITY_STATUS,
+        result=dict(result or {}),
+        evidence=V2Evidence(),
+        routing=V2Routing(
+            (), (), "v2-capability-status-1", tuple(reason_codes),
+        ),
+        attempts=(),
+        degradation=(),
+        error=error,
+        meta=V2Meta(request_id, duration_ms),
+    )
+    return validate_result(envelope)
 
 
 __all__ = [
@@ -895,10 +1015,13 @@ __all__ = [
     "V2Attempt", "V2AttemptStatus", "V2Candidate", "V2Citation",
     "V2ContractError", "V2Degradation", "V2Envelope", "V2Error",
     "V2ErrorCode", "V2Evidence", "V2EvidenceItem", "V2Gap", "V2Meta",
-    "V2Routing", "V2Status", "V2TraceEvent", "V2_ENVELOPE_JSON_SCHEMA",
+    "V2Routing", "V2Status", "V2TraceEvent", "V2_CAPABILITY_OPERATION_IDS",
+    "V2_ENVELOPE_JSON_SCHEMA", "V2_ENVELOPE_OPERATION_IDS",
     "V2_ERROR_REGISTRY", "V2_EXIT_CONFIGURATION", "V2_EXIT_DEGRADED",
     "V2_EXIT_INTERNAL", "V2_EXIT_INVALID_ARGUMENT", "V2_EXIT_SUCCESS",
-    "V2_EXIT_UPSTREAM", "V2_OPERATION_IDS", "V2_SCHEMA_VERSION", "V2_TOP_LEVEL_FIELDS",
-    "exit_code_for", "parser_error_result", "safe_trace", "serialize_result",
+    "V2_EXIT_UPSTREAM", "V2_META_OPERATION_CAPABILITY_STATUS",
+    "V2_META_OPERATION_IDS", "V2_OPERATION_IDS", "V2_SCHEMA_VERSION",
+    "V2_TOP_LEVEL_FIELDS", "capability_status_result", "exit_code_for",
+    "parser_error_result", "safe_trace", "serialize_result",
     "validate_envelope_dict", "validate_result",
 ]

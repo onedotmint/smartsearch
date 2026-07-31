@@ -1,25 +1,24 @@
-"""Argument parser construction and command argument declarations."""
+"""Argument parser construction and command argument declarations.
 
-from .cli_support import *
+This module is intentionally stdlib-only at import time so v2 parser errors can
+serialize without loading service, config, providers, or httpx.
+"""
 
-class SmartSearchArgumentParser(argparse.ArgumentParser):
-    def __init__(self, *args, **kwargs):
-        kwargs.setdefault("allow_abbrev", False)
-        super().__init__(*args, **kwargs)
+from __future__ import annotations
 
+import argparse
 
-PUBLIC_COMMANDS = (
-    "search",
-    "route",
-    "fetch",
-    "map",
-    "deep",
-    "research",
-    "doctor",
-    "setup",
-    "config",
-    "skills",
+from .cli_constants import (
+    COMMAND_ALIASES,
+    CONFIG_COMMAND_ALIASES,
+    MODEL_COMMAND_ALIASES,
+    PUBLIC_COMMANDS,
+    SKILLS_COMMAND_ALIASES,
+    SmartSearchArgumentParser,
+    ZHIPU_SEARCH_ENGINE_CHOICES,
+    _get_version,
 )
+from .skill_installer import DEFAULT_SKILL_TARGET_IDS
 
 
 def _hide_advanced_command_help(subparsers: argparse._SubParsersAction) -> None:
@@ -47,16 +46,40 @@ def _add_format_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--fetch-prompt-file", default="", help="Use a local UTF-8 fetch Prompt file.")
     parser.add_argument("--research-prompt-file", default="", help="Use a local UTF-8 research Prompt file.")
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, raise_on_error: bool = False) -> argparse.ArgumentParser:
     parser = SmartSearchArgumentParser(
         prog="smart-search",
         description="Smart Search CLI for AI-agent web research.",
+        raise_on_error=raise_on_error,
     )
     parser.add_argument("-v", "--v", "--version", action="version", version=f"%(prog)s {_get_version()}")
+    parser.add_argument(
+        "--schema-version",
+        choices=["1", "2"],
+        default="1",
+        help="Select the result schema. Version 2 is JSON-only evidence-first Core API.",
+    )
+    parser.add_argument(
+        "--fail-on-degraded",
+        action="store_true",
+        help="Return exit code 6 for degraded v2 results without changing the envelope.",
+    )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="Include redacted non-stable v2 trace events in meta.trace.",
+    )
+
+    class _SubParser(SmartSearchArgumentParser):
+        def __init__(self, *args, **kwargs):
+            kwargs = dict(kwargs)
+            kwargs["raise_on_error"] = raise_on_error
+            super().__init__(*args, **kwargs)
+
     sub = parser.add_subparsers(
         dest="command",
         required=True,
-        parser_class=SmartSearchArgumentParser,
+        parser_class=_SubParser,
         metavar="{" + ",".join(PUBLIC_COMMANDS) + "}",
     )
 
@@ -339,7 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Manage ordered main-search model routes.",
     )
     model_parser.set_defaults(command="model")
-    model_sub = model_parser.add_subparsers(dest="model_command", required=True, parser_class=SmartSearchArgumentParser)
+    model_sub = model_parser.add_subparsers(dest="model_command", required=True, parser_class=_SubParser)
     model_current = model_sub.add_parser("current", aliases=MODEL_COMMAND_ALIASES["current"])
     model_current.set_defaults(model_command="current")
     _add_format_args(model_current)
@@ -375,7 +398,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inspect or update installed smart-search-cli skills.",
     )
     skills_parser.set_defaults(command="skills")
-    skills_sub = skills_parser.add_subparsers(dest="skills_command", required=True, parser_class=SmartSearchArgumentParser)
+    skills_sub = skills_parser.add_subparsers(dest="skills_command", required=True, parser_class=_SubParser)
     skills_status = skills_sub.add_parser("status", aliases=SKILLS_COMMAND_ALIASES["status"], help="Compare bundled and installed skill files.")
     skills_status.set_defaults(skills_command="status")
     skills_status.add_argument(
@@ -472,7 +495,7 @@ def build_parser() -> argparse.ArgumentParser:
         "config", aliases=COMMAND_ALIASES["config"], help="Read or edit the local Smart Search config file."
     )
     config_parser.set_defaults(command="config")
-    config_sub = config_parser.add_subparsers(dest="config_command", required=True, parser_class=SmartSearchArgumentParser)
+    config_sub = config_parser.add_subparsers(dest="config_command", required=True, parser_class=_SubParser)
     config_path = config_sub.add_parser("path", aliases=CONFIG_COMMAND_ALIASES["path"])
     config_path.set_defaults(config_command="path")
     _add_format_args(config_path)

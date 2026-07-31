@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from smart_search import cli, service, service_support
+from smart_search import cli, operation_runtime, service, service_support
 from smart_search import search_service
 from smart_search.cli_contract import SCHEMA_VERSION, build_json_result
 from smart_search.cli_parser import PUBLIC_COMMANDS, build_parser
@@ -212,15 +212,18 @@ async def test_deep_and_research_compatibility_fields_are_frozen(monkeypatch, tm
     assert result["content"] == result["final_answer"]
 
 
-def test_no_v2_schema_or_dispatch_registered():
+def test_v1_json_schema_constant_remains_one_while_parser_accepts_opt_in_v2():
+    """Phase 3 exposes root-global --schema-version 2; v1 JSON constant stays 1."""
     parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["search", "query", "--schema-version", "2"])
-    help_text = parser.format_help()
-    assert "--schema-version" not in help_text
-    assert "schema-version" not in help_text
+    args = parser.parse_args(["--schema-version", "2", "search", "query"])
+    assert args.schema_version == "2"
+    v1_args = parser.parse_args(["search", "query"])
+    assert v1_args.schema_version == "1"
     assert SCHEMA_VERSION == "1"
     assert SCHEMA_VERSION != "2"
+    # service facade still has no v2 exports
+    for name in ("V2Envelope", "serialize_result", "api_v2", "v2_contract"):
+        assert name not in service.__all__
 
 
 def test_public_and_packaged_skill_are_byte_for_byte():
@@ -362,7 +365,7 @@ async def test_fetch_map_doctor_baselines_distinguish_empty_degraded_and_failure
             [service_support._attempt("web_fetch", "tavily", "ok", 0.0, result_count=1)],
         )
 
-    monkeypatch.setattr(search_service, "_run_web_fetch_fallback", success_fetch)
+    monkeypatch.setattr(operation_runtime, "_run_web_fetch_fallback", success_fetch)
     fetch_ok = await service.fetch("https://example.com/ok")
     assert_has_keys(fetch_ok, FETCH_CORE_KEYS)
     assert fetch_ok["ok"] is True
@@ -380,7 +383,7 @@ async def test_fetch_map_doctor_baselines_distinguish_empty_degraded_and_failure
             ],
         )
 
-    monkeypatch.setattr(search_service, "_run_web_fetch_fallback", empty_fetch)
+    monkeypatch.setattr(operation_runtime, "_run_web_fetch_fallback", empty_fetch)
     fetch_empty = await service.fetch("https://example.com/empty")
     assert fetch_empty["ok"] is False
     assert fetch_empty["error_type"] == "network_error"
@@ -404,7 +407,7 @@ async def test_fetch_map_doctor_baselines_distinguish_empty_degraded_and_failure
             ],
         )
 
-    monkeypatch.setattr(search_service, "_run_web_fetch_fallback", degraded_fetch)
+    monkeypatch.setattr(operation_runtime, "_run_web_fetch_fallback", degraded_fetch)
     fetch_degraded = await service.fetch("https://example.com/degraded")
     assert fetch_degraded["ok"] is True
     assert fetch_degraded["fallback_used"] is True
