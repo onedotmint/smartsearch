@@ -329,8 +329,9 @@ def prescan_schema_version(argv: list[str] | None) -> dict[str, object]:
     """
     Stdlib-only root-global schema pre-scan.
 
-    Recognizes only `--schema-version 2` / `--schema-version=2` before the
-    subcommand. Does not import service/config/providers/httpx.
+    Recognizes `--schema-version 2|3` / `--schema-version=2|3` before the
+    subcommand. Version 3 may import the dependency-light control-plane
+    inventory only. Does not import service/config/providers/httpx.
     """
     args = list(argv) if argv is not None else []
     schema_version = "1"
@@ -370,12 +371,23 @@ def prescan_schema_version(argv: list[str] | None) -> dict[str, object]:
         }.get(command)
     elif command is not None:
         operation = None
+    v2 = explicit and schema_version == "2"
+    v3 = explicit and schema_version == "3"
+    if v3:
+        # Resolve only canonical leaves through the dependency-light v3 inventory.
+        from .control_plane_contract import operation_for_argv
+
+        descriptor = operation_for_argv(args)
+        if descriptor is not None:
+            command = descriptor.command
+            operation = descriptor.operation
     return {
         "schema_version": schema_version if schema_version else "1",
         "explicit": explicit,
         "command": command,
         "operation": operation,
-        "v2": explicit and schema_version == "2",
+        "v2": v2,
+        "v3": v3,
     }
 
 

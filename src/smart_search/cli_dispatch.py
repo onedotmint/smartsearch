@@ -394,24 +394,72 @@ def _run_setup(args: argparse.Namespace) -> int:
         data["capability_status"] = final_status
     return _print_result("setup", data, args.format, args.output)
 
+_REGRESSION_PATTERNS = (
+    "tests/test_cli.py",
+    "tests/test_service.py",
+    "tests/test_providers_new.py",
+    "tests/test_jina_provider.py",
+    "tests/test_zhipu_mcp_provider.py",
+    "tests/test_smoke.py",
+    "tests/test_intent_router.py",
+    "tests/test_regression.py",
+    "tests/test_release_workflow.py",
+)
+
+
+def _regression_test_files_available(root: Path) -> bool:
+    return all((root / pattern).exists() for pattern in _REGRESSION_PATTERNS)
+
+
+def _run_coroutine_sync(coro: Any) -> Any:
+    """Run a coroutine from sync or already-running event-loop contexts."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    # v3 dispatch already owns the loop; run the fallback smoke in a worker thread.
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def regression_result() -> dict[str, Any]:
+    """Run the shared regression owner and return a structured process outcome.
+
+    Source checkouts start the pytest subprocess. Packaged installs without the
+    test tree fall back to mock smoke without starting a subprocess. Safe to call
+    from both the sync v1 path and the async v3 dispatcher.
+    """
+    root = Path(__file__).resolve().parents[2]
+    if not _regression_test_files_available(root):
+        data = _run_coroutine_sync(service.smoke("mock"))
+        return {
+            "ok": bool(data.get("ok", False)),
+            "exit_code": _exit_code(data),
+            "subprocess_started": False,
+            "fallback": "mock_smoke",
+            "failed_cases": list(data.get("failed_cases") or []),
+        }
+    cmd = [sys.executable, "-m", "pytest", *_REGRESSION_PATTERNS]
+    code = subprocess.call(cmd, cwd=str(root))
+    return {
+        "ok": code == 0,
+        "exit_code": code,
+        "subprocess_started": True,
+        "fallback": "",
+        "test_files": list(_REGRESSION_PATTERNS),
+    }
+
+
 def _run_regression() -> int:
     root = Path(__file__).resolve().parents[2]
-    patterns = [
-        "tests/test_cli.py",
-        "tests/test_service.py",
-        "tests/test_providers_new.py",
-        "tests/test_jina_provider.py",
-        "tests/test_zhipu_mcp_provider.py",
-        "tests/test_smoke.py",
-        "tests/test_intent_router.py",
-        "tests/test_regression.py",
-        "tests/test_release_workflow.py",
-    ]
-    if not all((root / pattern).exists() for pattern in patterns):
+    if not _regression_test_files_available(root):
+        # Preserve the historical packaged v1 UX: stderr notice plus smoke JSON.
         print("Packaged install has no test files; running mock smoke regression instead.", file=sys.stderr)
         return asyncio.run(_run_regression_smoke_fallback())
-    cmd = [sys.executable, "-m", "pytest", *patterns]
-    return subprocess.call(cmd, cwd=str(root))
+    return int(regression_result()["exit_code"])
 
 async def _run_regression_smoke_fallback() -> int:
     data = await service.smoke("mock")

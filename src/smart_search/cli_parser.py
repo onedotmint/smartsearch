@@ -28,7 +28,8 @@ class NamespaceArgumentParser(SmartSearchArgumentParser):
 
     def parse_args(self, args=None, namespace=None):  # type: ignore[override]
         raw_args = list(sys.argv[1:] if args is None else args)
-        if prescan_schema_version(raw_args).get("v2"):
+        prescan = prescan_schema_version(raw_args)
+        if prescan.get("v2"):
             normalized_args, operation, attrs = raw_args, None, {}
         else:
             normalized_args, operation, attrs = classify_namespace_argv(raw_args)
@@ -74,14 +75,14 @@ def build_parser(*, raise_on_error: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("-v", "--v", "--version", action="version", version=f"%(prog)s {_get_version()}")
     parser.add_argument(
         "--schema-version",
-        choices=["1", "2"],
+        choices=["1", "2", "3"],
         default="1",
-        help="Select the result schema. Version 2 is JSON-only evidence-first Core API.",
+        help="Select the result schema. Version 2 is evidence-first Core; version 3 is opt-in control-plane JSON.",
     )
     parser.add_argument(
         "--fail-on-degraded",
         action="store_true",
-        help="Return exit code 6 for degraded v2 results without changing the envelope.",
+        help="Return exit code 6 for degraded v2 or v3 results without changing the envelope.",
     )
     parser.add_argument(
         "--trace",

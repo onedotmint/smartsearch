@@ -42,6 +42,18 @@ Live `doctor`, live smoke, and provider probes require intentional credentials a
 
 The regression suite checks the public README entrypoint, docs links, public/packaged skill parity, CLI contract markers, provider contract references, and release workflow assumptions. README should not become the source of truth for provider internals or AI-agent orchestration.
 
+### Versioned JSON contracts
+
+Keep the schema families independent during maintenance. Schema v1 remains the default compatibility renderer, v2 remains the evidence-first Core API, and v3 is an explicit control-plane API. V3 fixtures live in `tests/fixtures/control_plane_v3.py`; contract and CLI coverage lives in `tests/test_control_plane_v3_contract.py` and `tests/test_cli_v3.py`.
+
+For a v3 change, verify the exact ten top-level fields, the operation allowlist, structured error/exit mapping, recursive redaction, and actual `network` / `side_effects` metadata. Run at least:
+
+```sh
+python -m pytest tests/test_control_plane_v3_contract.py tests/test_cli_v3.py tests/test_cli_v2.py tests/test_cli_namespace.py -q
+```
+
+Do not add non-evidence operations to v2 or let v1 callers receive v3 JSON without `--schema-version 3`. Keep the public and packaged Skill on the existing v2 Core command boundary unless its own contract intentionally changes.
+
 ## Documentation boundaries
 
 | Concern | Source of truth |

@@ -71,13 +71,27 @@ smart-search --schema-version 2 fetch "https://example.com/page"
 - v2 `search` returns discovery candidates only; it never calls legacy `main_search` or accepts `--response-mode`.
 - Host agents write the final answer from fetched `evidence.items`; discovery candidates are not claim-level proof.
 - `capabilities` uses envelope-only meta operation `capability_status` (local inspection, no Provider network).
-- `--fail-on-degraded` and `--trace` are v2-only. Post-subcommand `--schema-version` placement is not supported.
+- `--fail-on-degraded` is available for v2 and v3; `--trace` remains v2-only. Post-subcommand `--schema-version` placement is not supported.
+
+### Opt-in v3 control-plane JSON API
+
+V3 is a separate JSON family for stable local administration, explicit probes, developer diagnostics, filesystem work, and regression subprocesses. It is not an evidence envelope and is not the Agent default:
+
+```sh
+smart-search --schema-version 3 config list
+smart-search --schema-version 3 provider status
+smart-search --schema-version 3 doctor status
+smart-search --schema-version 3 dev smoke --mock
+```
+
+V3 returns `complete` / `degraded` / `failed` plus explicit `network` and `side_effects` objects. It is root-global, JSON-only, and additive: v1 stays the default and v2 stays the evidence-first Core API. See the [command reference](docs/commands.md#opt-in-schema-version-3-control-plane-api) for its allowlist, errors, exits, and migration boundary.
 
 ## Choose a workflow
 
 | Need | Command | Network behavior |
 | --- | --- | --- |
 | Evidence-first discovery and fetch (Agent default) | `smart-search --schema-version 2 search\|fetch\|capabilities` | Live discovery/fetch; capabilities is local |
+| Control-plane automation (opt-in) | `smart-search --schema-version 3 config\|provider\|doctor\|dev ...` | Explicit local, network, filesystem, and subprocess metadata |
 | Fast v1 answer and broad discovery | `smart-search search QUERY` | Live search with optional synthesis |
 | Explain the selected intent capabilities | `smart-search route QUERY` | No search/fetch provider call; hybrid may call configured router endpoints |
 | Read one known page | `smart-search fetch URL` | Live page fetch |

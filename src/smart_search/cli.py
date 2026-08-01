@@ -142,12 +142,16 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
     prescan = prescan_schema_version(raw_argv)
     want_v2 = bool(prescan.get("v2"))
+    want_v3 = bool(prescan.get("v3"))
 
-    parser = build_parser(raise_on_error=want_v2)
+    parser = build_parser(raise_on_error=want_v2 or want_v3)
     try:
         args = parser.parse_args(raw_argv)
     except CLIParseError as exc:
-        from .cli_v2 import emit_parser_error
+        if want_v3:
+            from .cli_v3 import emit_parser_error
+        else:
+            from .cli_v2 import emit_parser_error
 
         return emit_parser_error(
             command=prescan.get("command") if isinstance(prescan.get("command"), str) else None,
@@ -159,6 +163,11 @@ def main(argv: list[str] | None = None) -> int:
 
     schema_version = str(getattr(args, "schema_version", "1") or "1")
     _CLI_FORCE_OUTPUT = bool(getattr(args, "force", False))
+
+    if schema_version == "3":
+        from .cli_v3 import dispatch
+
+        return asyncio.run(dispatch(args, argv=raw_argv))
 
     if schema_version == "2":
         from .cli_v2 import dispatch

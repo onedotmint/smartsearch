@@ -26,8 +26,8 @@ Root-global flags (before the subcommand):
 
 | Option | Meaning |
 | --- | --- |
-| `--schema-version 1\|2` | Select the result schema. Default remains `1`. |
-| `--fail-on-degraded` | v2 only: exit `6` for degraded envelopes without changing JSON. |
+| `--schema-version 1\|2\|3` | Select the result schema. Default remains `1`. |
+| `--fail-on-degraded` | v2 and v3 only: exit `6` for degraded envelopes without changing JSON. |
 | `--trace` | v2 only: attach redacted non-stable `meta.trace` events. |
 
 Supported v2 Core commands:
@@ -53,6 +53,41 @@ Rules:
 - Only the root-global flag placement is supported: `smart-search --schema-version 2 <command>`.
 - Apart from an explicit `--format json`, v2 rejects v1 command options before configuration or Provider work; `map` remains Advanced and accepts only its URL in this release.
 - Existing v1 command semantics, JSON wrapper, and Skill workflows are unchanged.
+
+## Opt-in schema version 3 control-plane API
+
+V3 is a separate, additive JSON contract for stable control-plane operations. It is **not** an evidence envelope and is not the Agent Core default. Select it only with the root-global flag:
+
+```sh
+smart-search --schema-version 3 config list
+smart-search --schema-version 3 provider status
+smart-search --schema-version 3 doctor status
+smart-search --schema-version 3 dev smoke --mock
+```
+
+V3 accepts these canonical namespace leaves only:
+
+| Area | Leaves | Operation ids | Execution boundary |
+| --- | --- | --- | --- |
+| Config | `config path\|list\|set\|unset` | `config.*` | Local config read or atomic write |
+| Provider catalog and routes | `provider list\|status\|probe`, `provider routes current\|list\|add\|remove` | `provider.catalog.*`, `provider.probe`, `provider.routes.*` | Local catalog/route reads and writes; probe is explicit single-provider network |
+| Doctor | `doctor status\|probe` | `doctor.status`, `doctor.probe` | Local readiness or explicit aggregate probe |
+| Developer | `dev route-explain`, `dev route-calibrate`, `dev diagnose openai-compatible`, `dev smoke`, `dev regression`, `dev skills status\|update` | `dev.*` | Configured router, explicit diagnostic, mock/live smoke, subprocess, or filesystem |
+
+Every result has exactly these top-level fields:
+
+```text
+schema_version, ok, status, command, operation, result, network,
+side_effects, error, meta
+```
+
+- `status` is `complete`, `degraded`, or `failed`. Empty successful lists and successful no-op removals are `complete`; `degraded` means the requested operation completed with observable partial outcomes; `failed` includes a structured error.
+- `network` reports declared policy/scope and actual `attempted` state. `side_effects` separately reports config/filesystem reads and write attempt/commit state plus subprocess start. Do not infer I/O from status.
+- V3 error codes are `INVALID_ARGUMENT`, `CONFIGURATION_ERROR`, `AUTHENTICATION_FAILED`, `UPSTREAM_TIMEOUT`, `PROVIDER_UNAVAILABLE`, `FILE_SYSTEM_ERROR`, `SUBPROCESS_FAILED`, and `INTERNAL_ERROR`. `--fail-on-degraded` changes only the process exit to `6`.
+- V3 is JSON-only. It rejects markdown/content rendering, `--output`, `--force`, prompt overrides, `--trace`, aliases, Core evidence commands, exact Provider direct commands, and all `experimental` leaves before an owner runs.
+- Values, error details, URLs, and route credentials are recursively redacted. V3 does not expose v2 `evidence`, `routing`, capability-attempt fields, or trace types.
+
+V1 remains the default compatibility renderer and v2 remains the evidence-first Agent Core API. Existing scripts receive no new shape unless they explicitly select `--schema-version 3`. Rollback removes the v3 parser/dispatcher and this section only; it does not modify v1/v2 behavior or persisted configuration.
 
 ## Command discovery
 
@@ -123,7 +158,7 @@ smart-search research "Deep research recent Bitcoin market movement" --budget de
 
 ### Compatibility namespaces
 
-Namespace leaves preserve the existing v1 renderer, JSON envelope, redaction, file-output behavior, and exit codes unless a dedicated new command id is listed below. Namespace names have no aliases; legacy commands and aliases remain supported.
+Namespace leaves preserve the existing v1 renderer, JSON envelope, redaction, file-output behavior, and exit codes by default. The explicit `--schema-version 3` control-plane allowlist above is the only exception; namespace names still have no aliases and legacy commands and aliases remain supported under v1.
 
 | Namespace path | Command / handler | Network behavior |
 | --- | --- | --- |

@@ -71,13 +71,27 @@ smart-search --schema-version 2 fetch "https://example.com/page"
 - v2 `search` 只返回 discovery candidates；不会调用 legacy `main_search`，也不接受 `--response-mode`。
 - Host Agent 基于 fetched `evidence.items` 写最终回答；discovery candidates 不是 claim-level 证据。
 - `capabilities` 使用 envelope-only 元操作 `capability_status`（本地只读检查，不发 Provider 网络请求）。
-- `--fail-on-degraded` 与 `--trace` 仅用于 v2。不承诺 subcommand 之后的 `--schema-version` 位置。
+- `--fail-on-degraded` 可用于 v2 和 v3；`--trace` 仍仅用于 v2。不承诺 subcommand 之后的 `--schema-version` 位置。
+
+### 可选的 v3 控制面 JSON API
+
+V3 是用于稳定本地管理、显式 probe、开发诊断、文件系统操作和 regression 子进程的独立 JSON family。它不是 evidence envelope，也不是 Agent 默认路径：
+
+```sh
+smart-search --schema-version 3 config list
+smart-search --schema-version 3 provider status
+smart-search --schema-version 3 doctor status
+smart-search --schema-version 3 dev smoke --mock
+```
+
+V3 返回 `complete` / `degraded` / `failed`，并以独立的 `network` 与 `side_effects` 对象声明实际执行影响。它只接受根级全局入口和 JSON，且是 additive 的：v1 仍为默认，v2 仍为 evidence-first Core API。完整 allowlist、错误、退出码和迁移边界见[命令参考](docs/commands.md#opt-in-schema-version-3-control-plane-api)。
 
 ## 选择工作流
 
 | 需求 | 命令 | 网络行为 |
 | --- | --- | --- |
 | Evidence-first 发现与抓取（Agent 默认） | `smart-search --schema-version 2 search\|fetch\|capabilities` | 实时 discovery/fetch；capabilities 本地 |
+| 控制面自动化（显式 opt-in） | `smart-search --schema-version 3 config\|provider\|doctor\|dev ...` | 明确的本地、网络、文件系统和子进程元数据 |
 | 快速 v1 回答和广泛发现 | `smart-search search QUERY` | 实时搜索，可合成答案 |
 | 查看意图需要哪些 capability | `smart-search route QUERY` | 不调用搜索/fetch provider；`hybrid` 可能调用已配置的路由 endpoint |
 | 阅读一个已知页面 | `smart-search fetch URL` | 实时抓取页面 |
