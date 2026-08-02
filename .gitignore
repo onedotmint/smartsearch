@@ -17,7 +17,10 @@ node_modules/
 .agents/
 .claude/
 .codex/
+.pi/
+.pi-subagents/
 .trellis/
+/AGENTS.md
 /.gitattributes
 .codegraph/
 .VSCodeCounter/
