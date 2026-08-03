@@ -27,12 +27,13 @@ from .capability_taxonomy import (
     v2_availability_by_tier,
 )
 from .config import ConfigStorageError, ModelRoutesConfigurationError
+from .execution_primitives import ExecutionAttempt, ExecutionAttemptStatus
 from .intent_router import project_evidence_routing
 from .operation_runtime import (
-    _run_docs_search_fallback,
-    _run_site_map,
-    _run_web_fetch_fallback,
-    _run_web_search_fallback,
+    _execute_docs_search,
+    _execute_site_map,
+    _execute_web_fetch,
+    _execute_web_search,
 )
 from .runtime_cache import observe_command
 from .v2_contract import (
@@ -180,43 +181,34 @@ def _qualified_providers(v2_operation: str) -> list[str]:
     return providers
 
 
-def _legacy_attempt_to_v2(attempt: Mapping[str, Any], v2_operation: str) -> V2Attempt:
-    status_raw = str(attempt.get("status") or "error").lower()
-    error_type = str(attempt.get("error_type") or "")
-    if status_raw in {"ok", "success"}:
-        status = "ok"
+def _typed_attempt_to_v2(attempt: ExecutionAttempt, v2_operation: str) -> V2Attempt:
+    """Project a typed ``ExecutionAttempt`` into the strict V2 attempt shape.
+
+    Only the caller-selected V2 operation, typed provider, classified status,
+    error type, elapsed milliseconds and result count are mapped. No legacy
+    dict parsing, no mapping ``.get()``, no elapsed fallback, and no repair of
+    arbitrary input. ``ok`` and ``empty`` map to a null error code; ``skipped``
+    and ``error`` map through the single ``_LEGACY_ERROR_TO_V2`` vocabulary.
+    """
+    if attempt.status is ExecutionAttemptStatus.OK:
+        status = V2AttemptStatus.OK
         error_code = None
-    elif status_raw in {"empty"}:
-        status = "empty"
+    elif attempt.status is ExecutionAttemptStatus.EMPTY:
+        status = V2AttemptStatus.EMPTY
         error_code = None
-    elif status_raw in {"skipped"}:
-        status = "skipped"
-        error_code = _map_error_code(error_type or "config_error").value
+    elif attempt.status is ExecutionAttemptStatus.SKIPPED:
+        status = V2AttemptStatus.SKIPPED
+        error_code = _map_error_code(attempt.error.type).value if attempt.error is not None else None
     else:
-        status = "error"
-        error_code = _map_error_code(error_type).value
-    elapsed = attempt.get("elapsed_ms")
-    if elapsed is None:
-        elapsed_s = attempt.get("elapsed_s") or attempt.get("elapsed") or 0
-        try:
-            elapsed = int(float(elapsed_s) * 1000)
-        except (TypeError, ValueError):
-            elapsed = 0
-    try:
-        elapsed_ms = max(0, int(elapsed))
-    except (TypeError, ValueError):
-        elapsed_ms = 0
-    try:
-        result_count = max(0, int(attempt.get("result_count") or 0))
-    except (TypeError, ValueError):
-        result_count = 0
+        status = V2AttemptStatus.ERROR
+        error_code = _map_error_code(attempt.error.type).value if attempt.error is not None else None
     return V2Attempt(
         capability=v2_operation,
-        provider=str(attempt.get("provider") or "unknown"),
+        provider=attempt.provider,
         status=status,
         error_code=error_code,
-        elapsed_ms=elapsed_ms,
-        result_count=result_count,
+        elapsed_ms=max(0, int(attempt.elapsed_ms)),
+        result_count=attempt.result_count,
     )
 
 
@@ -300,8 +292,8 @@ def _derive_discovery_envelope(
     reason_codes: Sequence[str] = (),
 ) -> V2Envelope:
     executed = (operation,) if attempts else ()
-    has_error = any(str(a.status) in {"error", "skipped", V2AttemptStatus.ERROR.value, V2AttemptStatus.SKIPPED.value} for a in attempts)
-    has_success_or_empty = any(str(a.status) in {"ok", "empty", V2AttemptStatus.OK.value, V2AttemptStatus.EMPTY.value} for a in attempts)
+    has_error = any(a.status in (V2AttemptStatus.ERROR, V2AttemptStatus.SKIPPED) for a in attempts)
+    has_success_or_empty = any(a.status in (V2AttemptStatus.OK, V2AttemptStatus.EMPTY) for a in attempts)
     usable = bool(candidates)
 
     if not attempts:
@@ -331,7 +323,7 @@ def _derive_discovery_envelope(
     elif has_error and not usable:
         # all failed
         last_error = next(
-            (a for a in reversed(attempts) if str(a.status) in {"error", "skipped", V2AttemptStatus.ERROR.value, V2AttemptStatus.SKIPPED.value}),
+            (a for a in reversed(attempts) if a.status in (V2AttemptStatus.ERROR, V2AttemptStatus.SKIPPED)),
             None,
         )
         code = V2ErrorCode(last_error.error_code) if last_error and last_error.error_code else V2ErrorCode.PROVIDER_UNAVAILABLE
@@ -380,23 +372,21 @@ async def source_discovery(request: SourceDiscoveryRequest) -> V2Envelope:
             duration_ms=int((time.monotonic() - started) * 1000),
             details={"qualified_providers": []},
         )
-    values, legacy_attempts = await _run_web_search_fallback(
+    execution = await _execute_web_search(
         request.query,
         count=request.max_results,
         providers=",".join(providers),
         fallback="auto",
     )
-    # Filter attempts/providers to only those we qualified (executor may still skip others).
+    # Keep only typed attempts for qualified providers; drop unqualified skips.
     allowed = set(providers)
     attempts = [
-        _legacy_attempt_to_v2(item, "source_discovery")
-        for item in legacy_attempts
-        if str(item.get("provider") or "") in allowed or item.get("status") in {"ok", "empty", "error"}
+        _typed_attempt_to_v2(item, "source_discovery")
+        for item in execution.attempts
+        if item.provider in allowed
     ]
-    # Keep only attempts for qualified providers; drop unqualified skips that shouldn't run.
-    attempts = [a for a in attempts if a.provider in allowed]
     candidates: list[V2Candidate] = []
-    for index, item in enumerate(values or []):
+    for index, item in enumerate(execution.value or []):
         if isinstance(item, Mapping):
             candidate = _source_to_candidate(item, operation="source_discovery", index=index)
             if candidate:
@@ -428,7 +418,7 @@ async def docs_discovery(request: DocsDiscoveryRequest) -> V2Envelope:
             duration_ms=int((time.monotonic() - started) * 1000),
             details={"qualified_providers": []},
         )
-    values, legacy_attempts = await _run_docs_search_fallback(
+    execution = await _execute_docs_search(
         request.query,
         count=request.max_results,
         providers=",".join(providers),
@@ -436,12 +426,12 @@ async def docs_discovery(request: DocsDiscoveryRequest) -> V2Envelope:
     )
     allowed = set(providers)
     attempts = [
-        _legacy_attempt_to_v2(item, "docs_discovery")
-        for item in legacy_attempts
-        if str(item.get("provider") or "") in allowed
+        _typed_attempt_to_v2(item, "docs_discovery")
+        for item in execution.attempts
+        if item.provider in allowed
     ]
     candidates: list[V2Candidate] = []
-    for index, item in enumerate((values or [])[: request.max_results]):
+    for index, item in enumerate((execution.value or [])[: request.max_results]):
         if isinstance(item, Mapping):
             candidate = _source_to_candidate(item, operation="docs_discovery", index=index)
             if candidate:
@@ -472,7 +462,7 @@ async def content_fetch(request: ContentFetchRequest) -> V2Envelope:
             request_id=request_id,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
-    value, legacy_attempts = await _run_web_fetch_fallback(
+    execution = await _execute_web_fetch(
         request.resource,
         fallback="auto",
         preferred_order=providers,
@@ -480,17 +470,17 @@ async def content_fetch(request: ContentFetchRequest) -> V2Envelope:
     )
     allowed = set(providers)
     attempts = [
-        _legacy_attempt_to_v2(item, "content_fetch")
-        for item in legacy_attempts
-        if str(item.get("provider") or "") in allowed
+        _typed_attempt_to_v2(item, "content_fetch")
+        for item in execution.attempts
+        if item.provider in allowed
     ]
     items: list[V2EvidenceItem] = []
-    if isinstance(value, Mapping):
-        evidence_item = _fetch_to_evidence(value, index=0)
+    if isinstance(execution.value, Mapping):
+        evidence_item = _fetch_to_evidence(execution.value, index=0)
         if evidence_item:
             items.append(evidence_item)
 
-    has_error = any(str(a.status) in {"error", "skipped"} for a in attempts)
+    has_error = any(a.status in (V2AttemptStatus.ERROR, V2AttemptStatus.SKIPPED) for a in attempts)
     if items and has_error:
         status = V2Status.DEGRADED
         degradation = (
@@ -548,18 +538,18 @@ async def site_discovery(request: SiteDiscoveryRequest) -> V2Envelope:
             request_id=request_id,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
-    value, legacy_attempts = await _run_site_map(
+    execution = await _execute_site_map(
         request.resource,
         instructions=request.instructions,
         max_depth=request.max_depth,
         max_breadth=request.max_breadth,
         limit=request.limit,
     )
-    attempts = [_legacy_attempt_to_v2(item, "site_discovery") for item in legacy_attempts]
+    attempts = [_typed_attempt_to_v2(item, "site_discovery") for item in execution.attempts]
     candidates: list[V2Candidate] = []
     results = []
-    if isinstance(value, Mapping):
-        raw_results = value.get("results") or []
+    if isinstance(execution.value, Mapping):
+        raw_results = execution.value.get("results") or []
         if isinstance(raw_results, list):
             results = raw_results
     for index, raw in enumerate(results):

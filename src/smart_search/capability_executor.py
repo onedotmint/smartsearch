@@ -10,12 +10,18 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 from .capability_service import (
     _parse_provider_filter,
     _provider_status_for_capability,
-    _skipped_provider_attempt,
 )
-from .runtime_cache import CacheExecution, add_request
+from .execution_primitives import (
+    ExecutionAttempt,
+    ExecutionOutcome,
+    budget_exhausted_attempt,
+    empty_attempt,
+    error_attempt,
+    skipped_attempt,
+    success_attempt,
+)
+from .runtime_cache import CacheExecution, add_request, current_context
 from .service_support import (
-    _attempt,
-    _budget_exhausted_attempt,
     _cache_attempt_extra,
     _cached_content_provider,
     _cached_fetch_provider,
@@ -57,13 +63,13 @@ class CapabilityOperation:
     result_count: ValueCounter = lambda value: len(value) if isinstance(value, (list, tuple, set, dict)) else 0
 
 
-@dataclass(frozen=True)
-class CapabilityExecution:
-    """Normalized result of one same-capability provider chain."""
+# Compatibility alias for the typed execution outcome. Existing internal
+# imports keep the historical name; no second dict-based lifecycle exists.
+CapabilityExecution = ExecutionOutcome
 
-    value: Any
-    attempts: list[dict[str, Any]]
-    provider: str = ""
+
+def _elapsed_ms(start: float) -> float:
+    return round((time.time() - start) * 1000, 2)
 
 
 def _ordered_provider_statuses(
@@ -71,7 +77,7 @@ def _ordered_provider_statuses(
     providers: Sequence[str] | None,
     provider_filter: set[str] | None,
     preferred_order: Sequence[str] | None,
-) -> tuple[list[dict[str, Any]], list[str]]:
+) -> tuple[tuple[ExecutionAttempt, ...], list[str]]:
     """
     /*
      * ================================================================================
@@ -80,7 +86,7 @@ def _ordered_provider_statuses(
      * 目标：只让同 capability 且 eligible 的 provider 进入调用链。
      * 数据源：capability registry、显式 route、provider filter 和 preferred order。
      * 操作：
-     * 1) 保留配置但不可用 provider 的 skipped attempt。
+     * 1) 保留配置但不可用 provider 的 typed skipped attempt。
      * 2) 按 registry 顺序筛选并按显式 preferred order 重排。
      * ================================================================================
      */
@@ -90,11 +96,24 @@ def _ordered_provider_statuses(
         allowed = set(providers)
         statuses = [item for item in statuses if item.get("provider") in allowed]
 
-    attempts = [
-        _skipped_provider_attempt(capability, item)
+    attempts = tuple(
+        skipped_attempt(
+            capability,
+            str(item.get("provider") or ""),
+            error_type="config_error",
+            message=str(item.get("reason") or "provider_not_eligible"),
+            elapsed_ms=0.0,
+            retryable=False,
+            details={
+                "configured": bool(item.get("configured")),
+                "enabled": bool(item.get("enabled")),
+                "eligible": bool(item.get("eligible")),
+                "reason": str(item.get("reason") or "provider_not_eligible"),
+            },
+        )
         for item in statuses
         if item.get("configured") and not item.get("eligible")
-    ]
+    )
     eligible = [
         str(item["provider"])
         for item in statuses
@@ -154,6 +173,32 @@ def _value_error_fields(value: Any) -> tuple[str, str, bool | None]:
     )
 
 
+# Stable diagnostic fallback messages so a structured failure that carries only
+# an error_type (no error message) still produces a non-empty ``ExecutionError``.
+_DEFAULT_ERROR_MESSAGES: dict[str, str] = {
+    "empty": "provider returned no usable result",
+    "budget_exhausted": "request budget exhausted",
+    "config_error": "provider configuration error",
+    "timeout": "provider request timed out",
+    "network_error": "provider network error",
+    "quality_error": "provider result failed the quality gate",
+    "protocol_error": "provider returned an invalid response",
+    "auth_error": "provider authentication failed",
+    "rate_limit": "provider rate limit exceeded",
+    "fetch_error": "provider fetch failed",
+    "challenge": "provider returned a challenge page",
+    "parse_error": "provider response could not be parsed",
+    "internal_error": "provider execution failed",
+}
+
+
+def _classification_message(error_type: str, error: str) -> str:
+    """Return a stable non-empty diagnostic message for an error classification."""
+    if error and error.strip():
+        return error.strip()
+    return _DEFAULT_ERROR_MESSAGES.get(error_type, f"provider execution failed: {error_type}")
+
+
 async def execute_capability(
     operation: CapabilityOperation,
     *,
@@ -181,9 +226,20 @@ async def execute_capability(
     logger = logging.getLogger("smart_search")
     logger.info("开始执行 capability: capability=%s input=%s", operation.capability, bool(operation.input_value))
 
+    # 3.0 校验 cache kind，使不支持的 kind 成为清晰本地错误，而不是被吞掉。
+    if operation.cache_kind not in {"source", "fetch", "content", "", "none"}:
+        raise ValueError(f"Unsupported capability cache kind: {operation.cache_kind}")
+
     # 3.1 预留 command 级 fetch 预算。
     if reserve_fetch is not None and not reserve_fetch():
-        attempts = [_budget_exhausted_attempt(operation.capability)]
+        # 恢复旧 service_support._budget_exhausted_attempt 的 diagnostic parity：
+        # 存在当前 RequestContext 且 budget.exhausted_reason 非空时，把 reason 附加到
+        # message，否则保持不带 reason 的 base message。
+        context = current_context()
+        reason = "request budget exhausted"
+        if context is not None and context.budget.exhausted_reason:
+            reason = f"request budget exhausted: {context.budget.exhausted_reason}"
+        attempts = (budget_exhausted_attempt(operation.capability, message=reason, elapsed_ms=0.0),)
         value = operation.empty_value("request-budget")
         logger.info("capability 执行因 fetch 预算结束: capability=%s", operation.capability)
         return CapabilityExecution(value=value, attempts=attempts)
@@ -225,16 +281,16 @@ async def execute_capability(
         try:
             execution = await _cache_execution(operation, provider, provider_factory)
             value = execution.value
+            extra = _cache_attempt_extra(execution)
             if operation.is_success(value):
-                attempts.append(
-                    _attempt(
+                attempts = attempts + (
+                    success_attempt(
                         operation.capability,
                         provider,
-                        "ok",
-                        provider_start,
+                        elapsed_ms=_elapsed_ms(provider_start),
                         result_count=operation.result_count(value),
-                        extra=_cache_attempt_extra(execution),
-                    )
+                        details=extra,
+                    ),
                 )
                 logger.info("capability provider 执行成功: capability=%s provider=%s", operation.capability, provider)
                 return CapabilityExecution(value=value, attempts=attempts, provider=provider)
@@ -246,40 +302,47 @@ async def execute_capability(
                 retryable = outcome["retryable"]
             if not error_type:
                 error_type = "empty"
-                error = error or "provider returned no usable result"
                 retryable = False
-            elif error_type == "empty":
-                error = error or "provider returned no usable result"
+            if error_type == "empty":
                 retryable = False if retryable is None else retryable
-            status = "empty" if error_type == "empty" else "error"
-            attempts.append(
-                _attempt(
+            # A structured failure with only an error_type (no message) must still
+            # produce a stable non-empty ExecutionError message.
+            error = _classification_message(error_type, error)
+            if error_type == "empty":
+                attempt = empty_attempt(
                     operation.capability,
                     provider,
-                    status,
-                    provider_start,
-                    error_type=error_type,
-                    error=error,
+                    elapsed_ms=_elapsed_ms(provider_start),
+                    message=error,
                     retryable=retryable,
-                    extra=_cache_attempt_extra(execution),
+                    details=extra,
                 )
-            )
+            else:
+                attempt = error_attempt(
+                    operation.capability,
+                    provider,
+                    error_type=error_type,
+                    message=error,
+                    elapsed_ms=_elapsed_ms(provider_start),
+                    retryable=retryable,
+                    details=extra,
+                )
+            attempts = attempts + (attempt,)
             if error_type == "budget_exhausted":
                 logger.info("capability 执行停止于预算边界: capability=%s provider=%s", operation.capability, provider)
                 break
         # 3.5 将 transport、HTTP、timeout 和未知异常统一转为稳定 attempt。
         except Exception as exc:
             error_type, error, retryable = classify_provider_exception(exc)
-            attempts.append(
-                _attempt(
+            attempts = attempts + (
+                error_attempt(
                     operation.capability,
                     provider,
-                    "error",
-                    provider_start,
                     error_type=error_type,
-                    error=error,
+                    message=_classification_message(error_type, error),
+                    elapsed_ms=_elapsed_ms(provider_start),
                     retryable=retryable,
-                )
+                ),
             )
             logger.info(
                 "capability provider 执行异常: capability=%s provider=%s error_type=%s",
@@ -288,7 +351,11 @@ async def execute_capability(
                 error_type,
             )
 
-    value = operation.empty_value("request-budget" if any(item.get("error_type") == "budget_exhausted" for item in attempts) else "")
+    budget_hit = any(
+        attempt.error is not None and attempt.error.type == "budget_exhausted"
+        for attempt in attempts
+    )
+    value = operation.empty_value("request-budget" if budget_hit else "")
     logger.info(
         "capability 执行完成: capability=%s provider=%s attempts=%s elapsed_ms=%s",
         operation.capability,

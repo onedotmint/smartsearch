@@ -21,6 +21,7 @@ from .capability_service import (
 )
 from .capability_executor import CapabilityOperation, execute_capability
 from .config import config
+from .execution_primitives import project_attempts_dict
 from .evidence import EvidenceBundle
 from .intent_router import IntentRouteResult, IntentRouter, build_rules_route
 from .logger import logger
@@ -240,7 +241,7 @@ async def _run_research_context7_docs(
         providers=("context7",),
         fallback="off",
     )
-    attempts = list(library_execution.attempts)
+    attempts = project_attempts_dict(library_execution.attempts)
     libraries = library_execution.value if isinstance(library_execution.value, list) else []
     if not libraries:
         logger.info("research Context7 library 阶段结束: 无 library")
@@ -274,7 +275,7 @@ async def _run_research_context7_docs(
         providers=("context7",),
         fallback="off",
     )
-    attempts.extend(docs_execution.attempts)
+    attempts.extend(project_attempts_dict(docs_execution.attempts))
     docs_payload = docs_execution.value if isinstance(docs_execution.value, dict) else {}
     content = str(docs_payload.get("content") or "")
     if not content.strip():
@@ -318,7 +319,7 @@ async def _run_research_exa_docs(
         providers=("exa",),
         fallback=fallback,
     )
-    return execution.value if isinstance(execution.value, list) else [], execution.attempts
+    return execution.value if isinstance(execution.value, list) else [], project_attempts_dict(execution.attempts)
 
 
 async def _run_research_vertical_search(
@@ -345,7 +346,7 @@ async def _run_research_vertical_search(
         providers=("anysearch",),
         fallback="off",
     )
-    return execution.value if isinstance(execution.value, list) else [], execution.attempts
+    return execution.value if isinstance(execution.value, list) else [], project_attempts_dict(execution.attempts)
 
 def _evidence_only_synthesis(
     question: str,

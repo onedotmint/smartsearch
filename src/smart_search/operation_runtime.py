@@ -3,6 +3,11 @@
 Ownership: same-capability provider invocation, cache/budget/attempt lifecycle
 via execute_capability. Provider adapters remain responsible for transport and
 normalization. This module must not import CLI or the service facade.
+
+Typed helpers (``_execute_*``) return ``ExecutionOutcome`` for domain owners
+that consume typed attempts directly. The legacy ``_run_*`` wrappers keep their
+historical ``(value, list[dict])`` return shape by projecting typed attempts
+through the single legacy projection helper.
 """
 
 from __future__ import annotations
@@ -12,6 +17,7 @@ from typing import Any
 
 from .capability_executor import CapabilityOperation, execute_capability
 from .capability_taxonomy import is_content_fetch_success
+from .execution_primitives import ExecutionOutcome, project_attempts_dict
 from .provider_fetch_commands import (
     call_firecrawl_scrape as _default_call_firecrawl_scrape,
     call_tavily_extract as _default_call_tavily_extract,
@@ -69,12 +75,12 @@ def _fetch_payload(
     return payload
 
 
-async def _run_web_fetch_fallback(
+async def _execute_web_fetch(
     url: str,
     fallback: str = "auto",
     preferred_order: list[str] | None = None,
     providers: list[str] | None = None,
-) -> tuple[dict[str, Any] | None, list[dict]]:
+) -> ExecutionOutcome:
     async def run_provider(provider: str, outcome: dict[str, Any]) -> dict[str, Any]:
         if provider == "tavily":
             content = await _host_call("call_tavily_extract", _default_call_tavily_extract)(url)
@@ -118,24 +124,39 @@ async def _run_web_fetch_fallback(
         is_success=lambda value: isinstance(value, dict) and is_content_fetch_success(value),
         result_count=lambda _value: 1,
     )
-    execution = await execute_capability(
+    return await execute_capability(
         operation,
         providers=providers,
         fallback=fallback,
         preferred_order=preferred_order,
         reserve_fetch=add_fetch,
     )
+
+
+async def _run_web_fetch_fallback(
+    url: str,
+    fallback: str = "auto",
+    preferred_order: list[str] | None = None,
+    providers: list[str] | None = None,
+) -> tuple[dict[str, Any] | None, list[dict]]:
+    execution = await _execute_web_fetch(
+        url,
+        fallback=fallback,
+        preferred_order=preferred_order,
+        providers=providers,
+    )
     fetch_result = execution.value if isinstance(execution.value, dict) and execution.value.get("content") else None
     if fetch_result is not None:
         fetch_result = {"ok": True, **fetch_result}
-    return fetch_result, execution.attempts
+    return fetch_result, project_attempts_dict(execution.attempts)
 
-async def _run_web_search_fallback(
+
+async def _execute_web_search(
     query: str,
     count: int = 5,
     providers: str = "auto",
     fallback: str = "auto",
-) -> tuple[list[dict], list[dict]]:
+) -> ExecutionOutcome:
     async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
         if provider == "zhipu":
             data = await _host_call("zhipu_search", _default_zhipu_search)(query, count=count)
@@ -158,19 +179,29 @@ async def _run_web_search_fallback(
         is_success=lambda value: isinstance(value, list) and bool(value),
         result_count=lambda value: len(value) if isinstance(value, list) else 0,
     )
-    execution = await execute_capability(
+    return await execute_capability(
         operation,
         provider_filter=providers,
         fallback=fallback,
     )
-    return execution.value if isinstance(execution.value, list) else [], execution.attempts
 
-async def _run_docs_search_fallback(
+
+async def _run_web_search_fallback(
     query: str,
     count: int = 5,
     providers: str = "auto",
     fallback: str = "auto",
 ) -> tuple[list[dict], list[dict]]:
+    execution = await _execute_web_search(query, count=count, providers=providers, fallback=fallback)
+    return execution.value if isinstance(execution.value, list) else [], project_attempts_dict(execution.attempts)
+
+
+async def _execute_docs_search(
+    query: str,
+    count: int = 5,
+    providers: str = "auto",
+    fallback: str = "auto",
+) -> ExecutionOutcome:
     async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
         if provider == "exa":
             data = await _host_call("exa_search", _default_exa_search)(query, num_results=count, include_highlights=True)
@@ -198,18 +229,28 @@ async def _run_docs_search_fallback(
         is_success=lambda value: isinstance(value, list) and bool(value),
         result_count=lambda value: len(value) if isinstance(value, list) else 0,
     )
-    execution = await execute_capability(
+    return await execute_capability(
         operation,
         provider_filter=providers,
         fallback=fallback,
     )
-    return execution.value if isinstance(execution.value, list) else [], execution.attempts
 
-async def _run_vertical_search_fallback(
+
+async def _run_docs_search_fallback(
     query: str,
+    count: int = 5,
     providers: str = "auto",
     fallback: str = "auto",
 ) -> tuple[list[dict], list[dict]]:
+    execution = await _execute_docs_search(query, count=count, providers=providers, fallback=fallback)
+    return execution.value if isinstance(execution.value, list) else [], project_attempts_dict(execution.attempts)
+
+
+async def _execute_vertical_search(
+    query: str,
+    providers: str = "auto",
+    fallback: str = "auto",
+) -> ExecutionOutcome:
     async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
         data = await _host_call("anysearch_search", _default_anysearch_search)(query, max_results=5)
         outcome.update(data if isinstance(data, dict) else {})
@@ -224,23 +265,30 @@ async def _run_vertical_search_fallback(
         is_success=lambda value: isinstance(value, list) and bool(value),
         result_count=lambda value: len(value) if isinstance(value, list) else 0,
     )
-    execution = await execute_capability(
+    return await execute_capability(
         operation,
         provider_filter=providers,
         fallback=fallback,
     )
-    return execution.value if isinstance(execution.value, list) else [], execution.attempts
 
 
+async def _run_vertical_search_fallback(
+    query: str,
+    providers: str = "auto",
+    fallback: str = "auto",
+) -> tuple[list[dict], list[dict]]:
+    execution = await _execute_vertical_search(query, providers=providers, fallback=fallback)
+    return execution.value if isinstance(execution.value, list) else [], project_attempts_dict(execution.attempts)
 
-async def _run_site_map(
+
+async def _execute_site_map(
     url: str,
     instructions: str = "",
     max_depth: int = 1,
     max_breadth: int = 20,
     limit: int = 50,
     timeout: int = 150,
-) -> tuple[dict[str, Any] | None, list[dict]]:
+) -> ExecutionOutcome:
     async def run_provider(provider: str, outcome: dict[str, Any]) -> dict[str, Any]:
         data = await _host_call("call_tavily_map", _default_call_tavily_map)(
             url,
@@ -281,16 +329,39 @@ async def _run_site_map(
         ),
         result_count=lambda value: len(value.get("results") or []) if isinstance(value, dict) else 0,
     )
-    execution = await execute_capability(
+    return await execute_capability(
         operation,
         providers=["tavily"],
         fallback="off",
     )
+
+
+async def _run_site_map(
+    url: str,
+    instructions: str = "",
+    max_depth: int = 1,
+    max_breadth: int = 20,
+    limit: int = 50,
+    timeout: int = 150,
+) -> tuple[dict[str, Any] | None, list[dict]]:
+    execution = await _execute_site_map(
+        url,
+        instructions=instructions,
+        max_depth=max_depth,
+        max_breadth=max_breadth,
+        limit=limit,
+        timeout=timeout,
+    )
     value = execution.value if isinstance(execution.value, dict) else None
-    return value, execution.attempts
+    return value, project_attempts_dict(execution.attempts)
 
 
 __all__ = [
+    "_execute_docs_search",
+    "_execute_site_map",
+    "_execute_vertical_search",
+    "_execute_web_fetch",
+    "_execute_web_search",
     "_run_docs_search_fallback",
     "_run_site_map",
     "_run_vertical_search_fallback",
