@@ -1,3 +1,12 @@
+"""Canonical v2 projection boundary tests.
+
+The canonical module is a strict one-way projection from schema-neutral typed
+Evidence owner outcomes (``evidence_operations``) into the public V2 envelope.
+These tests assert owner-once wrapping, exact envelope parity, prohibited
+projection dependencies, unchanged public facade/CLI behavior, and unchanged
+runtime/executor behavior.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +20,7 @@ from smart_search import (
     api_v2,
     canonical_operations,
     capability_executor,
+    evidence_operations,
     operation_runtime,
     search_service,
 )
@@ -20,7 +30,16 @@ from smart_search.canonical_operations import (
     SiteDiscoveryRequest,
     SourceDiscoveryRequest,
 )
+from smart_search.evidence_operations import (
+    EvidenceOperationOutcome,
+    EvidenceOperationStatus,
+    EvidenceRouting,
+)
 from smart_search.execution_primitives import (
+    ExecutionCandidate,
+    ExecutionError,
+    ExecutionEvidenceItem,
+    ExecutionMetadata,
     ExecutionOutcome,
     empty_attempt,
     error_attempt,
@@ -32,34 +51,89 @@ from smart_search.v2_contract import V2Status, serialize_result, validate_envelo
 CANONICAL_MODULE_PATH = Path("src/smart_search/canonical_operations.py")
 
 
-def test_canonical_typed_attempt_path_uses_typed_helpers_only():
-    """Canonical v2 must consume typed ExecutionAttempt values only.
+def _candidate(identifier: str = "c-1") -> ExecutionCandidate:
+    return ExecutionCandidate(identifier, "https://example.com/a", "tavily", "Title", "snippet")
 
-    The legacy dict-based ``_legacy_attempt_to_v2`` and ``legacy_attempts``
-    names are gone, the module imports/calls the typed ``_execute_*`` helpers
-    (never the ``_run_*`` legacy wrappers), and the typed projection never uses
-    mapping ``.get()``.
-    """
+
+def _evidence(identifier: str = "ev-1") -> ExecutionEvidenceItem:
+    return ExecutionEvidenceItem(identifier, "https://example.com/a", "tavily", "Page", "Fetched body text")
+
+
+def _source_success_outcome(request_id: str = "req-1") -> EvidenceOperationOutcome:
+    return EvidenceOperationOutcome(
+        operation="source_discovery",
+        status=EvidenceOperationStatus.COMPLETE,
+        candidates=(_candidate(),),
+        attempts=(success_attempt("web_search", "tavily", elapsed_ms=3.0, result_count=1),),
+        routing=EvidenceRouting(("source_discovery",), ("source_discovery",), "v2", ("source_discovery",)),
+        metadata=ExecutionMetadata(request_id, 5),
+    )
+
+
+def _source_config_failed_outcome(request_id: str = "req-1") -> EvidenceOperationOutcome:
+    return EvidenceOperationOutcome(
+        operation="source_discovery",
+        status=EvidenceOperationStatus.FAILED,
+        error=ExecutionError(
+            "config_error",
+            "No qualified source_discovery providers configured",
+            retryable=False,
+            details={"qualified_providers": []},
+        ),
+        routing=EvidenceRouting(("source_discovery",), (), "v2", ("configuration_error",)),
+        metadata=ExecutionMetadata(request_id, 5),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Projection dependency boundary
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_projection_boundary_imports_and_no_mapping_parsing():
+    """Canonical V2 must be a pure projection: no runtime/qualification/config/
+    routing/cache/provider imports, no legacy wrappers, no mapping .get() in the
+    typed attempt projection."""
     source = CANONICAL_MODULE_PATH.read_text(encoding="utf-8")
     assert "_legacy_attempt_to_v2" not in source
     assert "legacy_attempts" not in source
+    tree = ast.parse(source)
+    imported_modules: list[str] = []
+    imported_names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            imported_modules.append(node.module)
+            imported_names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.Import):
+            imported_names.extend(alias.name for alias in node.names)
+    forbidden_prefixes = (
+        "smart_search.capability_service",
+        "smart_search.capability_taxonomy",
+        "smart_search.config",
+        "smart_search.intent_router",
+        "smart_search.operation_runtime",
+        "smart_search.runtime_cache",
+        "smart_search.providers",
+        "smart_search.search_service",
+        "smart_search.research_service",
+        "smart_search.service",
+    )
+    for module in imported_modules:
+        assert not any(
+            module == prefix or module.startswith(prefix + ".") for prefix in forbidden_prefixes
+        ), f"forbidden import: {module}"
     for name in (
+        "_execute_web_search",
+        "_execute_docs_search",
+        "_execute_web_fetch",
+        "_execute_site_map",
         "_run_web_search_fallback",
         "_run_docs_search_fallback",
         "_run_web_fetch_fallback",
         "_run_site_map",
+        "project_attempts_dict",
     ):
-        assert name not in source, f"legacy wrapper still referenced: {name}"
-
-    tree = ast.parse(source)
-
-    # typed helpers are imported from operation_runtime
-    imported: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module and node.module.endswith("operation_runtime"):
-            imported.extend(alias.name for alias in node.names)
-    for name in ("_execute_web_search", "_execute_docs_search", "_execute_web_fetch", "_execute_site_map"):
-        assert name in imported, f"missing typed helper import: {name}"
+        assert name not in imported_names, f"forbidden runtime/legacy symbol: {name}"
 
     # typed projection exists and its first parameter is annotated ExecutionAttempt
     proj = next(
@@ -68,10 +142,212 @@ def test_canonical_typed_attempt_path_uses_typed_helpers_only():
     )
     assert proj is not None
     assert proj.args.args and "ExecutionAttempt" in ast.unparse(proj.args.args[0].annotation)
-
-    # the projection body never calls mapping .get()
     get_calls = [n for n in ast.walk(proj) if isinstance(n, ast.Attribute) and n.attr == "get"]
     assert get_calls == []
+
+
+def test_projection_wrappers_call_owner_exactly_once(monkeypatch):
+    calls = {"source": 0, "docs": 0, "fetch": 0, "site": 0, "composite": 0, "status": 0}
+
+    async def fake_source(request):
+        calls["source"] += 1
+        return _source_success_outcome()
+
+    async def fake_docs(request):
+        calls["docs"] += 1
+        return _source_success_outcome()
+
+    async def fake_fetch(request):
+        calls["fetch"] += 1
+        return EvidenceOperationOutcome(
+            operation="content_fetch",
+            status=EvidenceOperationStatus.COMPLETE,
+            evidence_items=(_evidence(),),
+            attempts=(success_attempt("web_fetch", "tavily", elapsed_ms=1.0, result_count=1),),
+            routing=EvidenceRouting(("content_fetch",), ("content_fetch",), "v2", ("content_fetch",)),
+            metadata=ExecutionMetadata("req-1", 1),
+        )
+
+    async def fake_site(request):
+        calls["site"] += 1
+        return _source_success_outcome()
+
+    async def fake_composite(query, max_results=5):
+        calls["composite"] += 1
+        return _source_success_outcome()
+
+    def fake_status(*, request_id=None):
+        calls["status"] += 1
+        return EvidenceOperationOutcome(
+            operation="capability_status",
+            status=EvidenceOperationStatus.COMPLETE,
+            routing=EvidenceRouting((), (), "v2-capability-status-1", ("local_inspection",)),
+            metadata=ExecutionMetadata(request_id or "cap-1", 1),
+            local_data={"capabilities": {}},
+        )
+
+    monkeypatch.setattr(evidence_operations, "source_discovery", fake_source)
+    monkeypatch.setattr(evidence_operations, "docs_discovery", fake_docs)
+    monkeypatch.setattr(evidence_operations, "content_fetch", fake_fetch)
+    monkeypatch.setattr(evidence_operations, "site_discovery", fake_site)
+    monkeypatch.setattr(evidence_operations, "composite_search", fake_composite)
+    monkeypatch.setattr(evidence_operations, "capability_status", fake_status)
+
+    asyncio.run(canonical_operations.source_discovery(SourceDiscoveryRequest("q")))
+    asyncio.run(canonical_operations.docs_discovery(DocsDiscoveryRequest("q")))
+    asyncio.run(canonical_operations.content_fetch(ContentFetchRequest("https://example.com")))
+    asyncio.run(canonical_operations.site_discovery(SiteDiscoveryRequest("https://example.com")))
+    asyncio.run(canonical_operations.composite_search("q"))
+    canonical_operations.capability_status(request_id="cap-1")
+    assert calls == {"source": 1, "docs": 1, "fetch": 1, "site": 1, "composite": 1, "status": 1}
+
+
+# ---------------------------------------------------------------------------
+# Exact envelope parity
+# ---------------------------------------------------------------------------
+
+
+def test_projection_complete_envelope_parity():
+    envelope = canonical_operations._project_evidence_outcome(_source_success_outcome())
+    payload = serialize_result(envelope)
+    validate_envelope_dict(payload)
+    assert payload["ok"] is True
+    assert payload["status"] == "complete"
+    assert payload["command"] == "search"
+    assert payload["operation"] == "source_discovery"
+    assert payload["result"] == {"total": 1, "items": [{"id": "c-1"}]}
+    assert payload["evidence"]["candidates"][0]["provider"] == "tavily"
+    assert payload["routing"]["requested_capabilities"] == ["source_discovery"]
+    assert payload["routing"]["executed_capabilities"] == ["source_discovery"]
+    assert payload["routing"]["policy_version"] == "v2"
+    assert payload["attempts"][0]["capability"] == "source_discovery"
+    assert payload["attempts"][0]["status"] == "ok"
+    assert payload["attempts"][0]["error_code"] is None
+    assert payload["error"] is None
+    assert payload["degradation"] == []
+
+
+def test_projection_config_failed_envelope_parity():
+    envelope = canonical_operations._project_evidence_outcome(_source_config_failed_outcome())
+    payload = serialize_result(envelope)
+    validate_envelope_dict(payload)
+    assert payload["ok"] is False
+    assert payload["status"] == "failed"
+    assert payload["command"] == "search"
+    assert payload["operation"] == "source_discovery"
+    assert payload["result"] == {}
+    assert payload["routing"]["requested_capabilities"] == ["source_discovery"]
+    assert payload["routing"]["executed_capabilities"] == []
+    assert payload["routing"]["reason_codes"] == ["configuration_error"]
+    assert payload["attempts"] == []
+    assert payload["error"]["code"] == "CONFIGURATION_ERROR"
+    assert payload["error"]["retryable"] is False
+    assert payload["error"]["details"] == {"qualified_providers": []}
+    assert payload["degradation"] == []
+
+
+def test_projection_degraded_and_failed_envelope_parity():
+    degraded = EvidenceOperationOutcome(
+        operation="source_discovery",
+        status=EvidenceOperationStatus.DEGRADED,
+        candidates=(_candidate(),),
+        attempts=(
+            error_attempt("web_search", "tavily", error_type="network_error", message="fail", elapsed_ms=2.0),
+            success_attempt("web_search", "firecrawl", elapsed_ms=4.0, result_count=1),
+        ),
+        degradation=(
+            evidence_operations.EvidenceDegradation(
+                "provider_partial_failure",
+                "source_discovery",
+                "One or more providers failed before a usable result",
+            ),
+        ),
+        routing=EvidenceRouting(("source_discovery",), ("source_discovery",), "v2", ("source_discovery",)),
+        metadata=ExecutionMetadata("req-1", 6),
+    )
+    payload = serialize_result(canonical_operations._project_evidence_outcome(degraded))
+    assert payload["status"] == "degraded"
+    assert payload["ok"] is True
+    assert payload["error"] is None
+    assert payload["degradation"][0]["code"] == "provider_partial_failure"
+    assert payload["attempts"][0]["status"] == "error"
+    assert payload["attempts"][0]["error_code"] == "PROVIDER_UNAVAILABLE"
+
+    failed = EvidenceOperationOutcome(
+        operation="docs_discovery",
+        status=EvidenceOperationStatus.FAILED,
+        attempts=(
+            error_attempt("docs_search", "context7", error_type="timeout", message="timed out", elapsed_ms=2.0),
+        ),
+        error=ExecutionError("timeout", "docs_discovery failed", retryable=None),
+        routing=EvidenceRouting(("docs_discovery",), ("docs_discovery",), "v2", ("docs_discovery",)),
+        metadata=ExecutionMetadata("req-1", 3),
+    )
+    payload = serialize_result(canonical_operations._project_evidence_outcome(failed))
+    assert payload["status"] == "failed"
+    assert payload["ok"] is False
+    assert payload["command"] == "search"
+    assert payload["operation"] == "docs_discovery"
+    assert payload["result"] == {"total": 0, "items": []}
+    assert payload["error"]["code"] == "UPSTREAM_TIMEOUT"
+    assert payload["error"]["message"] == "docs_discovery failed"
+    assert payload["error"]["retryable"] is True
+
+
+def test_projection_fetch_and_site_envelope_parity():
+    fetch = EvidenceOperationOutcome(
+        operation="content_fetch",
+        status=EvidenceOperationStatus.COMPLETE,
+        evidence_items=(_evidence(),),
+        attempts=(success_attempt("web_fetch", "tavily", elapsed_ms=5.0, result_count=1),),
+        routing=EvidenceRouting(("content_fetch",), ("content_fetch",), "v2", ("content_fetch",)),
+        metadata=ExecutionMetadata("req-1", 6),
+    )
+    payload = serialize_result(canonical_operations._project_evidence_outcome(fetch))
+    assert payload["command"] == "fetch"
+    assert payload["operation"] == "content_fetch"
+    assert payload["result"] == {"total": 1, "items": [{"id": "ev-1"}]}
+    assert payload["evidence"]["items"][0]["content"] == "Fetched body text"
+    assert payload["evidence"]["candidates"] == []
+
+    site = EvidenceOperationOutcome(
+        operation="site_discovery",
+        status=EvidenceOperationStatus.COMPLETE,
+        candidates=(_candidate("c-site"),),
+        attempts=(success_attempt("site_map", "tavily", elapsed_ms=1.0, result_count=1),),
+        routing=EvidenceRouting(("site_discovery",), ("site_discovery",), "v2", ("site_discovery",)),
+        metadata=ExecutionMetadata("req-1", 2),
+    )
+    payload = serialize_result(canonical_operations._project_evidence_outcome(site))
+    assert payload["command"] == "map"
+    assert payload["operation"] == "site_discovery"
+    assert payload["result"] == {"total": 1, "items": [{"id": "c-site"}]}
+    assert payload["evidence"]["items"] == []
+
+
+def test_projection_capability_status_envelope_parity():
+    outcome = EvidenceOperationOutcome(
+        operation="capability_status",
+        status=EvidenceOperationStatus.COMPLETE,
+        routing=EvidenceRouting((), (), "v2-capability-status-1", ("local_inspection",)),
+        metadata=ExecutionMetadata("cap-1", 3),
+        local_data={"capabilities": {"core_availability": {"source_discovery": ["tavily"]}}},
+    )
+    payload = serialize_result(canonical_operations._project_evidence_outcome(outcome))
+    assert payload["operation"] == "capability_status"
+    assert payload["command"] == "capabilities"
+    assert payload["status"] == "complete"
+    assert payload["attempts"] == []
+    assert payload["routing"]["requested_capabilities"] == []
+    assert payload["routing"]["executed_capabilities"] == []
+    assert payload["routing"]["policy_version"] == "v2-capability-status-1"
+    assert payload["evidence"]["candidates"] == []
+    assert payload["result"]["capabilities"]["core_availability"] == {"source_discovery": ["tavily"]}
+
+
+# ---------------------------------------------------------------------------
+# Behavior parity through the public wrappers
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -104,7 +380,7 @@ async def test_source_discovery_config_error_with_only_synthesis_providers(monke
     monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
     monkeypatch.delenv("ZHIPU_API_KEY", raising=False)
 
-    calls = {"search": 0, "main": 0}
+    calls = {"search": 0}
 
     async def spy_search(*args, **kwargs):
         calls["search"] += 1
@@ -127,6 +403,7 @@ async def test_source_discovery_config_error_with_only_synthesis_providers(monke
 @pytest.mark.asyncio
 async def test_source_discovery_success_and_empty(monkeypatch):
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+    monkeypatch.setattr(evidence_operations, "_qualified_providers", lambda operation: ["tavily"])
 
     async def fake_web(query, count=5, providers="auto", fallback="auto"):
         if "empty" in query:
@@ -139,12 +416,7 @@ async def test_source_discovery_success_and_empty(monkeypatch):
             attempts=(success_attempt("web_search", "tavily", elapsed_ms=3.0, result_count=1),),
         )
 
-    monkeypatch.setattr(canonical_operations, "_execute_web_search", fake_web)
-    monkeypatch.setattr(
-        canonical_operations,
-        "_qualified_providers",
-        lambda operation: ["tavily"] if operation == "source_discovery" else [],
-    )
+    monkeypatch.setattr(evidence_operations, "_execute_web_search", fake_web)
 
     success = await canonical_operations.source_discovery(SourceDiscoveryRequest("hello world"))
     assert success.status is V2Status.COMPLETE
@@ -160,7 +432,7 @@ async def test_source_discovery_success_and_empty(monkeypatch):
 @pytest.mark.asyncio
 async def test_source_discovery_degraded_fallback(monkeypatch):
     monkeypatch.setattr(
-        canonical_operations,
+        evidence_operations,
         "_qualified_providers",
         lambda operation: ["tavily", "firecrawl"],
     )
@@ -174,7 +446,7 @@ async def test_source_discovery_degraded_fallback(monkeypatch):
             ),
         )
 
-    monkeypatch.setattr(canonical_operations, "_execute_web_search", fake_web)
+    monkeypatch.setattr(evidence_operations, "_execute_web_search", fake_web)
     result = await canonical_operations.source_discovery(SourceDiscoveryRequest("fallback"))
     assert result.status is V2Status.DEGRADED
     assert result.degradation
@@ -183,7 +455,7 @@ async def test_source_discovery_degraded_fallback(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_content_fetch_evidence_only(monkeypatch):
-    monkeypatch.setattr(canonical_operations, "_qualified_providers", lambda operation: ["tavily"])
+    monkeypatch.setattr(evidence_operations, "_qualified_providers", lambda operation: ["tavily"])
 
     async def fake_fetch(url, fallback="auto", preferred_order=None, providers=None):
         assert providers == ["tavily"]
@@ -198,7 +470,7 @@ async def test_content_fetch_evidence_only(monkeypatch):
             attempts=(success_attempt("web_fetch", "tavily", elapsed_ms=5.0, result_count=1),),
         )
 
-    monkeypatch.setattr(canonical_operations, "_execute_web_fetch", fake_fetch)
+    monkeypatch.setattr(evidence_operations, "_execute_web_fetch", fake_fetch)
     result = await canonical_operations.content_fetch(ContentFetchRequest("https://example.com/page"))
     assert result.status is V2Status.COMPLETE
     assert len(result.evidence.items) == 1
@@ -213,7 +485,7 @@ async def test_composite_search_reuses_one_request_context(monkeypatch):
 
     seen_contexts: list[int] = []
     monkeypatch.setattr(
-        canonical_operations,
+        evidence_operations,
         "_qualified_providers",
         lambda operation: ["tavily"] if operation == "source_discovery" else ["context7"],
     )
@@ -236,8 +508,8 @@ async def test_composite_search_reuses_one_request_context(monkeypatch):
             attempts=(success_attempt("docs_search", "context7", elapsed_ms=1.0, result_count=1),),
         )
 
-    monkeypatch.setattr(canonical_operations, "_execute_web_search", fake_web)
-    monkeypatch.setattr(canonical_operations, "_execute_docs_search", fake_docs)
+    monkeypatch.setattr(evidence_operations, "_execute_web_search", fake_web)
+    monkeypatch.setattr(evidence_operations, "_execute_docs_search", fake_docs)
 
     result = await canonical_operations.composite_search("Python API docs")
     assert result.status is V2Status.COMPLETE
@@ -330,7 +602,7 @@ async def test_v1_context7_runner_does_not_apply_v2_result_limit(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_same_capability_only_no_main_search_spy(monkeypatch):
-    monkeypatch.setattr(canonical_operations, "_qualified_providers", lambda operation: ["tavily"])
+    monkeypatch.setattr(evidence_operations, "_qualified_providers", lambda operation: ["tavily"])
 
     async def fake_web(query, count=5, providers="auto", fallback="auto"):
         assert "openai" not in providers
@@ -346,7 +618,7 @@ async def test_same_capability_only_no_main_search_spy(monkeypatch):
         called["search"] += 1
         return {"ok": True, "answer": "should not run"}
 
-    monkeypatch.setattr(canonical_operations, "_execute_web_search", fake_web)
+    monkeypatch.setattr(evidence_operations, "_execute_web_search", fake_web)
     monkeypatch.setattr(search_service, "search", spy_search)
     result = await canonical_operations.source_discovery(SourceDiscoveryRequest("q"))
     assert called["search"] == 0
@@ -372,7 +644,7 @@ def test_capability_status_configuration_failure_is_classified_and_redacted(monk
     def fail_status():
         raise ModelRoutesConfigurationError("Bearer private-config-token")
 
-    monkeypatch.setattr(canonical_operations, "get_capability_status", fail_status)
+    monkeypatch.setattr(evidence_operations, "get_capability_status", fail_status)
     payload = serialize_result(canonical_operations.capability_status(request_id="cap-config"))
     assert payload["operation"] == "capability_status"
     assert payload["error"]["code"] == "CONFIGURATION_ERROR"
@@ -388,12 +660,12 @@ def test_capability_status_reports_runtime_availability_separately(monkeypatch):
         "answer_synthesis": ["openai-compatible"],
     }
     monkeypatch.setattr(
-        canonical_operations,
+        evidence_operations,
         "_qualified_providers",
         lambda operation: list(runtime[operation]),
     )
     monkeypatch.setattr(
-        canonical_operations,
+        evidence_operations,
         "get_capability_status",
         lambda: {
             "web_search": {"configured": ["tavily"], "ok": True},
@@ -419,7 +691,7 @@ def test_capability_status_internal_failure_does_not_expose_exception_text(monke
     def fail_status():
         raise RuntimeError("Bearer private-token")
 
-    monkeypatch.setattr(canonical_operations, "get_capability_status", fail_status)
+    monkeypatch.setattr(evidence_operations, "get_capability_status", fail_status)
     payload = serialize_result(canonical_operations.capability_status(request_id="cap-failure"))
     assert payload["operation"] == "capability_status"
     assert payload["error"]["code"] == "INTERNAL_ERROR"
@@ -428,7 +700,7 @@ def test_capability_status_internal_failure_does_not_expose_exception_text(monke
 
 @pytest.mark.asyncio
 async def test_api_v2_facade_matches_canonical(monkeypatch):
-    monkeypatch.setattr(canonical_operations, "_qualified_providers", lambda operation: ["tavily"])
+    monkeypatch.setattr(evidence_operations, "_qualified_providers", lambda operation: ["tavily"])
 
     async def fake_web(query, count=5, providers="auto", fallback="auto"):
         return ExecutionOutcome(
@@ -436,7 +708,7 @@ async def test_api_v2_facade_matches_canonical(monkeypatch):
             attempts=(success_attempt("web_search", "tavily", elapsed_ms=1.0, result_count=1),),
         )
 
-    monkeypatch.setattr(canonical_operations, "_execute_web_search", fake_web)
+    monkeypatch.setattr(evidence_operations, "_execute_web_search", fake_web)
     req = SourceDiscoveryRequest("parity")
     left = await canonical_operations.source_discovery(req)
     right = await api_v2.source_discovery(req)
@@ -465,88 +737,80 @@ async def test_api_v2_facade_matches_canonical(monkeypatch):
 @pytest.mark.asyncio
 async def test_composite_search_matrix(monkeypatch):
     monkeypatch.setattr(
-        canonical_operations,
+        evidence_operations,
         "_qualified_providers",
         lambda operation: ["tavily"] if operation == "source_discovery" else ["context7"],
     )
 
-    async def fake_source(request):
-        from smart_search.v2_contract import (
-            V2Attempt,
-            V2Candidate,
-            V2Envelope,
-            V2Evidence,
-            V2Meta,
-            V2Routing,
-            V2Status,
-            validate_result,
+    def _source_outcome(query: str) -> EvidenceOperationOutcome:
+        if "source-fail" in query:
+            return EvidenceOperationOutcome(
+                operation="source_discovery",
+                status=EvidenceOperationStatus.FAILED,
+                error=ExecutionError(
+                    "config_error",
+                    "No qualified source_discovery providers configured",
+                    retryable=False,
+                ),
+                routing=EvidenceRouting(("source_discovery",), (), "v2", ("configuration_error",)),
+                metadata=ExecutionMetadata("s", 1),
+            )
+        if "source-empty" in query:
+            return EvidenceOperationOutcome(
+                operation="source_discovery",
+                status=EvidenceOperationStatus.COMPLETE,
+                attempts=(empty_attempt("web_search", "tavily", elapsed_ms=1.0),),
+                routing=EvidenceRouting(("source_discovery",), ("source_discovery",), "v2", ("source_discovery",)),
+                metadata=ExecutionMetadata("s", 1),
+            )
+        return EvidenceOperationOutcome(
+            operation="source_discovery",
+            status=EvidenceOperationStatus.COMPLETE,
+            candidates=(ExecutionCandidate("c-src", "https://example.com/src", "tavily", "Src", "s"),),
+            attempts=(success_attempt("web_search", "tavily", elapsed_ms=1.0, result_count=1),),
+            routing=EvidenceRouting(("source_discovery",), ("source_discovery",), "v2", ("source_discovery",)),
+            metadata=ExecutionMetadata("s", 1),
         )
-        q = request.query
-        if "source-fail" in q:
-            from smart_search.v2_contract import V2Error, V2ErrorCode
-            return validate_result(V2Envelope(
-                V2Status.FAILED, "search", "source_discovery", {}, V2Evidence(),
-                V2Routing(("source_discovery",), (), "v2", ()), (), (),
-                V2Error(V2ErrorCode.CONFIGURATION_ERROR, "source config", False, {}),
-                V2Meta("s", 1),
-            ))
-        if "source-empty" in q:
-            return validate_result(V2Envelope(
-                V2Status.COMPLETE, "search", "source_discovery", {"total": 0, "items": []},
-                V2Evidence(),
-                V2Routing(("source_discovery",), ("source_discovery",), "v2", ()),
-                (V2Attempt("source_discovery", "tavily", "empty", None, 1, 0),),
-                (), None, V2Meta("s", 1),
-            ))
-        cand = V2Candidate("c-src", "https://example.com/src", "tavily", "Src", "s")
-        return validate_result(V2Envelope(
-            V2Status.COMPLETE, "search", "source_discovery", {"total": 1, "items": [{"id": "c-src"}]},
-            V2Evidence(candidates=(cand,)),
-            V2Routing(("source_discovery",), ("source_discovery",), "v2", ()),
-            (V2Attempt("source_discovery", "tavily", "ok", None, 1, 1),),
-            (), None, V2Meta("s", 1),
-        ))
+
+    def _docs_outcome(query: str) -> EvidenceOperationOutcome:
+        if "docs-fail" in query:
+            return EvidenceOperationOutcome(
+                operation="docs_discovery",
+                status=EvidenceOperationStatus.FAILED,
+                error=ExecutionError("config_error", "docs config", retryable=False),
+                routing=EvidenceRouting(("docs_discovery",), (), "v2", ("configuration_error",)),
+                metadata=ExecutionMetadata("d", 1),
+            )
+        if "docs-empty" in query:
+            return EvidenceOperationOutcome(
+                operation="docs_discovery",
+                status=EvidenceOperationStatus.COMPLETE,
+                attempts=(empty_attempt("docs_search", "context7", elapsed_ms=1.0),),
+                routing=EvidenceRouting(("docs_discovery",), ("docs_discovery",), "v2", ("docs_discovery",)),
+                metadata=ExecutionMetadata("d", 1),
+            )
+        return EvidenceOperationOutcome(
+            operation="docs_discovery",
+            status=EvidenceOperationStatus.COMPLETE,
+            candidates=(ExecutionCandidate("c-docs", "context7:/lib", "context7", "Docs", "api"),),
+            attempts=(success_attempt("docs_search", "context7", elapsed_ms=1.0, result_count=1),),
+            routing=EvidenceRouting(("docs_discovery",), ("docs_discovery",), "v2", ("docs_discovery",)),
+            metadata=ExecutionMetadata("d", 1),
+        )
+
+    async def fake_source(request):
+        return _source_outcome(request.query)
 
     async def fake_docs(request):
-        from smart_search.v2_contract import (
-            V2Attempt,
-            V2Candidate,
-            V2Envelope,
-            V2Error,
-            V2ErrorCode,
-            V2Evidence,
-            V2Meta,
-            V2Routing,
-            V2Status,
-            validate_result,
-        )
-        q = request.query
-        if "docs-fail" in q:
-            return validate_result(V2Envelope(
-                V2Status.FAILED, "search", "docs_discovery", {}, V2Evidence(),
-                V2Routing(("docs_discovery",), (), "v2", ()), (), (),
-                V2Error(V2ErrorCode.CONFIGURATION_ERROR, "docs config", False, {}),
-                V2Meta("d", 1),
-            ))
-        if "docs-empty" in q:
-            return validate_result(V2Envelope(
-                V2Status.COMPLETE, "search", "docs_discovery", {"total": 0, "items": []},
-                V2Evidence(),
-                V2Routing(("docs_discovery",), ("docs_discovery",), "v2", ()),
-                (V2Attempt("docs_discovery", "context7", "empty", None, 1, 0),),
-                (), None, V2Meta("d", 1),
-            ))
-        cand = V2Candidate("c-docs", "context7:/lib", "context7", "Docs", "api")
-        return validate_result(V2Envelope(
-            V2Status.COMPLETE, "search", "docs_discovery", {"total": 1, "items": [{"id": "c-docs"}]},
-            V2Evidence(candidates=(cand,)),
-            V2Routing(("docs_discovery",), ("docs_discovery",), "v2", ()),
-            (V2Attempt("docs_discovery", "context7", "ok", None, 1, 1),),
-            (), None, V2Meta("d", 1),
-        ))
+        return _docs_outcome(request.query)
 
-    monkeypatch.setattr(canonical_operations, "source_discovery", fake_source)
-    monkeypatch.setattr(canonical_operations, "docs_discovery", fake_docs)
+    monkeypatch.setattr(evidence_operations, "source_discovery", fake_source)
+    monkeypatch.setattr(evidence_operations, "docs_discovery", fake_docs)
+    monkeypatch.setattr(
+        evidence_operations,
+        "project_evidence_routing",
+        lambda query: {"include_docs_discovery": "API docs" in query},
+    )
 
     # docs intent via "API docs"
     both_empty = await canonical_operations.composite_search("source-empty docs-empty API docs")
@@ -574,7 +838,7 @@ async def test_composite_search_matrix(monkeypatch):
 @pytest.mark.asyncio
 async def test_docs_request_honors_max_results_and_site_returns_candidates(monkeypatch):
     monkeypatch.setattr(
-        canonical_operations,
+        evidence_operations,
         "_qualified_providers",
         lambda operation: ["context7"] if operation == "docs_discovery" else ["tavily"],
     )
@@ -598,8 +862,8 @@ async def test_docs_request_honors_max_results_and_site_returns_candidates(monke
             attempts=(success_attempt("site_map", "tavily", elapsed_ms=1.0, result_count=1),),
         )
 
-    monkeypatch.setattr(canonical_operations, "_execute_docs_search", fake_docs)
-    monkeypatch.setattr(canonical_operations, "_execute_site_map", fake_map)
+    monkeypatch.setattr(evidence_operations, "_execute_docs_search", fake_docs)
+    monkeypatch.setattr(evidence_operations, "_execute_site_map", fake_map)
 
     docs = await canonical_operations.docs_discovery(DocsDiscoveryRequest("Python API docs", max_results=2))
     site = await canonical_operations.site_discovery(SiteDiscoveryRequest("https://docs.example.com"))
