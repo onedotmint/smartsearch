@@ -1,10 +1,22 @@
-"""Adapters from established control-plane owners to the v3 contract."""
+"""Projection from typed control owners to the v3 contract.
+
+This module is the only v3 projection boundary. It converts parsed argparse
+values into typed request arguments, invokes exactly one typed owner once, and
+mechanically maps the resulting ``ControlOperationOutcome`` into the v3
+envelope. It never derives status, error, network, write, subprocess or
+degradation facts from result contents and never calls low-level execution
+owners (config, capability service, provider catalog/diagnostics, operations
+service, skill installer or the regression runner).
+"""
 
 from __future__ import annotations
 
-import time
-from typing import Any, Iterable, Mapping
+from typing import Any, Awaitable, Callable, Iterable, Mapping
 
+from .control_operations import (
+    ControlOperationOutcome,
+    _connection_checks,
+)
 from .control_plane_contract import (
     ERROR_RETRYABILITY,
     V3Envelope,
@@ -17,14 +29,8 @@ from .control_plane_contract import (
     V3SideEffects,
     V3Status,
 )
+from .execution_primitives import ExecutionError
 from .security import sanitize_data
-
-
-def _elapsed_ms(start: float, data: Mapping[str, Any]) -> int:
-    value = data.get("elapsed_ms")
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
-        return int(round(value))
-    return max(0, int(round((time.perf_counter() - start) * 1000)))
 
 
 def _clean(value: Any, *, secrets: Iterable[str] = ()) -> Any:
@@ -35,107 +41,97 @@ def _pick(data: Mapping[str, Any], fields: Iterable[str]) -> dict[str, Any]:
     return {field: data[field] for field in fields if field in data}
 
 
-def _error_code(data: Mapping[str, Any], *, filesystem: bool = False, subprocess: bool = False) -> V3ErrorCode:
-    error_type = str(data.get("error_type") or "").strip().lower()
-    # Prefer the owner's classified error type over execution-channel hints so a
-    # preflight parameter/config failure never becomes FILE_SYSTEM/SUBPROCESS.
-    if error_type in {"parameter_error", "invalid_argument"}:
-        return V3ErrorCode.INVALID_ARGUMENT
-    if error_type in {"config_error", "configuration_error", "not_configured", "disabled"}:
-        return V3ErrorCode.CONFIGURATION_ERROR
-    if error_type in {"auth_error", "authentication_failed"}:
-        return V3ErrorCode.AUTHENTICATION_FAILED
-    if error_type in {"timeout", "upstream_timeout"}:
-        return V3ErrorCode.UPSTREAM_TIMEOUT
-    if error_type in {"network_error", "provider_error", "rate_limited", "protocol_error"}:
-        return V3ErrorCode.PROVIDER_UNAVAILABLE
-    if error_type in {"filesystem_error", "file_system_error"} or filesystem:
-        return V3ErrorCode.FILE_SYSTEM_ERROR
-    if error_type in {"subprocess_error", "subprocess_failed"} or subprocess:
-        return V3ErrorCode.SUBPROCESS_FAILED
-    return V3ErrorCode.INTERNAL_ERROR
+# One explicit internal error-type -> v3 error-code mapping. Retryability is
+# fixed by the v3 registry; unknown internal types fail closed to internal.
+_EXECUTION_ERROR_TO_V3: dict[str, V3ErrorCode] = {
+    "parameter_error": V3ErrorCode.INVALID_ARGUMENT,
+    "invalid_argument": V3ErrorCode.INVALID_ARGUMENT,
+    "config_error": V3ErrorCode.CONFIGURATION_ERROR,
+    "configuration_error": V3ErrorCode.CONFIGURATION_ERROR,
+    "not_configured": V3ErrorCode.CONFIGURATION_ERROR,
+    "disabled": V3ErrorCode.CONFIGURATION_ERROR,
+    "auth_error": V3ErrorCode.AUTHENTICATION_FAILED,
+    "authentication_failed": V3ErrorCode.AUTHENTICATION_FAILED,
+    "timeout": V3ErrorCode.UPSTREAM_TIMEOUT,
+    "upstream_timeout": V3ErrorCode.UPSTREAM_TIMEOUT,
+    "network_error": V3ErrorCode.PROVIDER_UNAVAILABLE,
+    "provider_error": V3ErrorCode.PROVIDER_UNAVAILABLE,
+    "rate_limited": V3ErrorCode.PROVIDER_UNAVAILABLE,
+    "protocol_error": V3ErrorCode.PROVIDER_UNAVAILABLE,
+    "filesystem_error": V3ErrorCode.FILE_SYSTEM_ERROR,
+    "file_system_error": V3ErrorCode.FILE_SYSTEM_ERROR,
+    "subprocess_error": V3ErrorCode.SUBPROCESS_FAILED,
+    "subprocess_failed": V3ErrorCode.SUBPROCESS_FAILED,
+    "internal_error": V3ErrorCode.INTERNAL_ERROR,
+}
 
 
-def _error(data: Mapping[str, Any], *, secrets: Iterable[str] = (), filesystem: bool = False, subprocess: bool = False) -> V3Error:
-    code = _error_code(data, filesystem=filesystem, subprocess=subprocess)
-    message = str(data.get("error") or data.get("message") or data.get("summary") or "control-plane operation failed")
-    safe_message = _clean(message, secrets=secrets)
-    details = {"owner_error_type": str(data.get("error_type") or "")}
-    return V3Error(code, str(safe_message), ERROR_RETRYABILITY[code], details)
+def _execution_error_to_v3(error: ExecutionError, *, secrets: Iterable[str] = ()) -> V3Error:
+    code = _EXECUTION_ERROR_TO_V3.get(error.type, V3ErrorCode.INTERNAL_ERROR)
+    message = str(_clean(error.message, secrets=secrets))
+    details = {"owner_error_type": error.type}
+    return V3Error(code, message, ERROR_RETRYABILITY[code], details)
 
 
 def _side_effects(
     descriptor: V3OperationDescriptor,
-    *,
-    config_write_attempted: bool = False,
-    config_write_committed: bool = False,
-    filesystem_write_attempted: bool = False,
-    filesystem_write_committed: bool = False,
-    subprocess_started: bool = False,
+    outcome: ControlOperationOutcome,
 ) -> V3SideEffects:
+    # Read flags are declared by the descriptor; write/subprocess facts are the
+    # owner-recorded actual facts.
     return V3SideEffects(
         config=V3Mutation(
             read=descriptor.config_read,
-            write_attempted=config_write_attempted,
-            write_committed=config_write_committed,
+            write_attempted=outcome.side_effects.config.write_attempted,
+            write_committed=outcome.side_effects.config.write_committed,
         ),
         filesystem=V3Mutation(
             read=descriptor.filesystem_read,
-            write_attempted=filesystem_write_attempted,
-            write_committed=filesystem_write_committed,
+            write_attempted=outcome.side_effects.filesystem.write_attempted,
+            write_committed=outcome.side_effects.filesystem.write_committed,
         ),
-        subprocess_started=subprocess_started,
+        subprocess_started=outcome.side_effects.subprocess_started,
     )
 
 
-def _envelope(
+def _project_envelope(
     descriptor: V3OperationDescriptor,
-    data: Mapping[str, Any],
-    result: Mapping[str, Any],
+    outcome: ControlOperationOutcome,
     *,
-    start: float,
-    status: V3Status | None = None,
-    warnings: Iterable[str] = (),
-    network_attempted: bool = False,
-    targets: Iterable[str] = (),
-    side_effects: V3SideEffects | None = None,
     secrets: Iterable[str] = (),
-    filesystem_error: bool = False,
-    subprocess_error: bool = False,
 ) -> V3Envelope:
-    warning_tuple = tuple(str(item) for item in warnings if str(item))
-    if status is None:
-        status = V3Status.COMPLETE if data.get("ok", False) else V3Status.FAILED
-    safe_result = _clean(dict(result), secrets=secrets)
+    safe_result = _clean(outcome.result_dict, secrets=secrets)
     if not isinstance(safe_result, dict):
         safe_result = {}
     error = None
-    if status is V3Status.FAILED:
-        error = _error(
-            data,
-            secrets=secrets,
-            filesystem=filesystem_error,
-            subprocess=subprocess_error,
-        )
+    if outcome.error is not None:
+        error = _execution_error_to_v3(outcome.error, secrets=secrets)
     return V3Envelope(
-        status=status,
+        status=V3Status(outcome.status.value),
         command=descriptor.command,
         operation=descriptor.operation,
         result=safe_result,
         network=V3Network(
             descriptor.network_policy,
             descriptor.network_scope,
-            network_attempted,
-            tuple(dict.fromkeys(str(item) for item in targets if item)),
+            outcome.network.attempted,
+            outcome.network.targets,
         ),
-        side_effects=side_effects or _side_effects(descriptor),
+        side_effects=_side_effects(descriptor, outcome),
         error=error,
         meta=V3Meta(
-            duration_ms=_elapsed_ms(start, data),
-            warnings=warning_tuple,
+            duration_ms=int(outcome.metadata.duration_ms),
+            warnings=outcome.warnings,
             deprecations=(),
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Canonical result display projection (field-name picking only; no semantic
+# inference). The typed owner already produced all facts; these helpers only
+# reshape the canonical JSON result into the exact v3 result shape.
+# ---------------------------------------------------------------------------
 
 
 def _config_result(operation: str, data: Mapping[str, Any]) -> dict[str, Any]:
@@ -195,34 +191,6 @@ def _probe_result(data: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(item, Mapping)
     ]
     return result
-
-
-def _connection_checks(data: Mapping[str, Any]) -> list[dict[str, Any]]:
-    checks: list[dict[str, Any]] = []
-    main = data.get("main_search_connection_tests")
-    if isinstance(main, Mapping):
-        for check_id, raw in main.items():
-            if isinstance(raw, Mapping):
-                checks.append({"id": str(check_id), **_pick(raw, ("route_id", "provider", "status", "message", "response_time_ms"))})
-    primary = data.get("primary_connection_test")
-    # Legacy doctor payloads may only expose the primary alias.
-    if isinstance(primary, Mapping) and not main:
-        checks.append({"id": "primary", **_pick(primary, ("route_id", "provider", "status", "message", "response_time_ms"))})
-    for key, raw in data.items():
-        if key == "primary_connection_test" or not key.endswith("_connection_test") or not isinstance(raw, Mapping):
-            continue
-        checks.append({"id": key.removesuffix("_connection_test").replace("_", "-"), **_pick(raw, ("status", "message", "response_time_ms"))})
-    return checks
-
-
-def _network_checks(checks: Iterable[Mapping[str, Any]]) -> tuple[bool, tuple[str, ...]]:
-    local_statuses = {"", "not_configured", "disabled", "config_error", "unsupported", "configured", "skipped"}
-    targets = tuple(
-        str(item.get("provider") or item.get("id") or "")
-        for item in checks
-        if str(item.get("status") or "") not in local_statuses
-    )
-    return bool(targets), tuple(dict.fromkeys(item for item in targets if item))
 
 
 def _doctor_status_result(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -316,308 +284,148 @@ def _skills_result(data: Mapping[str, Any], *, update: bool) -> dict[str, Any]:
     return _pick(data, fields)
 
 
-def _write_attempted(data: Mapping[str, Any]) -> bool:
-    return str(data.get("error_type") or "") != "parameter_error"
+def _project_result(operation: str, result: Mapping[str, Any]) -> dict[str, Any]:
+    """Field-name projection of the canonical result into the exact v3 shape."""
+    if operation.startswith("config."):
+        return _config_result(operation, result)
+    if operation.startswith("provider.catalog."):
+        include_status = operation.endswith("status")
+        providers = [
+            _catalog_provider(item, include_status=include_status)
+            for item in result.get("providers") or []
+            if isinstance(item, Mapping)
+        ]
+        return {"providers": providers, "provider_count": len(providers)}
+    if operation == "provider.probe":
+        return _probe_result(result)
+    if operation.startswith("provider.routes."):
+        return _routes_result(result)
+    if operation == "doctor.status":
+        return _doctor_status_result(result)
+    if operation == "doctor.probe":
+        data = _pick(
+            result,
+            ("minimum_profile", "minimum_profile_ok", "minimum_profile_missing", "missing_capabilities", "degraded_reason"),
+        )
+        data["checks"] = _connection_checks(result)
+        return data
+    if operation == "dev.route.explain":
+        return _route_result(result)
+    if operation == "dev.route.calibrate":
+        return _calibration_result(result)
+    if operation == "dev.diagnose.openai-compatible":
+        return _diagnose_result(result)
+    if operation == "dev.smoke":
+        return _smoke_result(result)
+    if operation == "dev.regression":
+        return _pick(result, ("exit_code", "subprocess_started", "fallback", "test_files", "failed_cases"))
+    if operation in {"dev.skills.status", "dev.skills.update"}:
+        return _skills_result(result, update=operation.endswith("update"))
+    return dict(result)
+
+
+# ---------------------------------------------------------------------------
+# Argv -> typed request conversion and one-owner dispatch
+# ---------------------------------------------------------------------------
+
+
+async def _invoke_owner(owner: Callable[..., Awaitable[ControlOperationOutcome]], **kwargs: Any) -> ControlOperationOutcome:
+    return await owner(**kwargs)
 
 
 async def run_operation(args: Any, descriptor: V3OperationDescriptor) -> V3Envelope:
-    """Invoke one established owner and adapt its result to v3."""
-    start = time.perf_counter()
+    """Invoke exactly one typed owner once and project its outcome to v3."""
+    from . import control_operations
+
     operation = descriptor.operation
     secrets: tuple[str, ...] = ()
 
-    if operation.startswith("config."):
-        from . import operations_service
-
-        if operation == "config.path":
-            data = operations_service.config_path()
-        elif operation == "config.list":
-            data = operations_service.config_list(show_secrets=False)
-        elif operation == "config.set":
-            secrets = (str(args.value),)
-            data = operations_service.config_set(args.key, args.value)
-        else:
-            data = operations_service.config_unset(args.key)
-        write_operation = descriptor.config_write
-        attempted = write_operation and _write_attempted(data)
-        return _envelope(
-            descriptor,
-            data,
-            _config_result(operation, data),
-            start=start,
-            secrets=secrets,
-            side_effects=_side_effects(
-                descriptor,
-                config_write_attempted=attempted,
-                config_write_committed=bool(attempted and data.get("ok")),
-            ),
+    if operation == "config.path":
+        outcome = await _invoke_owner(control_operations.run_config_path)
+    elif operation == "config.list":
+        outcome = await _invoke_owner(control_operations.run_config_list)
+    elif operation == "config.set":
+        secrets = (str(args.value),)
+        outcome = await _invoke_owner(control_operations.run_config_set, key=args.key, value=args.value)
+    elif operation == "config.unset":
+        outcome = await _invoke_owner(control_operations.run_config_unset, key=args.key)
+    elif operation == "provider.catalog.list":
+        outcome = await _invoke_owner(control_operations.run_provider_catalog_list)
+    elif operation == "provider.catalog.status":
+        outcome = await _invoke_owner(control_operations.run_provider_catalog_status)
+    elif operation == "provider.probe":
+        outcome = await _invoke_owner(control_operations.run_provider_probe, provider=args.provider)
+    elif operation == "provider.routes.current":
+        outcome = await _invoke_owner(control_operations.run_provider_routes_current)
+    elif operation == "provider.routes.list":
+        outcome = await _invoke_owner(control_operations.run_provider_routes_list)
+    elif operation == "provider.routes.add":
+        secrets = (str(args.api_key), str(args.api_url))
+        outcome = await _invoke_owner(
+            control_operations.run_provider_routes_add,
+            route_id=args.route_id,
+            provider=args.provider,
+            api_url=args.api_url,
+            api_key=args.api_key,
+            model=args.model_name,
+            tools=args.tools,
+            stream=args.stream,
+            fallback_models=args.fallback_models,
         )
-
-    if operation.startswith("provider.catalog."):
-        from .provider_catalog import provider_catalog
-
-        include_status = operation.endswith("status")
-        data = provider_catalog(include_status=include_status)
-        result = {
-            "providers": [
-                _catalog_provider(item, include_status=include_status)
-                for item in data.get("providers") or []
-                if isinstance(item, Mapping)
-            ]
-        }
-        result["provider_count"] = len(result["providers"])
-        return _envelope(descriptor, data, result, start=start)
-
-    if operation == "provider.probe":
-        from .operations_service import provider_probe
-
-        data = await provider_probe(args.provider)
-        routes = [item for item in data.get("routes") or [] if isinstance(item, Mapping)]
-        partial = bool(data.get("ok") and routes and any(item.get("status") != "ok" for item in routes))
-        status = V3Status.DEGRADED if partial else None
-        warnings = ("one or more provider routes failed their probe",) if partial else ()
-        return _envelope(
-            descriptor,
-            data,
-            _probe_result(data),
-            start=start,
-            status=status,
-            warnings=warnings,
-            network_attempted=bool(data.get("network_attempted", False)),
-            targets=(str(data.get("provider") or args.provider),),
+    elif operation == "provider.routes.remove":
+        outcome = await _invoke_owner(control_operations.run_provider_routes_remove, route_id=args.route_id)
+    elif operation == "doctor.status":
+        outcome = await _invoke_owner(control_operations.run_doctor_status)
+    elif operation == "doctor.probe":
+        outcome = await _invoke_owner(control_operations.run_doctor_probe)
+    elif operation == "dev.route.explain":
+        outcome = await _invoke_owner(
+            control_operations.run_dev_route_explain,
+            query=args.query,
+            validation=args.validation,
+            mode=args.router_mode,
         )
-
-    if operation.startswith("provider.routes."):
-        from . import operations_service
-
-        if operation == "provider.routes.current":
-            data = operations_service.current_model()
-        elif operation == "provider.routes.list":
-            data = operations_service.model_list()
-        elif operation == "provider.routes.add":
-            secrets = (str(args.api_key), str(args.api_url))
-            data = operations_service.model_add(
-                args.route_id,
-                args.provider,
-                args.api_url,
-                args.api_key,
-                args.model_name,
-                tools=args.tools,
-                stream=args.stream,
-                fallback_models=args.fallback_models,
-            )
-        else:
-            data = operations_service.model_remove(args.route_id)
-        attempted = descriptor.config_write and _write_attempted(data)
-        return _envelope(
-            descriptor,
-            data,
-            _routes_result(data),
-            start=start,
-            secrets=secrets,
-            side_effects=_side_effects(
-                descriptor,
-                config_write_attempted=attempted,
-                config_write_committed=bool(attempted and data.get("ok")),
-            ),
+    elif operation == "dev.route.calibrate":
+        outcome = await _invoke_owner(control_operations.run_dev_route_calibrate, models=args.models)
+    elif operation == "dev.diagnose.openai-compatible":
+        outcome = await _invoke_owner(
+            control_operations.run_dev_diagnose_openai_compatible,
+            timeout_seconds=args.timeout,
         )
-
-    if operation == "doctor.status":
-        from .operations_service import doctor_status
-
-        data = doctor_status()
-        return _envelope(descriptor, data, _doctor_status_result(data), start=start)
-
-    if operation == "doctor.probe":
-        from .operations_service import doctor
-
-        data = await doctor()
-        checks = _connection_checks(data)
-        attempted, targets = _network_checks(checks)
-        owner_degraded = bool(data.get("ok") and data.get("degraded"))
-        partial = bool(not data.get("ok") and any(item.get("status") == "ok" for item in checks))
-        status = V3Status.DEGRADED if owner_degraded or partial else None
-        if owner_degraded:
-            warnings = (str(data.get("degraded_reason") or "doctor completed with reduced coverage"),)
-        elif partial:
-            warnings = ("aggregate doctor completed with partial connectivity",)
-        else:
-            warnings = ()
-        result = _pick(
-            data,
-            ("minimum_profile", "minimum_profile_ok", "minimum_profile_missing", "missing_capabilities", "degraded_reason"),
+    elif operation == "dev.smoke":
+        outcome = await _invoke_owner(control_operations.run_dev_smoke, mode=args.mode)
+    elif operation == "dev.regression":
+        outcome = await _invoke_owner(control_operations.run_dev_regression)
+    elif operation == "dev.skills.status":
+        outcome = await _invoke_owner(
+            control_operations.run_dev_skills_status,
+            targets=getattr(args, "targets", "") or "",
+            all_targets=bool(getattr(args, "all", False)),
+            project_root=getattr(args, "skills_root", None),
         )
-        result["checks"] = checks
-        return _envelope(
-            descriptor,
-            data,
-            result,
-            start=start,
-            status=status,
-            warnings=warnings,
-            network_attempted=attempted,
-            targets=targets,
+    elif operation == "dev.skills.update":
+        outcome = await _invoke_owner(
+            control_operations.run_dev_skills_update,
+            targets=getattr(args, "targets", "") or "",
+            all_targets=bool(getattr(args, "all", False)),
+            project_root=getattr(args, "skills_root", None),
         )
+    else:
+        raise ValueError(f"unsupported v3 operation: {operation}")
 
-    if operation == "dev.route.explain":
-        from .capability_service import route
-
-        data = await route(args.query, validation=args.validation, mode=args.router_mode)
-        degraded = bool(data.get("ok") and data.get("degraded"))
-        engines = [str(item) for item in data.get("router_engines_used") or []]
-        unavailable = "unavailable" in str(data.get("degraded_reason") or "")
-        attempted = any(item in {"embeddings", "classifier"} for item in engines) or unavailable
-        targets = tuple(item for item in ("embeddings", "classifier") if item in engines)
-        return _envelope(
-            descriptor,
-            data,
-            _route_result(data),
-            start=start,
-            status=V3Status.DEGRADED if degraded else None,
-            warnings=(str(data.get("degraded_reason") or "route completed with reduced router coverage"),) if degraded else (),
-            network_attempted=attempted,
-            targets=targets,
-        )
-
-    if operation == "dev.route.calibrate":
-        from .capability_service import route_calibrate
-
-        data = await route_calibrate(models=args.models)
-        model_results = [item for item in data.get("model_results") or [] if isinstance(item, Mapping)]
-        successful = [item for item in model_results if item.get("ok")]
-        failed_models = list(data.get("failed_models") or [])
-        degraded = bool(successful and failed_models)
-        attempted_models = [
-            str(item.get("model") or "")
-            for item in model_results
-            if item.get("ok") or str(item.get("error_type") or "") != "config_error"
-        ]
-        return _envelope(
-            descriptor,
-            data,
-            _calibration_result(data),
-            start=start,
-            status=V3Status.DEGRADED if degraded else None,
-            warnings=("one or more calibration models failed",) if degraded else (),
-            network_attempted=bool(attempted_models),
-            targets=attempted_models,
-        )
-
-    if operation == "dev.diagnose.openai-compatible":
-        from .operations_service import diagnose_openai_compatible
-
-        data = await diagnose_openai_compatible(timeout_seconds=args.timeout)
-        checks = list(data.get("checks") or [])
-        return _envelope(
-            descriptor,
-            data,
-            _diagnose_result(data),
-            start=start,
-            network_attempted=bool(checks),
-            targets=("openai-compatible",),
-        )
-
-    if operation == "dev.smoke":
-        from .operations_service import smoke
-
-        data = await smoke(args.mode)
-        degraded_cases = list(data.get("degraded_cases") or [])
-        degraded = bool(data.get("ok") and degraded_cases)
-        live = str(data.get("mode") or args.mode) == "live"
-        cases = [item for item in data.get("cases") or [] if isinstance(item, Mapping)]
-        attempted = bool(live and any(
-            item.get("provider_attempts")
-            or str(item.get("status") or "") in {"ok", "warning", "timeout", "error", "network_error", "provider_error"}
-            for item in cases
-        ))
-        targets = tuple(str(item) for item in data.get("providers_used") or [])
-        return _envelope(
-            descriptor,
-            data,
-            _smoke_result(data),
-            start=start,
-            status=V3Status.DEGRADED if degraded else None,
-            warnings=("live smoke completed with optional degraded cases",) if degraded else (),
-            network_attempted=attempted,
-            targets=targets,
-        )
-
-    if operation == "dev.regression":
-        from .cli_dispatch import regression_result
-
-        data = dict(regression_result())
-        result = _pick(data, ("exit_code", "subprocess_started", "fallback", "test_files", "failed_cases"))
-        started = bool(data.get("subprocess_started"))
-        if not data.get("ok") and not data.get("error_type"):
-            if started:
-                data["error_type"] = "subprocess_error"
-                data["error"] = str(data.get("error") or "regression subprocess failed")
-            elif data.get("fallback") == "mock_smoke":
-                data["error_type"] = "config_error"
-                data["error"] = str(data.get("error") or "packaged mock-smoke regression failed")
-            else:
-                data["error_type"] = "internal_error"
-                data["error"] = str(data.get("error") or "regression checks failed")
-        return _envelope(
-            descriptor,
-            data,
-            result,
-            start=start,
-            side_effects=_side_effects(descriptor, subprocess_started=started),
-            subprocess_error=bool(started and not data.get("ok")),
-        )
-
-    if operation in {"dev.skills.status", "dev.skills.update"}:
-        from .skill_installer import (
-            SKILL_TARGETS,
-            SkillInstallError,
-            install_skill_targets,
-            parse_skill_targets,
-            status_skill_targets,
-        )
-
-        try:
-            target_ids = (
-                [target.target_id for target in SKILL_TARGETS]
-                if getattr(args, "all", False)
-                else parse_skill_targets(getattr(args, "targets", ""))
-            )
-            update = operation.endswith("update")
-            if update:
-                data = install_skill_targets(target_ids, project_root=args.skills_root)
-            else:
-                data = status_skill_targets(target_ids, project_root=args.skills_root)
-        except SkillInstallError as exc:
-            data = {"ok": False, "error_type": "parameter_error", "error": str(exc), "selected": []}
-            update = operation.endswith("update")
-        except OSError as exc:
-            data = {"ok": False, "error_type": "filesystem_error", "error": str(exc), "selected": []}
-            update = operation.endswith("update")
-
-        installed_count = int(data.get("installed_count") or 0)
-        failed_count = int(data.get("failed_count") or 0)
-        degraded = bool(update and installed_count and failed_count)
-        error_type = str(data.get("error_type") or "")
-        attempted = bool(update and error_type != "parameter_error")
-        filesystem_error = error_type in {"filesystem_error", "file_system_error"} or (
-            update and attempted and not data.get("ok") and not degraded and failed_count > 0
-        )
-        return _envelope(
-            descriptor,
-            data,
-            _skills_result(data, update=update),
-            start=start,
-            status=V3Status.DEGRADED if degraded else None,
-            warnings=("some skill targets were updated and some failed",) if degraded else (),
-            side_effects=_side_effects(
-                descriptor,
-                filesystem_write_attempted=attempted,
-                filesystem_write_committed=bool(installed_count),
-            ),
-            filesystem_error=filesystem_error,
-        )
-
-    raise ValueError(f"unsupported v3 operation: {operation}")
+    envelope = _project_envelope(descriptor, outcome, secrets=secrets)
+    # Project the canonical result into the exact v3 result shape.
+    projected = _project_result(operation, envelope.result)
+    return V3Envelope(
+        status=envelope.status,
+        command=envelope.command,
+        operation=envelope.operation,
+        result=projected,
+        network=envelope.network,
+        side_effects=envelope.side_effects,
+        error=envelope.error,
+        meta=envelope.meta,
+    )
 
 
 __all__ = ["run_operation"]

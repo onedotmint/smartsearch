@@ -19,7 +19,7 @@ from .capability_service import (
     intent_router_status,
     validate_minimum_profile,
 )
-from .config import ConfigStorageError, ModelRoutesConfigurationError, config
+from .config import config
 from .logger import logger
 from .provider_diagnostics import (
     _error_type_for_status,
@@ -271,7 +271,8 @@ async def _probe_openai_compatible_search_shape(
     except Exception as e:
         return _diagnose_check_result(name=name, status="error", message=f"运行错误: {e}", start=start, stream=stream)
 
-async def diagnose_openai_compatible(timeout_seconds: float = 30.0) -> dict[str, Any]:
+async def _execute_diagnose_openai_compatible(timeout_seconds: float = 30.0) -> dict[str, Any]:
+    """Shared OpenAI-compatible diagnosis execution (private low-level owner)."""
     start = time.time()
     api_url = config.openai_compatible_api_url
     api_key = config.openai_compatible_api_key
@@ -343,6 +344,11 @@ async def diagnose_openai_compatible(timeout_seconds: float = 30.0) -> dict[str,
         }
     )
     return result
+
+async def diagnose_openai_compatible(timeout_seconds: float = 30.0) -> dict[str, Any]:
+    """v1 compatibility wrapper over the shared diagnosis execution."""
+    return await _execute_diagnose_openai_compatible(timeout_seconds=timeout_seconds)
+
 
 async def _test_primary_connection(api_url: str, api_key: str, model: str) -> dict[str, Any]:
     chat_test = await _test_primary_chat_completion(api_url, api_key, model)
@@ -434,8 +440,12 @@ async def _safe_test_main_provider_connection(provider_config: dict[str, Any]) -
     except Exception as e:
         return {"status": "error", "message": f"{provider_config['provider']} 未知错误: {str(e)}"}
 
-def doctor_status() -> dict[str, Any]:
-    """Local readiness only: config, capability snapshot, evidence path, router."""
+def _execute_doctor_status() -> dict[str, Any]:
+    """Local readiness only: config, capability snapshot, evidence path, router.
+
+    Shared low-level execution used by the v1 compatibility wrapper and the
+    typed ``doctor.status`` owner.
+    """
     info = config.get_config_info()
     minimum = validate_minimum_profile()
     capability_status = minimum.get("capability_status") or get_capability_status()
@@ -524,8 +534,17 @@ def doctor_status() -> dict[str, Any]:
     return sanitized if isinstance(sanitized, dict) else result
 
 
-async def provider_probe(provider: str) -> dict[str, Any]:
-    """Probe exactly one named provider or main-search route family."""
+def doctor_status() -> dict[str, Any]:
+    """v1 compatibility wrapper over the shared local-readiness execution."""
+    return _execute_doctor_status()
+
+
+async def _execute_provider_probe(provider: str) -> dict[str, Any]:
+    """Probe exactly one named provider or main-search route family.
+
+    Shared low-level execution used by the v1 compatibility wrapper and the
+    typed ``provider.probe`` owner.
+    """
     base = provider_probe_base(provider)
     if base.get("error_type") == "parameter_error":
         sanitized = sanitize_data(base)
@@ -672,7 +691,12 @@ async def provider_probe(provider: str) -> dict[str, Any]:
     return sanitized if isinstance(sanitized, dict) else result
 
 
-async def doctor() -> dict[str, Any]:
+async def provider_probe(provider: str) -> dict[str, Any]:
+    """v1 compatibility wrapper over the shared exact-provider probe."""
+    return await _execute_provider_probe(provider)
+
+
+async def _execute_doctor_probe() -> dict[str, Any]:
     # ================================================================================
     # 步骤4：执行 doctor 诊断
     # ================================================================================
@@ -682,6 +706,13 @@ async def doctor() -> dict[str, Any]:
     # 1) 保留旧的 main_search connection alias 和 minimum profile 字段。
     # 2) 对 lite/off profile 使用 source capability 判断基本可用性。
     # 3) 输出缺失能力和降级原因，统一 CLI 退出码映射。
+    # 注意：这是共享低层执行，v1 兼容包装与 typed ``doctor.probe`` owner 都调用它。
+    """Execute the aggregate doctor probe.
+
+    Shared low-level execution used by the v1 compatibility wrapper and the
+    typed ``doctor.probe`` owner. Reports profile and command capability
+    status without turning the diagnosis into a hidden preflight.
+    """
     logger.info("开始执行 doctor 诊断")
     info = config.get_config_info()
 
@@ -854,6 +885,10 @@ async def doctor() -> dict[str, Any]:
     logger.info("doctor 诊断完成: ok=%s profile=%s", safe_info.get("ok", False), active_profile)
     return safe_info
 
+async def doctor() -> dict[str, Any]:
+    """v1 compatibility wrapper over the shared aggregate doctor execution."""
+    return await _execute_doctor_probe()
+
 def _model_routes_result(action: str) -> dict[str, Any]:
     """
     /*
@@ -933,12 +968,17 @@ def _model_routes_result(action: str) -> dict[str, Any]:
 
 
 def current_model() -> dict[str, Any]:
-    return _model_routes_result("current")
+    from .control_operations import run_provider_routes_current
+
+    outcome = _run_sync(run_provider_routes_current())
+    return _project_legacy_outcome(outcome)
 
 
 def model_list() -> dict[str, Any]:
-    return _model_routes_result("list")
+    from .control_operations import run_provider_routes_list
 
+    outcome = _run_sync(run_provider_routes_list())
+    return _project_legacy_outcome(outcome)
 
 def model_add(
     route_id: str,
@@ -965,53 +1005,22 @@ def model_add(
      */
     """
     logger.info("步骤2开始：添加模型路由，id=%s provider=%s", route_id, provider)
-    route: dict[str, Any] = {
-        "id": route_id,
-        "provider": provider,
-        "api_url": api_url,
-        "api_key": api_key,
-        "model": model,
-    }
-    if tools:
-        route["tools"] = tools
-    if provider.strip().lower() in {"openai", "openai-compatible", "chat-completions"}:
-        route["stream"] = bool(stream)
-        if fallback_models:
-            route["fallback_models"] = fallback_models
-    try:
-        config.add_model_route(route)
-    except ConfigStorageError as exc:
-        result = {
-            "ok": False,
-            "action": "add",
-            "error_type": "config_error",
-            "error": str(exc),
-            "config_file": str(config.config_file),
-        }
-        logger.info("步骤2结束：模型路由添加失败，id=%s", route_id)
-        return result
-    except ModelRoutesConfigurationError as exc:
-        result = {
-            "ok": False,
-            "action": "add",
-            "error_type": "config_error",
-            "error": sanitize_data(str(exc)),
-            "config_file": str(config.config_file),
-        }
-        logger.info("步骤2结束：已保存模型路由无效，id=%s", route_id)
-        return result
-    except ValueError as exc:
-        result = {
-            "ok": False,
-            "action": "add",
-            "error_type": "parameter_error",
-            "error": str(exc),
-            "config_file": str(config.config_file),
-        }
-        logger.info("步骤2结束：模型路由参数校验失败，id=%s", route_id)
-        return result
-    result = _model_routes_result("add")
-    logger.info("步骤2结束：模型路由添加完成，id=%s", route_id)
+    from .control_operations import run_provider_routes_add
+
+    outcome = _run_sync(
+        run_provider_routes_add(
+            route_id,
+            provider,
+            api_url,
+            api_key,
+            model,
+            tools=tools,
+            stream=stream,
+            fallback_models=fallback_models,
+        )
+    )
+    result = _project_legacy_outcome(outcome)
+    logger.info("步骤2结束：模型路由添加完成，id=%s ok=%s", route_id, result.get("ok", False))
     return result
 
 
@@ -1030,44 +1039,44 @@ def model_remove(route_id: str) -> dict[str, Any]:
      */
     """
     logger.info("步骤3开始：删除模型路由，id=%s", route_id)
-    try:
-        config.remove_model_route(route_id)
-    except ConfigStorageError as exc:
-        result = {
-            "ok": False,
-            "action": "remove",
-            "error_type": "config_error",
-            "error": str(exc),
-            "config_file": str(config.config_file),
-        }
-        logger.info("步骤3结束：模型路由删除失败，id=%s", route_id)
-        return result
-    except ModelRoutesConfigurationError as exc:
-        result = {
-            "ok": False,
-            "action": "remove",
-            "error_type": "config_error",
-            "error": sanitize_data(str(exc)),
-            "config_file": str(config.config_file),
-        }
-        logger.info("步骤3结束：已保存模型路由无效，id=%s", route_id)
-        return result
-    except ValueError as exc:
-        result = {
-            "ok": False,
-            "action": "remove",
-            "error_type": "parameter_error",
-            "error": str(exc),
-            "config_file": str(config.config_file),
-        }
-        logger.info("步骤3结束：模型路由删除参数失败，id=%s", route_id)
-        return result
-    result = _model_routes_result("remove")
-    logger.info("步骤3结束：模型路由删除完成，id=%s", route_id)
+    from .control_operations import run_provider_routes_remove
+
+    outcome = _run_sync(run_provider_routes_remove(route_id))
+    result = _project_legacy_outcome(outcome)
+    logger.info("步骤3结束：模型路由删除完成，id=%s ok=%s", route_id, result.get("ok", False))
     return result
 
+def _project_legacy_outcome(outcome: Any) -> dict[str, Any]:
+    """Project one typed control outcome back to the legacy v1 dict shape.
+
+    The legacy dict keeps its historical ``ok``/``error_type``/``error`` keys
+    derived from the typed outcome; the canonical result carries the rest.
+    """
+    from .control_operations import ControlOperationStatus
+
+    data = outcome.result_dict
+    data["ok"] = outcome.status is not ControlOperationStatus.FAILED
+    if outcome.error is not None:
+        data["error_type"] = outcome.error.type
+        data["error"] = outcome.error.message
+    return data
+
+
+def _run_sync(owner_coro: Any) -> Any:
+    """Run a typed owner from a synchronous v1 compatibility wrapper."""
+    from .control_operations import _run_coroutine_sync
+
+    return _run_coroutine_sync(owner_coro)
+
+
 def config_path() -> dict[str, Any]:
-    return config.config_path_info()
+    from .control_operations import run_config_path
+
+    outcome = _run_sync(run_config_path())
+    result = _project_legacy_outcome(outcome)
+    result.setdefault("error_type", "")
+    result.setdefault("error", "")
+    return result
 
 def config_list(show_secrets: bool = False) -> dict[str, Any]:
     """
@@ -1085,75 +1094,40 @@ def config_list(show_secrets: bool = False) -> dict[str, Any]:
     */
     """
     logger.info("步骤4开始：读取已保存配置")
-    path_info = config.config_path_info()
-    if not path_info.get("ok"):
-        result = {**path_info, "values": {}}
-        logger.info("步骤4结束：配置目录不可用")
-        return result
-    try:
-        config.validate_saved_model_routes()
-        config.validate_effective_model_routes()
-    except ModelRoutesConfigurationError as exc:
-        result = {
-            "ok": False,
-            "error_type": "config_error",
-            "error": sanitize_data(str(exc)),
-            "config_file": path_info["config_file"],
-            "values": {},
-        }
-        logger.info("步骤4结束：模型路由无效")
-        return result
-    values = config.get_saved_config(masked=not show_secrets)
-    if show_secrets:
-        # 4.1 show_secrets 仅服务于非路由配置；路由仍是可展示的脱敏副本。
-        routes = values.get("SMART_SEARCH_MODEL_ROUTES")
-        if isinstance(routes, list):
-            values["SMART_SEARCH_MODEL_ROUTES"] = config._mask_nested_secrets(routes)
-    result = {
-        "ok": True,
-        "config_file": path_info["config_file"],
-        "values": values,
-    }
-    logger.info("步骤4结束：已保存配置读取完成")
-    return result
+    from .control_operations import ControlOperationStatus, run_config_list
 
-def config_set(key: str, value: str) -> dict[str, Any]:
-    try:
-        config.set_config_value(key, value)
-    except ConfigStorageError as e:
-        return {
-            "ok": False,
-            "error_type": "config_error",
-            "error": str(e),
-            "config_file": str(config.config_file),
-            "key": key.strip().upper(),
-        }
-    except ValueError as e:
-        return {"ok": False, "error_type": "parameter_error", "error": str(e), "config_file": str(config.config_file)}
-    saved = config.get_saved_config(masked=True)
+    outcome = _run_sync(run_config_list(show_secrets=show_secrets))
+    result = outcome.result_dict
+    if outcome.status is not ControlOperationStatus.COMPLETE:
+        data = dict(result)
+        data["values"] = result.get("values", {})
+        data["ok"] = False
+        data["error_type"] = outcome.error.type if outcome.error else "config_error"
+        data["error"] = outcome.error.message if outcome.error else ""
+        logger.info("步骤4结束：配置目录不可用或模型路由无效")
+        return data
+    logger.info("步骤4结束：已保存配置读取完成")
     return {
         "ok": True,
-        "config_file": str(config.config_file),
-        "key": key.strip().upper(),
-        "value": saved.get(key.strip().upper(), ""),
+        "config_file": result.get("config_file", ""),
+        "values": result.get("values", {}),
     }
 
-def config_unset(key: str) -> dict[str, Any]:
-    try:
-        config.unset_config_value(key)
-    except ConfigStorageError as e:
-        return {
-            "ok": False,
-            "error_type": "config_error",
-            "error": str(e),
-            "config_file": str(config.config_file),
-            "key": key.strip().upper(),
-        }
-    except ValueError as e:
-        return {"ok": False, "error_type": "parameter_error", "error": str(e), "config_file": str(config.config_file), "key": key.strip().upper()}
-    return {"ok": True, "config_file": str(config.config_file), "key": key.strip().upper()}
+def config_set(key: str, value: str) -> dict[str, Any]:
+    from .control_operations import run_config_set
 
-async def smoke(mode: str = "mock") -> dict[str, Any]:
+    outcome = _run_sync(run_config_set(key, value))
+    return _project_legacy_outcome(outcome)
+
+def config_unset(key: str) -> dict[str, Any]:
+    from .control_operations import run_config_unset
+
+    outcome = _run_sync(run_config_unset(key))
+    return _project_legacy_outcome(outcome)
+
+async def _execute_smoke(mode: str = "mock") -> dict[str, Any]:
+    """Shared smoke execution (mock or live) used by the v1 wrapper and the
+    typed ``dev.smoke`` owner."""
     start = time.time()
     mode = (mode or "mock").strip().lower()
     if mode not in {"mock", "live"}:
@@ -1161,6 +1135,10 @@ async def smoke(mode: str = "mock") -> dict[str, Any]:
     if mode == "live":
         return await _smoke_live(start)
     return await _smoke_mock(start)
+
+async def smoke(mode: str = "mock") -> dict[str, Any]:
+    """v1 compatibility wrapper over the shared smoke execution."""
+    return await _execute_smoke(mode)
 
 def _case(name: str, ok: bool, details: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"name": name, "ok": ok, **(details or {})}

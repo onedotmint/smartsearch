@@ -37,26 +37,40 @@ def test_v3_config_parameter_failure_does_not_attempt_write(monkeypatch, tmp_pat
 
 
 def test_v3_route_write_projects_masked_routes(monkeypatch, capsys):
-    from smart_search import operations_service
+    from smart_search import control_operations
+    from smart_search.control_operations import (
+        ControlMutationFacts,
+        ControlOperationOutcome,
+        ControlOperationStatus,
+        ControlSideEffectFacts,
+    )
+    from smart_search.execution_primitives import ExecutionMetadata
 
     calls = []
 
-    def fake_add(*args, **kwargs):
+    async def fake_add(*args, **kwargs):
         calls.append((args, kwargs))
-        return {
-            "ok": True,
-            "action": "add",
-            "routes": [{
-                "id": "primary", "provider": "openai-compatible",
-                "api_url": "https://user:pass@example.com/v1?api_key=route-secret",
-                "api_key": "route-secret", "model": "model-a",
-            }],
-            "route_count": 1,
-            "current_route_id": "primary",
-            "current_route": {"id": "primary", "provider": "openai-compatible", "api_key": "route-secret", "model": "model-a"},
-        }
+        return ControlOperationOutcome(
+            operation="provider.routes.add",
+            status=ControlOperationStatus.COMPLETE,
+            result={
+                "action": "add",
+                "routes": [{
+                    "id": "primary", "provider": "openai-compatible",
+                    "api_url": "https://user:pass@example.com/v1?api_key=route-secret",
+                    "api_key": "route-secret", "model": "model-a",
+                }],
+                "route_count": 1,
+                "current_route_id": "primary",
+                "current_route": {"id": "primary", "provider": "openai-compatible", "api_key": "route-secret", "model": "model-a"},
+            },
+            side_effects=ControlSideEffectFacts(
+                config=ControlMutationFacts(read=True, write_attempted=True, write_committed=True)
+            ),
+            metadata=ExecutionMetadata("provider.routes.add", 0),
+        )
 
-    monkeypatch.setattr(operations_service, "model_add", fake_add)
+    monkeypatch.setattr(control_operations, "run_provider_routes_add", fake_add)
     code = main([
         "--schema-version", "3", "provider", "routes", "add",
         "--id", "primary", "--provider", "openai-compatible",
@@ -75,7 +89,13 @@ def test_v3_route_write_projects_masked_routes(monkeypatch, capsys):
 
 
 def test_v3_provider_catalog_and_probe_metadata(monkeypatch, tmp_path, capsys):
-    from smart_search import operations_service
+    from smart_search import control_operations
+    from smart_search.control_operations import (
+        ControlNetworkFacts,
+        ControlOperationOutcome,
+        ControlOperationStatus,
+    )
+    from smart_search.execution_primitives import ExecutionError, ExecutionMetadata
 
     monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(tmp_path))
     assert main(["--schema-version", "3", "provider", "list"]) == 0
@@ -85,13 +105,19 @@ def test_v3_provider_catalog_and_probe_metadata(monkeypatch, tmp_path, capsys):
     assert catalog["result"]["provider_count"] > 0
 
     async def fake_probe(provider):
-        return {
-            "ok": False, "provider": provider, "configured": False, "enabled": True,
-            "eligible": False, "status": "not_configured", "error_type": "config_error",
-            "error": "missing config", "message": "missing config", "network_attempted": False,
-        }
+        return ControlOperationOutcome(
+            operation="provider.probe",
+            status=ControlOperationStatus.FAILED,
+            result={
+                "provider": provider, "configured": False, "enabled": True,
+                "eligible": False, "status": "not_configured", "message": "missing config",
+            },
+            error=ExecutionError("config_error", "missing config", False),
+            network=ControlNetworkFacts(attempted=False, targets=(provider,)),
+            metadata=ExecutionMetadata("provider.probe", 0),
+        )
 
-    monkeypatch.setattr(operations_service, "provider_probe", fake_probe)
+    monkeypatch.setattr(control_operations, "run_provider_probe", fake_probe)
     assert main(["--schema-version", "3", "provider", "probe", "tavily"]) == 3
     probe = _payload(capsys)
     assert probe["error"]["code"] == "CONFIGURATION_ERROR"
@@ -103,7 +129,7 @@ def test_v3_provider_catalog_and_probe_metadata(monkeypatch, tmp_path, capsys):
 def test_v3_doctor_status_and_partial_probe(monkeypatch, capsys):
     from smart_search import operations_service
 
-    monkeypatch.setattr(operations_service, "doctor_status", lambda: {
+    monkeypatch.setattr(operations_service, "_execute_doctor_status", lambda: {
         "ok": True, "local_only": True, "config_storage_ok": True,
         "minimum_profile": "off", "minimum_profile_ok": True,
         "core_evidence_ready": True, "core_evidence_path": {},
@@ -125,7 +151,7 @@ def test_v3_doctor_status_and_partial_probe(monkeypatch, capsys):
             },
         }
 
-    monkeypatch.setattr(operations_service, "doctor", fake_doctor)
+    monkeypatch.setattr(operations_service, "_execute_doctor_probe", fake_doctor)
     assert main(["--schema-version", "3", "doctor", "probe"]) == 0
     probe = _payload(capsys)
     assert probe["status"] == "degraded"
@@ -142,7 +168,7 @@ def test_v3_doctor_status_and_partial_probe(monkeypatch, capsys):
             "exa_connection_test": {"status": "not_configured", "message": "missing"},
         }
 
-    monkeypatch.setattr(operations_service, "doctor", owner_degraded_doctor)
+    monkeypatch.setattr(operations_service, "_execute_doctor_probe", owner_degraded_doctor)
     assert main(["--schema-version", "3", "doctor", "probe"]) == 0
     owner_degraded = _payload(capsys)
     assert owner_degraded["status"] == "degraded"
@@ -188,7 +214,7 @@ def test_v3_route_diagnostics_project_degraded_and_network(monkeypatch, capsys):
 
 
 def test_v3_diagnose_smoke_regression_and_skills(monkeypatch, capsys):
-    from smart_search import cli_dispatch, operations_service, skill_installer
+    from smart_search import control_operations, operations_service, skill_installer
 
     async def fake_diagnose(timeout_seconds=30):
         return {
@@ -200,9 +226,9 @@ def test_v3_diagnose_smoke_regression_and_skills(monkeypatch, capsys):
     async def fake_smoke(mode="mock"):
         return {"ok": True, "mode": mode, "cases": [], "failed_cases": [], "degraded_cases": []}
 
-    monkeypatch.setattr(operations_service, "diagnose_openai_compatible", fake_diagnose)
-    monkeypatch.setattr(operations_service, "smoke", fake_smoke)
-    monkeypatch.setattr(cli_dispatch, "regression_result", lambda: {
+    monkeypatch.setattr(operations_service, "_execute_diagnose_openai_compatible", fake_diagnose)
+    monkeypatch.setattr(operations_service, "_execute_smoke", fake_smoke)
+    monkeypatch.setattr(control_operations, "_execute_regression", lambda: {
         "ok": False, "exit_code": 1, "subprocess_started": True, "fallback": "", "error_type": "subprocess_error", "error": "failed",
     })
     monkeypatch.setattr(skill_installer, "status_skill_targets", lambda ids, project_root="": {
@@ -262,7 +288,7 @@ def test_v3_rejects_excluded_and_noncanonical_commands(capsys):
 
 
 def test_v1_and_v3_regression_use_one_shared_owner_per_invocation(monkeypatch, capsys):
-    from smart_search import cli_dispatch
+    from smart_search import control_operations
 
     calls = []
 
@@ -270,7 +296,7 @@ def test_v1_and_v3_regression_use_one_shared_owner_per_invocation(monkeypatch, c
         calls.append("regression")
         return {"ok": True, "exit_code": 0, "subprocess_started": True, "fallback": ""}
 
-    monkeypatch.setattr(cli_dispatch, "regression_result", fake_regression_result)
+    monkeypatch.setattr(control_operations, "_execute_regression", fake_regression_result)
     assert main(["regression"]) == 0
     capsys.readouterr()
     assert main(["--schema-version", "3", "dev", "regression"]) == 0
@@ -296,13 +322,13 @@ def test_v3_rejects_root_trace_before_owner(monkeypatch, capsys):
 
 
 def test_v3_packaged_regression_fallback_works_inside_event_loop(monkeypatch, capsys):
-    from smart_search import cli_dispatch
+    from smart_search import control_operations, operations_service
 
     async def fake_smoke(mode="mock"):
         return {"ok": True, "mode": mode, "failed_cases": [], "cases": []}
 
-    monkeypatch.setattr(cli_dispatch, "_regression_test_files_available", lambda _root: False)
-    monkeypatch.setattr(cli_dispatch.service, "smoke", fake_smoke)
+    monkeypatch.setattr(control_operations, "_regression_test_files_available", lambda _root: False)
+    monkeypatch.setattr(operations_service, "_execute_smoke", fake_smoke)
     assert main(["--schema-version", "3", "dev", "regression"]) == 0
     payload = _payload(capsys)
     assert payload["operation"] == "dev.regression"
@@ -312,12 +338,12 @@ def test_v3_packaged_regression_fallback_works_inside_event_loop(monkeypatch, ca
 
 
 def test_v3_internal_error_does_not_claim_writes_or_leak_secrets(monkeypatch, capsys):
-    from smart_search import operations_service
+    from smart_search import control_operations
 
     def boom(key, value):
         raise RuntimeError(f"boom-{value}")
 
-    monkeypatch.setattr(operations_service, "config_set", boom)
+    monkeypatch.setattr(control_operations, "run_config_set", boom)
     code = main(["--schema-version", "3", "config", "set", "XAI_API_KEY", "secret-token-xyz"])
     assert code == 5
     payload = _payload(capsys)

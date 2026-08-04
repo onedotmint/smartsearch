@@ -179,15 +179,28 @@ def test_v3_rejects_v1_output_before_owner(monkeypatch, capsys):
 
 def test_v3_fail_on_degraded_keeps_envelope(monkeypatch, capsys):
     from smart_search.cli import main
-    from smart_search import operations_service
+    from smart_search import control_operations
+    from smart_search.control_operations import (
+        ControlNetworkFacts,
+        ControlOperationOutcome,
+        ControlOperationStatus,
+    )
+    from smart_search.execution_primitives import ExecutionMetadata
 
     async def fake_probe(provider):
-        return {
-            "ok": True, "provider": provider, "status": "ok", "network_attempted": True,
-            "routes": [{"route_id": "a", "status": "ok"}, {"route_id": "b", "status": "error"}],
-        }
+        return ControlOperationOutcome(
+            operation="provider.probe",
+            status=ControlOperationStatus.DEGRADED,
+            result={
+                "provider": provider, "status": "ok",
+                "routes": [{"route_id": "a", "status": "ok"}, {"route_id": "b", "status": "error"}],
+            },
+            network=ControlNetworkFacts(attempted=True, targets=(provider,)),
+            warnings=("one or more provider routes failed their probe",),
+            metadata=ExecutionMetadata("provider.probe", 0),
+        )
 
-    monkeypatch.setattr(operations_service, "provider_probe", fake_probe)
+    monkeypatch.setattr(control_operations, "run_provider_probe", fake_probe)
     code = main(["--schema-version", "3", "--fail-on-degraded", "provider", "probe", "xai-responses"])
     assert code == 6
     payload = json.loads(capsys.readouterr().out)
