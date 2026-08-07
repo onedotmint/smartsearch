@@ -174,6 +174,18 @@ def main(argv: list[str] | None = None) -> int:
 
         return asyncio.run(dispatch(args, argv=raw_argv))
 
+    # Strict research workflow route: canonical ``research run QUERY`` is a
+    # schema-neutral workflow, not a v1 result. Invalid options/input fail
+    # here with a strict INVALID_ARGUMENT result before any owner, provider,
+    # or config work and before the legacy v1 dispatcher is imported.
+    if (
+        getattr(args, "command", None) == "research"
+        and getattr(args, "namespace_operation", None) == "research-run"
+    ):
+        from .cli_research import dispatch as research_run_dispatch
+
+        return asyncio.run(research_run_dispatch(args, argv=raw_argv))
+
     # v1 path: lazy-load logging, setup, and dispatch.
     from .logger import configure_cli_logging, logger
     from .utils import PromptConfigurationError

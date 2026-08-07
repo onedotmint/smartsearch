@@ -105,7 +105,7 @@ def test_rejects_duplicate_unknown_self_and_meta_operations():
 @pytest.mark.parametrize("field", ("input", "constraints", "depends_on"))
 def test_raw_plan_rejects_null_required_operation_containers(field):
     raw = {
-        "schema_version": "2",
+        "schema_version": RESEARCH_PLAN_SCHEMA_VERSION,
         "operations": [{
             "id": "discover-primary",
             "operation": "source_discovery",

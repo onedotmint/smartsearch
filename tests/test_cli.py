@@ -666,49 +666,113 @@ def test_research_command_uses_service_and_outputs_json(monkeypatch, capsys, tmp
     assert data["command"] == "research"
 
 
-def test_research_run_defaults_to_evidence_only(monkeypatch, capsys, tmp_path):
-    captured = {}
+def test_research_run_uses_strict_workflow_not_legacy_service(monkeypatch, capsys):
+    """Canonical ``research run`` emits the strict workflow JSON contract and
+    never calls the legacy ``service.research`` synthesis path."""
+    from smart_search import evidence_operations
+    from smart_search.evidence_operations import (
+        EvidenceOperationOutcome,
+        EvidenceOperationStatus,
+        EvidenceRouting,
+    )
+    from smart_search.execution_primitives import (
+        ExecutionAttempt,
+        ExecutionAttemptStatus,
+        ExecutionCandidate,
+        ExecutionEvidenceItem,
+        ExecutionMetadata,
+    )
+    from smart_search.research_workflow_contract import WORKFLOW_TOP_LEVEL_FIELDS
 
-    async def fake_research(query, budget="deep", evidence_dir="", fallback="auto", *, synthesize=None):
-        captured.update(
-            {
-                "query": query,
-                "budget": budget,
-                "evidence_dir": evidence_dir,
-                "fallback": fallback,
-                "synthesize": synthesize,
-            }
+    async def boom(*args, **kwargs):
+        raise AssertionError("research run must not call the legacy service")
+
+    async def fake_fetch(request):
+        item = ExecutionEvidenceItem(
+            id="evidence-1",
+            resource=request.resource,
+            provider="jina",
+            title="page",
+            content="body",
         )
-        return {
-            "ok": True,
-            "mode": "deep_research_execution",
-            "query_mode": "research",
-            "question": query,
-            "final_answer": "",
-            "content": "",
-            "citations": [{"url": "https://example.com", "title": "Example", "provider": "jina"}],
-            "evidence_items": [{"url": "https://example.com", "provider": "jina", "content": "Evidence"}],
-            "gap_check": {"status": "closed", "gaps": []},
-            "provider_attempts": [],
-            "fallback_used": False,
-            "degraded": False,
-            "response_mode": "evidence",
-            "synthesis_enabled": False,
-            "route_policy_version": "research-router-v1",
-            "evidence_dir": evidence_dir,
-        }
+        return EvidenceOperationOutcome(
+            operation="content_fetch",
+            status=EvidenceOperationStatus.COMPLETE,
+            evidence_items=(item,),
+            attempts=(
+                ExecutionAttempt(
+                    capability="content_fetch",
+                    provider="jina",
+                    status=ExecutionAttemptStatus.OK,
+                    elapsed_ms=1.0,
+                    result_count=1,
+                ),
+            ),
+            routing=EvidenceRouting(("content_fetch",), ("content_fetch",), "v2", ("test",)),
+            metadata=ExecutionMetadata("req-test", 1),
+        )
 
-    monkeypatch.setattr(cli.service, "research", fake_research)
-    assert cli.main(["research", "run", "React docs", "--format", "json", "--evidence-dir", str(tmp_path)]) == cli.EXIT_OK
+    async def fake_source(request):
+        candidate = ExecutionCandidate(
+            id="cand-1",
+            resource="https://example.com/react-docs",
+            provider="tavily",
+            title="React docs",
+            snippet="snippet",
+        )
+        return EvidenceOperationOutcome(
+            operation="source_discovery",
+            status=EvidenceOperationStatus.COMPLETE,
+            candidates=(candidate,),
+            attempts=(),
+            routing=EvidenceRouting(("source_discovery",), (), "v2", ("test",)),
+            metadata=ExecutionMetadata("req-test", 1),
+        )
+
+    async def fake_docs(request):
+        return EvidenceOperationOutcome(
+            operation="docs_discovery",
+            status=EvidenceOperationStatus.COMPLETE,
+            candidates=(),
+            attempts=(),
+            routing=EvidenceRouting(("docs_discovery",), (), "v2", ("test",)),
+            metadata=ExecutionMetadata("req-test", 1),
+        )
+
+    async def fake_site(request):
+        return EvidenceOperationOutcome(
+            operation="site_discovery",
+            status=EvidenceOperationStatus.COMPLETE,
+            candidates=(),
+            attempts=(),
+            routing=EvidenceRouting(("site_discovery",), (), "v2", ("test",)),
+            metadata=ExecutionMetadata("req-test", 1),
+        )
+
+    monkeypatch.setattr(cli.service, "research", boom)
+    monkeypatch.setattr(evidence_operations, "content_fetch", fake_fetch)
+    monkeypatch.setattr(evidence_operations, "source_discovery", fake_source)
+    monkeypatch.setattr(evidence_operations, "docs_discovery", fake_docs)
+    monkeypatch.setattr(evidence_operations, "site_discovery", fake_site)
+
+    code = cli.main(["research", "run", "React docs", "--format", "json"])
+    assert code == cli.EXIT_OK
     data = json.loads(capsys.readouterr().out)
-    assert captured["synthesize"] is False
-    assert data["command"] == "research-run"
-    assert data["final_answer"] == ""
-    assert data["content"] == ""
+    assert sorted(data) == sorted(WORKFLOW_TOP_LEVEL_FIELDS)
+    assert data["command"] == "research"
+    assert data["operation"] == "research.run"
+    assert data["status"] == "complete"
+    assert data["error"] is None
+    assert "final_answer" not in json.dumps(data)
 
-    assert cli.main(["research", "run", "React docs", "--synthesize", "--format", "json"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["command"] == "research-run"
-    assert captured["synthesize"] is True
+    # --synthesize is a forbidden stable-path flag: strict INVALID_ARGUMENT
+    # result, still no legacy service call.
+    code = cli.main(["research", "run", "React docs", "--synthesize", "--format", "json"])
+    assert code == cli.EXIT_PARAMETER_ERROR
+    data = json.loads(capsys.readouterr().out)
+    assert data["operation"] == "research.run"
+    assert data["status"] == "failed"
+    assert data["error"]["code"] == "INVALID_ARGUMENT"
 
 
 def test_doctor_status_is_local_only(monkeypatch, capsys):

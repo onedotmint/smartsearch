@@ -28,7 +28,7 @@ from .logger import logger
 from .provider_search_commands import context7_docs, context7_library, exa_search
 from .provider_vertical_commands import anysearch_search
 from .runtime_cache import allow_synthesis, attach_metrics, normalize_url, observe_command, observe_stage
-from .research_plan import ResearchPlanOperation, build_research_plan
+from .research_plan import ResearchPlan, ResearchPlanOperation, build_research_plan
 from .research_plan_render import (
     build_projection_context,
     path_join as _path_join,
@@ -600,13 +600,17 @@ def _is_deep_complex(query: str, budget: str) -> bool:
     object_separators = len(re.findall(r"[/、,，]| 和 | 与 | vs | VS | versus ", q))
     return budget == "deep" or _contains_any(query, DEEP_HIGH_COMPLEXITY_KEYWORDS) or object_separators >= 2
 
-def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir: str = "") -> dict[str, Any]:
+def _build_deep_research_plan_impl(
+    query: str, budget: str = "standard", evidence_dir: str = ""
+) -> tuple[dict[str, Any], ResearchPlan]:
     """
-    Offline Deep Research planner.
+    Offline Deep Research planner core.
 
     Builds one structured ResearchPlan plus a non-serialized v1 projection
     context, then derives frozen steps[]/command/output_path from the renderer.
-    Heuristics and all other v1 plan fields remain unchanged.
+    Heuristics and all other v1 plan fields remain unchanged. Returns the v1
+    projection dict together with the schema-neutral typed plan so the strict
+    Research Workflow owner can reuse the same plan without the v1 surface.
     """
     start = time.time()
     question = query.strip()
@@ -1027,7 +1031,7 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
         allow_synthesis=False,
         response_mode="plan",
     )
-    return {
+    plan_dict = {
         "ok": True,
         "mode": "deep_research",
         "query_mode": "deep",
@@ -1061,6 +1065,25 @@ def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir:
         "evidence_dir": evidence_root,
         "elapsed_ms": _elapsed_ms(start),
     }
+    return plan_dict, research_plan
+
+
+def build_deep_research_plan(query: str, budget: str = "standard", evidence_dir: str = "") -> dict[str, Any]:
+    """Offline Deep Research planner: returns the v1 projection dict only."""
+    plan_dict, _ = _build_deep_research_plan_impl(query, budget, evidence_dir)
+    return plan_dict
+
+
+def build_research_workflow_plan(query: str, budget: str = "deep", evidence_dir: str = "") -> ResearchPlan:
+    """Return the schema-neutral typed Research Plan for the strict workflow owner.
+
+    Reuses the offline planner's operation generation so ``research run`` keeps
+    the same staged plan as the offline planner; the v1 projection (steps,
+    shell commands, output paths) is never part of the typed plan or the
+    workflow contract.
+    """
+    _, research_plan = _build_deep_research_plan_impl(query, budget, evidence_dir)
+    return research_plan
 
 
 @observe_command

@@ -1,8 +1,11 @@
 """Structured Research Plan model, schema, and semantic validator.
 
-The plan is the Phase 3 truth source for offline Deep Research planning.
-Shell commands and output paths are never part of the stable plan schema;
-they live only in the v1 compatibility renderer.
+The plan is the Phase 3 truth source for offline Deep Research planning and
+is embedded in the strict Research Workflow contract. The plan schema is
+schema-neutral: its version and vocabulary are independent from the V2
+Evidence envelope and the V3 control-plane envelope. Shell commands and
+output paths are never part of the stable plan schema; they live only in
+the v1 compatibility renderer.
 """
 
 from __future__ import annotations
@@ -13,21 +16,24 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
-from .v2_contract import V2_CAPABILITY_OPERATION_IDS, V2_META_OPERATION_CAPABILITY_STATUS
-
-RESEARCH_PLAN_SCHEMA_VERSION = "2"
-# Phase 3 plan generator emits only the four executable Core/Advanced operations.
+# Schema-neutral Research Plan family identity. Deliberately distinct from the
+# V2 Evidence envelope ("2") and the V3 control-plane envelope ("3") so the
+# embedded plan can never be mistaken for a capability operation result.
+RESEARCH_PLAN_SCHEMA_VERSION = "research-plan-1"
+# Schema-neutral executable operation vocabulary (Evidence capability ids,
+# not V2 envelope ids). The Phase 3 plan generator emits only these four.
 PLAN_EXECUTABLE_OPERATION_IDS = (
     "source_discovery",
     "docs_discovery",
     "content_fetch",
     "site_discovery",
 )
-# answer_synthesis is recognized as a taxonomy id but is not generated or accepted
-# as a Phase 3 plan operation.
+# answer_synthesis is recognized as a taxonomy id but is not generated or
+# accepted as a Phase 3 plan operation; capability_status is an envelope-only
+# inspection operation, never a plan step.
 PLAN_FORBIDDEN_OPERATION_IDS = frozenset(
     {
-        V2_META_OPERATION_CAPABILITY_STATUS,
+        "capability_status",
         "answer_synthesis",
         "command",
         "output_path",
@@ -165,7 +171,7 @@ def _strict_object(required: Sequence[str], properties: Mapping[str, Any]) -> di
 
 RESEARCH_PLAN_JSON_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://smart-search.local/schema/v2/research-plan.json",
+    "$id": "https://smart-search.local/schema/research-plan.json",
     "x-smart-search-semantic-validator": "smart_search.research_plan.validate_research_plan_dict",
     **_strict_object(
         ("schema_version", "operations"),
@@ -218,11 +224,9 @@ def validate_research_plan(plan: ResearchPlan) -> ResearchPlan:
             raise ResearchPlanError(
                 f"operation {operation.operation!r} is not executable in Phase 3 plans"
             )
-        if operation.operation == V2_META_OPERATION_CAPABILITY_STATUS:
-            raise ResearchPlanError("capability_status is forbidden in Research Plan")
-        if operation.operation not in V2_CAPABILITY_OPERATION_IDS:
+        if operation.operation in PLAN_FORBIDDEN_OPERATION_IDS:
             raise ResearchPlanError(
-                f"operation {operation.operation!r} is not a stable capability operation"
+                f"operation {operation.operation!r} is forbidden in Research Plan"
             )
         prior = set(ids[:-1])
         for dep in operation.depends_on:
@@ -310,7 +314,7 @@ def validate_research_plan_dict(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def build_research_plan(operations: Iterable[ResearchPlanOperation]) -> ResearchPlan:
-    """Construct a validated schema-version-2 plan from operations."""
+    """Construct a validated schema-neutral Research Plan from operations."""
     return ResearchPlan(RESEARCH_PLAN_SCHEMA_VERSION, tuple(operations))
 
 
