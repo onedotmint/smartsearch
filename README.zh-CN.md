@@ -145,6 +145,7 @@ smart-search model list --format markdown
 
 - [入门指南](docs/getting-started.md)：安装、setup、第一次调用和 skill 安装。
 - [命令参考](docs/commands.md)：命令、alias、通用参数和输出格式。
+- [迁移指南](docs/migration.md)：从已发布 0.1.0 持久化数据升级。
 - [Provider 指南](docs/providers.md)：能力、兜底边界、API key 和最低配置。
 - [Search、Deep Research 和 Research](docs/concepts/search-vs-deep-vs-research.md)：规划器和执行器合约。
 - [证据策略](docs/concepts/evidence.md)：发现、抓取、引用和缺口。

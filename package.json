@@ -23,6 +23,7 @@
     "README.zh-CN.md",
     "docs/getting-started.md",
     "docs/commands.md",
+    "docs/migration.md",
     "docs/providers.md",
     "docs/concepts/*.md",
     "LICENSE"

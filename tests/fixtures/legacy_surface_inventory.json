@@ -1225,7 +1225,8 @@
         "src/smart_search/assets/skills/smart-search-cli/references/cli-core.md",
         "src/smart_search/assets/skills/smart-search-cli/references/deep-research-mode.md",
         "docs/commands.md",
-        "docs/concepts/search-vs-deep-vs-research.md"
+        "docs/concepts/search-vs-deep-vs-research.md",
+        "docs/migration.md"
       ],
       "notes": "pattern=\\bfinal_answer\\b; exact current file-hit set is asserted by tests/fixtures/legacy_surface_inventory.py",
       "rollback_point": "delete inventory/fixture/test artifacts only",
@@ -1265,6 +1266,7 @@
         "docs/concepts/search-vs-deep-vs-research.md",
         "docs/development.md",
         "docs/getting-started.md",
+        "docs/migration.md",
         "docs/providers.md"
       ],
       "notes": "pattern=\\b(?:cfg|mdl|model (?:current|list|add|remove)|route-calibrate|diagnose|regression|skills (?:status|update))\\b; exact current file-hit set is asserted by tests/fixtures/legacy_surface_inventory.py",
@@ -1294,7 +1296,8 @@
         "src/smart_search/assets/skills/smart-search-cli/references/cli-core.md",
         "docs/commands.md",
         "docs/development.md",
-        "docs/getting-started.md"
+        "docs/getting-started.md",
+        "docs/migration.md"
       ],
       "notes": "pattern=--schema-version|schema-version; exact current file-hit set is asserted by tests/fixtures/legacy_surface_inventory.py",
       "rollback_point": "delete inventory/fixture/test artifacts only",

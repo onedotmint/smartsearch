@@ -257,6 +257,7 @@ def test_public_docs_structure_is_packaged_and_linked():
     required_paths = [
         "docs/getting-started.md",
         "docs/commands.md",
+        "docs/migration.md",
         "docs/providers.md",
         "docs/concepts/search-vs-deep-vs-research.md",
         "docs/concepts/evidence.md",
@@ -267,6 +268,7 @@ def test_public_docs_structure_is_packaged_and_linked():
     packaged_paths = [
         "docs/getting-started.md",
         "docs/commands.md",
+        "docs/migration.md",
         "docs/providers.md",
         "docs/concepts/search-vs-deep-vs-research.md",
         "docs/concepts/evidence.md",
@@ -289,6 +291,8 @@ def test_public_docs_structure_is_packaged_and_linked():
     assert "src/smart_search/assets/skills/smart-search-cli/**" in package_files
     assert "docs/getting-started.md" in readme
     assert "docs/getting-started.md" in readme_zh
+    assert "docs/migration.md" in readme
+    assert "docs/migration.md" in readme_zh
     assert "https://github.com/onedotmint/smartsearch/blob/main/docs/development.md" in readme
     assert "https://github.com/onedotmint/smartsearch/blob/main/docs/development.md" in readme_zh
     assert "](docs/development.md)" not in readme

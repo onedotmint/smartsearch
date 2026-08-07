@@ -143,6 +143,7 @@ Search results are discovery candidates. For high-risk claims, fetch the relevan
 
 - [Getting started](docs/getting-started.md) — installation, setup, first successful calls, and skill installation.
 - [Command reference](docs/commands.md) — commands, aliases, common flags, and output formats.
+- [Migration guide](docs/migration.md) — upgrading published 0.1.0 persisted data.
 - [Provider guide](docs/providers.md) — capabilities, fallback boundaries, API keys, and minimum profiles.
 - [Search vs Deep Research vs Research](docs/concepts/search-vs-deep-vs-research.md) — planner and executor contracts.
 - [Evidence policy](docs/concepts/evidence.md) — discovery, fetch, citations, and gaps.
