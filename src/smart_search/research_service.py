@@ -19,21 +19,17 @@ from .capability_service import (
     validate_command_capabilities,
     validate_minimum_profile,
 )
-from .capability_executor import CapabilityOperation, execute_capability
 from .config import config
-from .execution_primitives import project_attempts_dict
+from .evidence_operations import DocsDiscoveryRequest, docs_discovery
+from .execution_primitives import ExecutionCandidate, project_attempts_dict
 from .evidence import EvidenceBundle
 from .intent_router import IntentRouteResult, IntentRouter, build_rules_route
 from .logger import logger
-from .provider_search_commands import context7_docs, context7_library, exa_search
-from .provider_vertical_commands import anysearch_search
 from .runtime_cache import allow_synthesis, attach_metrics, normalize_url, observe_command, observe_stage
 from .research_plan import ResearchPlan, ResearchPlanOperation, build_research_plan
 from .research_plan_render import (
     build_projection_context,
-    path_join as _path_join,
     projection_entry,
-    quote_arg as _quote_arg,
     render_v1_steps,
 )
 from .operation_runtime import _run_web_fetch_fallback, _run_web_search_fallback
@@ -59,7 +55,6 @@ from .service_support import (
     _fallback_used,
     _is_docs_intent,
     _is_zh_current_intent,
-    _normalize_source_results,
     _provider_names_from_attempts,
 )
 
@@ -91,7 +86,6 @@ def _research_route_signals(question: str, plan: dict[str, Any]) -> dict[str, An
         "known_url": rules_route.fetch_intent,
         "pdf_or_arxiv_intent": _contains_any(question, RESEARCH_PDF_KEYWORDS),
         "js_heavy_intent": _contains_any(question, RESEARCH_JS_HEAVY_KEYWORDS),
-        "vertical_intent": bool(rules_route.intent_signals.get("vertical_intent")),
         "claim_risk": intent.get("claim_risk", "medium"),
         "cross_validation_need": intent.get("cross_validation_need", "normal"),
         "raw_query": text,
@@ -109,7 +103,6 @@ def _research_capability_routes(
         signals["docs_api_intent"] = route_result.docs_intent
         signals["current_or_locale_intent"] = route_result.web_current_intent
         signals["known_url"] = route_result.fetch_intent
-        signals["vertical_intent"] = bool(route_result.intent_signals.get("vertical_intent") or "vertical_search" in route_result.required_capabilities)
     _, _, invalid_overrides = _safe_provider_overrides()
     routes: dict[str, Any] = {
         "signals": signals,
@@ -157,13 +150,6 @@ def _research_capability_routes(
         "reason": "JS-heavy fetch" if signals["js_heavy_intent"] else ("known URL/PDF extraction" if signals["known_url"] or signals["pdf_or_arxiv_intent"] else "evidence extraction"),
     }
 
-    vertical = _configured_for_capability("vertical_search", capability_status)
-    routes["capabilities"]["vertical_search"] = {
-        "providers": _apply_research_overrides("vertical_search", vertical) if signals["vertical_intent"] else [],
-        "reason": "vertical intent matched" if signals["vertical_intent"] else "vertical intent absent",
-        "experimental": True,
-    }
-
     return routes
 
 def _research_evidence_item(
@@ -194,159 +180,48 @@ def _citation_items(evidence_items: list[dict[str, Any]]) -> list[dict[str, str]
     return evidence_bundle.to_dict()["citations"]
 
 
-async def _run_research_context7_docs(
-    question: str,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _typed_candidates_to_sources(candidates) -> list[dict[str, Any]]:
+    """Project typed Evidence candidates into v1 discovery source dicts.
+
+    ``resource`` is the candidate's stable identity (HTTP URL or resource id,
+    e.g. ``context7:<id>``). Non-HTTP resource ids stay discovery-only: the
+    candidate fetch stage skips them, so only URL-backed candidates can become
+    fetched evidence under the generic Evidence policy.
     """
-    /*
-     * ================================================================================
-     * 步骤1：执行 Context7 文档 evidence 阶段
-     * ================================================================================
-     * 目标：保留 library resolve -> docs read 的两段边界，只把 provider 生命周期交给 executor。
-     * 数据源：Context7 library/docs adapter、当前 query 和 RequestContext。
-     * 操作：
-     * 1) 用 source cache resolve library id。
-     * 2) 用 content cache 读取选定 library 的文档正文。
-     * 3) 只有正文非空时生成 fetched evidence，候选 library 不直接作为证据。
-     * ================================================================================
-     */
-    """
-    logger.info("开始执行 research Context7 阶段: question=%s", question)
-
-    async def resolve_library(provider: str, outcome: dict[str, Any]) -> list[dict]:
-        # 1.1 解析 library id，不把候选直接当作 fetched evidence。
-        data = await context7_library(question, question)
-        outcome.update(data if isinstance(data, dict) else {})
-        return [
-            {
-                "url": f"context7:{item.get('id')}",
-                "title": item.get("title") or item.get("id") or "Context7",
-                "description": item.get("description") or "",
-                "provider": provider,
-            }
-            for item in (data.get("results", []) if isinstance(data, dict) else [])
-            if isinstance(data, dict) and data.get("ok") and item.get("id")
-        ]
-
-    library_execution = await execute_capability(
-        CapabilityOperation(
-            capability="docs_search",
-            input_value=question,
-            cache_options={"name": question, "query": question},
-            run=resolve_library,
-            empty_value=lambda _provider: [],
-            is_success=lambda value: isinstance(value, list) and bool(value),
-            result_count=lambda value: len(value) if isinstance(value, list) else 0,
-        ),
-        providers=("context7",),
-        fallback="off",
-    )
-    attempts = project_attempts_dict(library_execution.attempts)
-    libraries = library_execution.value if isinstance(library_execution.value, list) else []
-    if not libraries:
-        logger.info("research Context7 library 阶段结束: 无 library")
-        return [], attempts
-
-    library_id = str(libraries[0].get("url", "")).removeprefix("context7:")
-    if not library_id:
-        logger.info("research Context7 阶段结束: library id 为空")
-        return [], attempts
-
-    async def read_docs(provider: str, outcome: dict[str, Any]) -> dict[str, Any]:
-        # 1.2 读取正文并保留 provider 错误元数据。
-        data = await context7_docs(library_id, question)
-        outcome.update(data if isinstance(data, dict) else {})
-        return {
-            "content": sanitize_text(data.get("content") or "") if isinstance(data, dict) and data.get("ok") else "",
-            "library_id": library_id,
+    sources: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, ExecutionCandidate):
+            continue
+        resource = (candidate.resource or "").strip()
+        if not resource:
+            continue
+        item: dict[str, Any] = {
+            "url": resource,
+            "provider": candidate.provider,
         }
-
-    docs_execution = await execute_capability(
-        CapabilityOperation(
-            capability="docs_search",
-            input_value=f"https://context7.local/{library_id}",
-            cache_kind="content",
-            cache_options={"library_id": library_id, "query": question},
-            run=read_docs,
-            empty_value=lambda _provider: {"content": "", "library_id": library_id},
-            is_success=lambda value: isinstance(value, dict) and bool(str(value.get("content") or "").strip()),
-            result_count=lambda _value: 1,
-        ),
-        providers=("context7",),
-        fallback="off",
-    )
-    attempts.extend(project_attempts_dict(docs_execution.attempts))
-    docs_payload = docs_execution.value if isinstance(docs_execution.value, dict) else {}
-    content = str(docs_payload.get("content") or "")
-    if not content.strip():
-        logger.info("research Context7 阶段结束: library=%s 无正文", library_id)
-        return [], attempts
-
-    item = _research_evidence_item(
-        url=f"context7:{library_id}",
-        provider="context7",
-        title=library_id,
-        content=content,
-        source_type="docs",
-        subquestion_id="sq2",
-    )
-    logger.info("research Context7 阶段完成: library=%s", library_id)
-    return [item], attempts
+        title = (candidate.title or "").strip()
+        if title:
+            item["title"] = title
+        snippet = (candidate.snippet or "").strip()
+        if snippet:
+            item["description"] = snippet
+        sources.append(item)
+    return sources
 
 
-async def _run_research_exa_docs(
-    question: str,
-    fallback: str = "auto",
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Run the Exa docs discovery operation through the shared executor."""
-
-    async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
-        # 2.1 Exa 只产出 discovery candidates，后续仍需 fetch。
-        data = await exa_search(question, num_results=5, include_highlights=True)
-        outcome.update(data if isinstance(data, dict) else {})
-        return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
-
-    execution = await execute_capability(
-        CapabilityOperation(
-            capability="docs_search",
-            input_value=question,
-            cache_options={"include_highlights": True, "num_results": 5},
-            run=run_provider,
-            empty_value=lambda _provider: [],
-            is_success=lambda value: isinstance(value, list) and bool(value),
-            result_count=lambda value: len(value) if isinstance(value, list) else 0,
-        ),
-        providers=("exa",),
-        fallback=fallback,
-    )
-    return execution.value if isinstance(execution.value, list) else [], project_attempts_dict(execution.attempts)
-
-
-async def _run_research_vertical_search(
+async def _run_research_docs_discovery(
     question: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Run the experimental vertical search operation through the executor."""
+    """Run docs discovery through the generic typed Evidence owner.
 
-    async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
-        # 3.1 保留 AnySearch 的 vertical capability，不加入通用 fallback。
-        data = await anysearch_search(question, max_results=5)
-        outcome.update(data if isinstance(data, dict) else {})
-        return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
-
-    execution = await execute_capability(
-        CapabilityOperation(
-            capability="vertical_search",
-            input_value=question,
-            cache_options={"max_results": 5},
-            run=run_provider,
-            empty_value=lambda _provider: [],
-            is_success=lambda value: isinstance(value, list) and bool(value),
-            result_count=lambda value: len(value) if isinstance(value, list) else 0,
-        ),
-        providers=("anysearch",),
-        fallback="off",
-    )
-    return execution.value if isinstance(execution.value, list) else [], project_attempts_dict(execution.attempts)
+    Replaces the removed Context7/Exa provider-specific research callbacks:
+    the typed ``docs_discovery`` owner selects qualified docs providers and
+    returns candidates only. URL-backed candidates later enter the generic
+    fetch stage; resource-id candidates (``context7:...``) remain discovery
+    candidates and never become fetched evidence.
+    """
+    outcome = await docs_discovery(DocsDiscoveryRequest(query=question, max_results=5))
+    return _typed_candidates_to_sources(outcome.candidates), project_attempts_dict(outcome.attempts)
 
 def _evidence_only_synthesis(
     question: str,
@@ -703,6 +578,9 @@ def _build_deep_research_plan_impl(
     def has_tool(tool: str) -> bool:
         return tool in pending_tools
 
+    def has_purpose(prefix: str) -> bool:
+        return any(entry.purpose.startswith(prefix) for entry in projection_entries)
+
     if known_url:
         url = urls[0]
         parsed = urlparse(url)
@@ -726,7 +604,7 @@ def _build_deep_research_plan_impl(
         capability_plan.extend(
             [
                 _deep_capability("page_evidence", ["fetch"], "Fetch the user-provided URL before making claims."),
-                _deep_capability("adjacent_source_discovery", ["exa-similar"], "Find pages adjacent to the known source."),
+                _deep_capability("adjacent_source_discovery", ["search"], "Find pages adjacent to the known source."),
                 _deep_capability("broad_discovery", ["search"], "Broaden the context if the fetched page leaves gaps."),
             ]
         )
@@ -742,11 +620,11 @@ def _build_deep_research_plan_impl(
         fetch_id = structured_ops[-1].id if structured_ops else ""
         add_structured(
             operation="source_discovery",
-            renderer_kind="exa_similar",
+            renderer_kind="search",
             purpose="find adjacent sources from the provided URL",
             subquestion_id="sq2",
             input_data={"resource": url, "mode": "similar"},
-            args={"url": url, "num_results": 5},
+            args={"url": url, "extra_sources": 2},
             depends_on=[fetch_id] if fetch_id else [],
             output_suffix="02-similar.json",
         )
@@ -789,56 +667,56 @@ def _build_deep_research_plan_impl(
                 _deep_subquestion(
                     "sq2",
                     f"{question} 的官方文档、API 或 SDK 证据在哪里？",
-                    "docs/API intent should resolve the library docs first, with Exa only as official-domain discovery.",
+                    "docs/API intent should resolve library and official documentation first.",
                     ["docs_source_discovery", "page_evidence"],
                 )
             )
             capability_plan.append(
                 _deep_capability(
                     "docs_source_discovery",
-                    ["context7-library", "context7-docs"],
-                    "Resolve official library/API documentation first; use Exa only for official-domain or supplemental discovery.",
+                    ["search"],
+                    "Resolve official library/API documentation first; use generic search for official-domain or supplemental discovery.",
                 )
             )
             library_hint = " ".join(re.findall(r"[A-Za-z][A-Za-z0-9_.-]*", question)[:2]) or "<library-name>"
             add_structured(
                 operation="docs_discovery",
-                renderer_kind="context7_library",
+                renderer_kind="search",
                 purpose="resolve library id for docs/API intent",
                 subquestion_id="sq2",
                 input_data={"query": question, "library_hint": library_hint, "mode": "library"},
-                args={"library": library_hint, "query": question},
+                args={"query": question, "extra_sources": 2},
                 depends_on=[primary_id] if primary_id else [],
-                output_suffix=next_filename("context7-library.json"),
+                output_suffix=next_filename("docs.json"),
             )
             lib_id = structured_ops[-1].id if structured_ops else primary_id
             add_structured(
                 operation="docs_discovery",
-                renderer_kind="context7_docs",
+                renderer_kind="search",
                 purpose="retrieve docs after selecting the best library_id",
                 subquestion_id="sq2",
                 input_data={"query": question, "mode": "docs"},
-                args={"library_id": "<library_id>", "query": question},
+                args={"query": question, "extra_sources": 2},
                 depends_on=[lib_id] if lib_id else [],
-                output_suffix=next_filename("context7-docs.json"),
+                output_suffix=next_filename("docs.json"),
             )
             if _contains_any(question, DEEP_EXA_DISCOVERY_KEYWORDS):
                 capability_plan.append(
                     _deep_capability(
                         "official_domain_discovery",
-                        ["exa-search"],
-                        "Use Exa for official-domain or low-noise supplemental docs discovery.",
+                        ["search"],
+                        "Use generic search for official-domain or low-noise supplemental docs discovery.",
                     )
                 )
                 add_structured(
                     operation="docs_discovery",
-                    renderer_kind="exa_search",
+                    renderer_kind="search",
                     purpose="official-domain docs source discovery",
                     subquestion_id="sq2",
                     input_data={"query": f"{question} official docs"},
-                    args={"query": f"{question} official docs", "num_results": 5},
+                    args={"query": f"{question} official docs", "extra_sources": 2},
                     depends_on=[lib_id] if lib_id else [],
-                    output_suffix=next_filename("exa.json"),
+                    output_suffix=next_filename("docs.json"),
                 )
 
         if recency_requirement != "none" or locale_domain_scope == "china":
@@ -847,22 +725,22 @@ def _build_deep_research_plan_impl(
                 _deep_subquestion(
                     sub_id,
                     f"{question} 的最新或中文/国内来源如何交叉验证？",
-                    "Current or China-scoped prompts benefit from Zhipu web-search reinforcement.",
+                    "Current or China-scoped prompts benefit from supplemental web-search reinforcement.",
                     ["current_or_locale_source_discovery"],
                 )
             )
             capability_plan.append(
-                _deep_capability("current_or_locale_source_discovery", ["zhipu-search"], "Reinforce Chinese, domestic, or current web evidence.")
+                _deep_capability("current_or_locale_source_discovery", ["search"], "Reinforce Chinese, domestic, or current web evidence.")
             )
             add_structured(
                 operation="source_discovery",
-                renderer_kind="zhipu_search",
+                renderer_kind="search",
                 purpose="current or locale-specific source discovery",
                 subquestion_id=sub_id,
                 input_data={"query": question, "locale": "zh"},
-                args={"query": question, "count": 5},
+                args={"query": question, "extra_sources": 2},
                 depends_on=[primary_id] if primary_id else [],
-                output_suffix=f"{len(structured_ops) + 1:02d}-zhipu.json",
+                output_suffix=f"{len(structured_ops) + 1:02d}-search.json",
             )
 
         if complex_query:
@@ -888,13 +766,13 @@ def _build_deep_research_plan_impl(
             if budget == "deep" and _contains_any(question, DEEP_EXA_DISCOVERY_KEYWORDS):
                 add_structured(
                     operation="docs_discovery",
-                    renderer_kind="exa_search",
+                    renderer_kind="search",
                     purpose="low-noise evidence for tradeoffs and risks",
                     subquestion_id="sq3",
                     input_data={"query": f"{question} risks limitations comparison"},
-                    args={"query": f"{question} risks limitations comparison", "num_results": 5},
+                    args={"query": f"{question} risks limitations comparison", "extra_sources": 2},
                     depends_on=[primary_id] if primary_id else [],
-                    output_suffix=next_filename("exa.json"),
+                    output_suffix=next_filename("docs.json"),
                 )
 
         if cross_validation_need == "high":
@@ -905,35 +783,35 @@ def _build_deep_research_plan_impl(
             target_subquestion = decomposition[-1]["id"] if decomposition else "sq1"
             cross_validation_tools = next((item["tools"] for item in capability_plan if item.get("capability") == "cross_validation"), [])
             if recency_requirement != "none" or locale_domain_scope == "china" or zh_current_intent:
-                if "zhipu-search" not in cross_validation_tools:
-                    cross_validation_tools.append("zhipu-search")
-                if not has_tool("zhipu-search"):
+                if "search" not in cross_validation_tools:
+                    cross_validation_tools.append("search")
+                if not has_purpose("current or locale-specific"):
                     add_structured(
                         operation="source_discovery",
-                        renderer_kind="zhipu_search",
+                        renderer_kind="search",
                         purpose="current or locale-specific cross-source discovery",
                         subquestion_id=target_subquestion,
                         input_data={"query": question, "locale": "zh"},
-                        args={"query": question, "count": 5},
+                        args={"query": question, "extra_sources": 2},
                         depends_on=[primary_id] if primary_id else [],
-                        output_suffix=next_filename("zhipu.json"),
+                        output_suffix=next_filename("search.json"),
                     )
             elif docs_intent:
-                if "context7-library" not in cross_validation_tools:
-                    cross_validation_tools.extend(["context7-library", "context7-docs"])
+                if "search" not in cross_validation_tools:
+                    cross_validation_tools.append("search")
             elif _contains_any(question, DEEP_EXA_DISCOVERY_KEYWORDS):
-                if "exa-search" not in cross_validation_tools:
-                    cross_validation_tools.append("exa-search")
-                if not has_tool("exa-search"):
+                if "search" not in cross_validation_tools:
+                    cross_validation_tools.append("search")
+                if not has_purpose("official-domain"):
                     add_structured(
                         operation="docs_discovery",
-                        renderer_kind="exa_search",
+                        renderer_kind="search",
                         purpose="official-domain or low-noise cross-source discovery",
                         subquestion_id=target_subquestion,
                         input_data={"query": question},
-                        args={"query": question, "num_results": 5},
+                        args={"query": question, "extra_sources": 2},
                         depends_on=[primary_id] if primary_id else [],
-                        output_suffix=next_filename("exa.json"),
+                        output_suffix=next_filename("search.json"),
                     )
 
         capability_plan.append(_deep_capability("page_evidence", ["fetch"], "Fetch key URLs before claim-level conclusions."))
@@ -1268,27 +1146,21 @@ async def research(
     logger.info("已知 URL 并发抓取完成: scheduled=%s", len(known_entries))
 
     signals = routes["signals"]
-    if signals["docs_api_intent"]:
+    if signals["docs_api_intent"] or (signals["official_low_noise_intent"] and fallback_mode != "off"):
         docs_providers = routes["capabilities"]["docs_search"]["providers"]
-        selected_docs_providers = docs_providers[:1] if fallback_mode == "off" else docs_providers
-        if not selected_docs_providers:
-            gaps.append({"subquestion_id": "sq2", "reason": "no configured docs_search provider for docs/API evidence"})
-        for provider in selected_docs_providers:
-            if provider == "context7":
-                context7_items, attempts = await _run_research_context7_docs(question)
-                provider_attempts.extend(attempts)
-                if context7_items:
-                    evidence_items.extend(context7_items)
-                    stage_results.append({"stage": "docs_discovery", "provider": "context7", "ok": True, "result_count": len(context7_items)})
-                    persist_artifact("docs-context7.md", context7_items[0].get("content") or "")
-                    break
-            elif provider == "exa":
-                sources, attempts = await _run_research_exa_docs(question, fallback="off")
-                provider_attempts.extend(attempts)
-                if sources:
-                    discovery_sources.extend(sources)
-                    stage_results.append({"stage": "docs_discovery", "provider": "exa", "ok": True, "result_count": len(sources)})
-                    break
+        if not docs_providers:
+            gap_reason = (
+                "no configured docs_search provider for docs/API evidence"
+                if signals["docs_api_intent"]
+                else "no configured docs_search provider for official-domain discovery"
+            )
+            gaps.append({"subquestion_id": "sq2", "reason": gap_reason})
+        else:
+            sources, attempts = await _run_research_docs_discovery(question)
+            provider_attempts.extend(attempts)
+            if sources:
+                discovery_sources.extend(sources)
+                stage_results.append({"stage": "docs_discovery", "ok": True, "result_count": len(sources)})
 
     should_run_web_discovery = (
         signals["current_or_locale_intent"]
@@ -1310,25 +1182,6 @@ async def research(
             stage_results.append({"stage": "web_discovery", "ok": bool(web_sources), "result_count": len(web_sources), "provider_attempts": attempts})
         else:
             gaps.append({"subquestion_id": "", "reason": "no configured web_search provider for discovery"})
-
-    exa_in_selected_docs_route = "exa" in routes["capabilities"]["docs_search"]["providers"]
-    if (
-        fallback_mode != "off"
-        and signals["official_low_noise_intent"]
-        and exa_in_selected_docs_route
-        and not any(source.get("provider") == "exa" for source in discovery_sources)
-    ):
-        sources, attempts = await _run_research_exa_docs(question, fallback=fallback_mode)
-        provider_attempts.extend(attempts)
-        if sources:
-            discovery_sources.extend(sources)
-
-    if signals["vertical_intent"] and routes["capabilities"]["vertical_search"]["providers"]:
-        sources, attempts = await _run_research_vertical_search(question)
-        provider_attempts.extend(attempts)
-        if sources:
-            discovery_sources.extend(sources)
-            stage_results.append({"stage": "vertical_discovery", "provider": "anysearch", "ok": True, "result_count": len(sources)})
 
     """
     /*

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from smart_search import cli, operation_runtime, service, service_support
+from smart_search import provider_fetch_commands
 from smart_search import search_service
 from smart_search.cli_contract import SCHEMA_VERSION, build_json_result
 from smart_search.cli_parser import PUBLIC_COMMANDS, build_parser
@@ -51,7 +52,7 @@ def test_cli_inventory_fixture_matches_parser_registration():
     live = inventory_from_parser(build_parser())
 
     assert live["canonical_top_level"] == CANONICAL_TOP_LEVEL_COMMANDS
-    assert len(live["canonical_top_level"]) == 30
+    assert len(live["canonical_top_level"]) == 16
     assert live["aliases"] == ALIAS_TO_CANONICAL
     assert set(live["root_help"]) == set(ROOT_HELP_COMMANDS)
     assert set(live["root_help"]) == set(PUBLIC_COMMANDS)
@@ -75,37 +76,8 @@ def test_cli_inventory_aliases_and_nested_commands_parse_to_canonical():
                 "deep": [alias, "query"],
                 "research": [alias, "query"],
             }[canonical]
-        elif canonical in {"exa-search", "zhipu-search", "anysearch-search", "route-calibrate", "smoke", "doctor", "regression"}:
-            argv = [alias] if canonical in {"smoke", "doctor", "regression", "route-calibrate"} else [alias, "query"]
-            if canonical == "anysearch-search":
-                argv = [alias, "query"]
-        elif canonical == "exa-similar":
-            argv = [alias, "https://example.com"]
-        elif canonical.startswith("zhipu-mcp-"):
-            if canonical == "zhipu-mcp-reader":
-                argv = [alias, "https://example.com"]
-            elif canonical == "zhipu-mcp-search":
-                argv = [alias, "query"]
-            elif canonical == "zhipu-mcp-search-doc":
-                argv = [alias, "owner/repo", "topic"]
-            elif canonical == "zhipu-mcp-repo-structure":
-                argv = [alias, "owner/repo"]
-            else:
-                argv = [alias, "owner/repo", "README.md"]
-        elif canonical.startswith("anysearch-"):
-            if canonical == "anysearch-domains":
-                argv = [alias]
-            elif canonical == "anysearch-extract":
-                argv = [alias, "https://example.com"]
-            elif canonical == "anysearch-batch":
-                argv = [alias, "a", "b"]
-            else:
-                argv = [alias, "query"]
-        elif canonical.startswith("context7-"):
-            if canonical == "context7-library":
-                argv = [alias, "react"]
-            else:
-                argv = [alias, "/facebook/react", "hooks"]
+        elif canonical in {"route-calibrate", "smoke", "doctor", "regression"}:
+            argv = [alias]
         elif canonical == "diagnose":
             argv = [alias, "openai-compatible"]
         elif canonical == "model":
@@ -424,11 +396,8 @@ async def test_fetch_map_doctor_baselines_distinguish_empty_degraded_and_failure
             "response_time": 0.1,
         }
 
-    monkeypatch.setattr(service, "call_tavily_map", map_success)
-    # service.map_site imports call_tavily_map from provider_fetch_commands at call time via module.
-    from smart_search import provider_fetch_commands
-
     monkeypatch.setattr(provider_fetch_commands, "call_tavily_map", map_success)
+    # service.map_site imports call_tavily_map from provider_fetch_commands at call time via module.
     map_ok = await service.map_site("https://example.com")
     assert_has_keys(map_ok, MAP_CORE_KEYS)
     assert map_ok["ok"] is True

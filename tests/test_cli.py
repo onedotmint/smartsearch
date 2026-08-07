@@ -44,10 +44,6 @@ def test_hidden_commands_remain_parseable():
 
     hidden_commands = [
         ["route-calibrate"],
-        ["exa-search", "query"],
-        ["zhipu-search", "query"],
-        ["anysearch-search", "query"],
-        ["context7-library", "react"],
         ["capabilities"],
         ["diagnose", "openai-compatible"],
         ["model", "current"],
@@ -77,20 +73,6 @@ def test_each_subcommand_help_exits_successfully(capsys):
         ["route", "--help"],
         ["fetch", "--help"],
         ["map", "--help"],
-        ["exa-search", "--help"],
-        ["exa-similar", "--help"],
-        ["zhipu-search", "--help"],
-        ["zhipu-mcp-search", "--help"],
-        ["zhipu-mcp-reader", "--help"],
-        ["zhipu-mcp-search-doc", "--help"],
-        ["zhipu-mcp-repo-structure", "--help"],
-        ["zhipu-mcp-read-file", "--help"],
-        ["anysearch-domains", "--help"],
-        ["anysearch-search", "--help"],
-        ["anysearch-extract", "--help"],
-        ["anysearch-batch", "--help"],
-        ["context7-library", "--help"],
-        ["context7-docs", "--help"],
         ["deep", "--help"],
         ["route-calibrate", "--help"],
         ["smoke", "--help"],
@@ -130,26 +112,6 @@ def test_command_aliases_parse_to_canonical_commands():
         (["rt", "query"], "route"),
         (["f", "https://example.com"], "fetch"),
         (["m", "https://example.com"], "map"),
-        (["exa", "query"], "exa-search"),
-        (["x", "query"], "exa-search"),
-        (["xs", "https://example.com"], "exa-similar"),
-        (["z", "query"], "zhipu-search"),
-        (["zp", "query"], "zhipu-search"),
-        (["zmcp-search", "query"], "zhipu-mcp-search"),
-        (["zmcp-reader", "https://example.com"], "zhipu-mcp-reader"),
-        (["zmcp-doc", "owner/repo", "install"], "zhipu-mcp-search-doc"),
-        (["zmcp-tree", "owner/repo"], "zhipu-mcp-repo-structure"),
-        (["zmcp-file", "owner/repo", "README.md"], "zhipu-mcp-read-file"),
-        (["as-domains"], "anysearch-domains"),
-        (["as-search", "query"], "anysearch-search"),
-        (["as", "query"], "anysearch-search"),
-        (["as-extract", "https://example.com"], "anysearch-extract"),
-        (["as-batch", "a", "b"], "anysearch-batch"),
-        (["c7", "react"], "context7-library"),
-        (["ctx7", "react"], "context7-library"),
-        (["c7d", "/facebook/react", "hooks"], "context7-docs"),
-        (["c7docs", "/facebook/react", "hooks"], "context7-docs"),
-        (["ctx7-docs", "/facebook/react", "hooks"], "context7-docs"),
         (["dr", "query"], "deep"),
         (["route-cal"], "route-calibrate"),
         (["rcal"], "route-calibrate"),
@@ -352,18 +314,6 @@ def test_fetch_content_format_matches_markdown_body(monkeypatch, capsys):
     assert markdown_code == cli.EXIT_OK
     assert content_out == "# 中文页面\n"
     assert markdown_out == content_out
-
-
-def test_context7_docs_content_format_outputs_content(monkeypatch, capsys):
-    async def fake_context7_docs(library_id, query):
-        return {"ok": True, "provider": "context7-docs", "library_id": library_id, "query": query, "content": "中文文档内容"}
-
-    monkeypatch.setattr(cli.service, "context7_docs", fake_context7_docs)
-
-    code = cli.main(["context7-docs", "/facebook/react", "hooks", "--format", "content"])
-
-    assert code == cli.EXIT_OK
-    assert capsys.readouterr().out == "中文文档内容\n"
 
 
 def test_doctor_markdown_outputs_human_health_report(monkeypatch, capsys):
@@ -901,33 +851,6 @@ def test_research_markdown_and_content_output(monkeypatch, capsys):
     assert capsys.readouterr().out == "Evidence answer\n"
 
 
-def test_exa_search_passes_powershell_split_domains(monkeypatch, capsys):
-    captured = {}
-
-    async def fake_exa_search(
-        query,
-        num_results=5,
-        search_type="neural",
-        include_text=False,
-        include_highlights=False,
-        start_published_date="",
-        include_domains="",
-        exclude_domains="",
-        category="",
-    ):
-        captured["query"] = query
-        captured["include_domains"] = include_domains
-        return {"ok": True, "query": query, "results": []}
-
-    monkeypatch.setattr(cli.service, "exa_search", fake_exa_search)
-
-    code = cli.main(["exa-search", "query", "--include-domains", "github.com", "freertos.org"])
-
-    assert code == cli.EXIT_OK
-    assert captured["include_domains"] == ["github.com", "freertos.org"]
-    assert json.loads(capsys.readouterr().out)["ok"] is True
-
-
 def test_doctor_alias_uses_canonical_command(monkeypatch, capsys):
     async def fake_doctor():
         return {"ok": True, "config_status": "ok"}
@@ -1067,7 +990,7 @@ def test_stdout_falls_back_for_gbk_unencodable_unicode(monkeypatch):
     fake_stdout = GbkStdout()
     monkeypatch.setattr(cli_support.sys, "stdout", fake_stdout)
 
-    code = cli._print_result("exa-search", {"ok": True, "content": "A\u2060B"}, "json")
+    code = cli._print_result("map", {"ok": True, "content": "A\u2060B"}, "json")
 
     assert code == cli.EXIT_OK
     out = fake_stdout.getvalue()
@@ -1302,43 +1225,13 @@ def test_model_markdown_is_human_readable(monkeypatch, capsys):
     assert "grok-4-fast" in markdown_out
     assert "relay-model" in markdown_out
 
-def test_provider_markdown_outputs_result_lists(monkeypatch, capsys):
-    async def fake_exa_search(*args, **kwargs):
-        return {"ok": True, "query": "query", "provider": "exa", "results": [{"title": "Example", "url": "https://example.com", "text": "body"}]}
-
-    async def fake_exa_similar(*args, **kwargs):
-        return {"ok": True, "url": "https://source.example.com", "results": [{"title": "Similar", "url": "https://similar.example.com"}]}
-
-    async def fake_zhipu_search(*args, **kwargs):
-        return {"ok": True, "query": "news", "provider": "zhipu", "results": [{"title": "News", "url": "https://news.example.com", "description": "desc"}]}
-
-    async def fake_zhipu_mcp_search(*args, **kwargs):
-        return {"ok": True, "query": "news", "provider": "zhipu-mcp", "tool": "web_search_prime", "results": [{"title": "MCP News", "url": "https://mcp.example.com"}]}
-
-    async def fake_zhipu_mcp_reader(*args, **kwargs):
-        return {"ok": True, "url": "https://source.example.com", "provider": "zhipu-mcp-reader", "tool": "webReader", "content": "# MCP Page"}
-
-    async def fake_context7_library(*args, **kwargs):
-        return {"ok": True, "query": "react", "provider": "context7", "results": [{"id": "/facebook/react", "title": "React", "description": "docs"}]}
-
+def test_map_markdown_outputs_result_lists(monkeypatch, capsys):
     async def fake_map_site(*args, **kwargs):
         return {"ok": True, "url": "https://docs.example.com", "base_url": "https://docs.example.com", "results": ["https://docs.example.com/api"]}
 
-    monkeypatch.setattr(cli.service, "exa_search", fake_exa_search)
-    monkeypatch.setattr(cli.service, "exa_find_similar", fake_exa_similar)
-    monkeypatch.setattr(cli.service, "zhipu_search", fake_zhipu_search)
-    monkeypatch.setattr(cli.service, "zhipu_mcp_search", fake_zhipu_mcp_search)
-    monkeypatch.setattr(cli.service, "zhipu_mcp_reader", fake_zhipu_mcp_reader)
-    monkeypatch.setattr(cli.service, "context7_library", fake_context7_library)
     monkeypatch.setattr(cli.service, "map_site", fake_map_site)
 
     cases = [
-        (["exa-search", "query", "--format", "markdown"], "Example", "https://example.com"),
-        (["exa-similar", "https://source.example.com", "--format", "markdown"], "Similar", "https://similar.example.com"),
-        (["zhipu-search", "news", "--format", "markdown"], "News", "https://news.example.com"),
-        (["zhipu-mcp-search", "news", "--format", "markdown"], "MCP News", "https://mcp.example.com"),
-        (["zhipu-mcp-reader", "https://source.example.com", "--format", "markdown"], "MCP Page", "Zhipu Coding Plan MCP Reader"),
-        (["context7-library", "react", "--format", "markdown"], "React", "/facebook/react"),
         (["map", "https://docs.example.com", "--format", "markdown"], "https://docs.example.com/api", "Site Map"),
     ]
     for argv, first, second in cases:
@@ -1349,13 +1242,13 @@ def test_provider_markdown_outputs_result_lists(monkeypatch, capsys):
         assert second in out
 
 
-def test_provider_content_outputs_plain_result_list(monkeypatch, capsys):
-    async def fake_exa_search(*args, **kwargs):
-        return {"ok": True, "query": "query", "results": [{"title": "Example", "url": "https://example.com", "text": "body"}]}
+def test_map_content_outputs_plain_result_list(monkeypatch, capsys):
+    async def fake_map_site(*args, **kwargs):
+        return {"ok": True, "results": [{"title": "Example", "url": "https://example.com", "text": "body"}]}
 
-    monkeypatch.setattr(cli.service, "exa_search", fake_exa_search)
+    monkeypatch.setattr(cli.service, "map_site", fake_map_site)
 
-    code = cli.main(["exa-search", "query", "--format", "content"])
+    code = cli.main(["map", "https://example.com", "--format", "content"])
 
     out = capsys.readouterr().out
     assert code == cli.EXIT_OK
@@ -1363,13 +1256,13 @@ def test_provider_content_outputs_plain_result_list(monkeypatch, capsys):
     assert not out.lstrip().startswith("{")
 
 
-def test_provider_markdown_empty_results_are_clear(monkeypatch, capsys):
-    async def fake_exa_search(*args, **kwargs):
-        return {"ok": True, "query": "query", "results": []}
+def test_map_markdown_empty_results_are_clear(monkeypatch, capsys):
+    async def fake_map_site(*args, **kwargs):
+        return {"ok": True, "results": []}
 
-    monkeypatch.setattr(cli.service, "exa_search", fake_exa_search)
+    monkeypatch.setattr(cli.service, "map_site", fake_map_site)
 
-    code = cli.main(["exa-search", "query", "--format", "markdown"])
+    code = cli.main(["map", "https://example.com", "--format", "markdown"])
 
     out = capsys.readouterr().out
     assert code == cli.EXIT_OK
@@ -1385,24 +1278,6 @@ def test_all_formatted_commands_have_non_json_markdown(monkeypatch):
 
     async def fake_map(*args, **kwargs):
         return {"ok": True, "results": ["https://example.com/api"]}
-
-    async def fake_exa(*args, **kwargs):
-        return {"ok": True, "results": [{"title": "Example", "url": "https://example.com"}]}
-
-    async def fake_zhipu(*args, **kwargs):
-        return {"ok": True, "results": [{"title": "News", "url": "https://news.example.com"}]}
-
-    async def fake_zhipu_mcp(*args, **kwargs):
-        return {"ok": True, "provider": "zhipu-mcp", "tool": "web_search_prime", "results": [{"title": "MCP", "url": "https://mcp.example.com"}]}
-
-    async def fake_zhipu_mcp_reader(*args, **kwargs):
-        return {"ok": True, "provider": "zhipu-mcp-reader", "tool": "webReader", "content": "MCP Page"}
-
-    async def fake_c7_library(*args, **kwargs):
-        return {"ok": True, "results": [{"id": "/lib", "title": "Library"}]}
-
-    async def fake_c7_docs(*args, **kwargs):
-        return {"ok": True, "library_id": "/lib", "query": "hooks", "content": "Docs"}
 
     async def fake_doctor():
         return {"ok": True, "config_status": "ok", "minimum_profile_ok": True}
@@ -1437,16 +1312,6 @@ def test_all_formatted_commands_have_non_json_markdown(monkeypatch):
     monkeypatch.setattr(cli.service, "search", fake_search)
     monkeypatch.setattr(cli.service, "fetch", fake_fetch)
     monkeypatch.setattr(cli.service, "map_site", fake_map)
-    monkeypatch.setattr(cli.service, "exa_search", fake_exa)
-    monkeypatch.setattr(cli.service, "exa_find_similar", fake_exa)
-    monkeypatch.setattr(cli.service, "zhipu_search", fake_zhipu)
-    monkeypatch.setattr(cli.service, "zhipu_mcp_search", fake_zhipu_mcp)
-    monkeypatch.setattr(cli.service, "zhipu_mcp_reader", fake_zhipu_mcp_reader)
-    monkeypatch.setattr(cli.service, "zhipu_mcp_search_doc", fake_zhipu_mcp)
-    monkeypatch.setattr(cli.service, "zhipu_mcp_repo_structure", fake_zhipu_mcp)
-    monkeypatch.setattr(cli.service, "zhipu_mcp_read_file", fake_zhipu_mcp)
-    monkeypatch.setattr(cli.service, "context7_library", fake_c7_library)
-    monkeypatch.setattr(cli.service, "context7_docs", fake_c7_docs)
     monkeypatch.setattr(cli.service, "doctor", fake_doctor)
     monkeypatch.setattr(cli.service, "smoke", fake_smoke)
     monkeypatch.setattr(cli.service, "research", fake_research)
@@ -1462,16 +1327,6 @@ def test_all_formatted_commands_have_non_json_markdown(monkeypatch):
         ("search", ["search", "query", "--format", "markdown"]),
         ("fetch", ["fetch", "https://example.com", "--format", "markdown"]),
         ("map", ["map", "https://example.com", "--format", "markdown"]),
-        ("exa-search", ["exa-search", "query", "--format", "markdown"]),
-        ("exa-similar", ["exa-similar", "https://example.com", "--format", "markdown"]),
-        ("zhipu-search", ["zhipu-search", "query", "--format", "markdown"]),
-        ("zhipu-mcp-search", ["zhipu-mcp-search", "query", "--format", "markdown"]),
-        ("zhipu-mcp-reader", ["zhipu-mcp-reader", "https://example.com", "--format", "markdown"]),
-        ("zhipu-mcp-search-doc", ["zhipu-mcp-search-doc", "owner/repo", "install", "--format", "markdown"]),
-        ("zhipu-mcp-repo-structure", ["zhipu-mcp-repo-structure", "owner/repo", "--format", "markdown"]),
-        ("zhipu-mcp-read-file", ["zhipu-mcp-read-file", "owner/repo", "README.md", "--format", "markdown"]),
-        ("context7-library", ["context7-library", "react", "--format", "markdown"]),
-        ("context7-docs", ["context7-docs", "/lib", "hooks", "--format", "markdown"]),
         ("deep", ["deep", "query", "--format", "markdown"]),
         ("route-calibrate", ["route-calibrate", "--format", "markdown"]),
         ("research", ["research", "query", "--format", "markdown"]),
@@ -1492,16 +1347,6 @@ def test_all_formatted_commands_have_non_json_markdown(monkeypatch):
             "search": {"ok": True, "content": "Answer", "sources": []},
             "fetch": {"ok": True, "content": "Page"},
             "map": {"ok": True, "results": ["https://example.com/api"]},
-            "exa-search": {"ok": True, "results": [{"title": "Example", "url": "https://example.com"}]},
-            "exa-similar": {"ok": True, "results": [{"title": "Example", "url": "https://example.com"}]},
-            "zhipu-search": {"ok": True, "results": [{"title": "News", "url": "https://news.example.com"}]},
-            "zhipu-mcp-search": {"ok": True, "provider": "zhipu-mcp", "tool": "web_search_prime", "results": [{"title": "MCP", "url": "https://mcp.example.com"}]},
-            "zhipu-mcp-reader": {"ok": True, "provider": "zhipu-mcp-reader", "tool": "webReader", "content": "MCP Page"},
-            "zhipu-mcp-search-doc": {"ok": True, "provider": "zhipu-mcp-zread", "tool": "search_doc", "results": [{"title": "Doc", "url": "https://docs.example.com"}]},
-            "zhipu-mcp-repo-structure": {"ok": True, "provider": "zhipu-mcp-zread", "tool": "get_repo_structure", "content": "tree"},
-            "zhipu-mcp-read-file": {"ok": True, "provider": "zhipu-mcp-zread", "tool": "read_file", "content": "file"},
-            "context7-library": {"ok": True, "results": [{"id": "/lib", "title": "Library"}]},
-            "context7-docs": {"ok": True, "library_id": "/lib", "query": "hooks", "content": "Docs"},
             "deep": {"ok": True, "mode": "deep_research", "question": "q", "difficulty": "standard", "evidence_policy": "fetch_before_claim"},
             "route-calibrate": {"ok": True, "primary_metric": "semantic_macro_f1", "dataset_size": 100, "model_results": [], "recommended_model": ""},
             "research": {"ok": True, "question": "q", "content": "Research", "final_answer": "Research", "citations": [], "gap_check": {"gaps": []}},
@@ -1525,8 +1370,6 @@ def test_non_content_commands_have_non_empty_content_fallback():
         "config": {"ok": True, "config_file": "C:/tmp/config.json"},
         "model": {"ok": True, "xai_model": "grok"},
         "skills": {"ok": True, "targets": [{"target": "codex", "status": "up_to_date"}], "status_counts": {"up_to_date": 1}},
-        "exa-search": {"ok": True, "results": [{"title": "Example", "url": "https://example.com"}]},
-        "anysearch-search": {"ok": True, "provider": "anysearch", "results": [{"title": "AnySearch", "url": ""}]},
         "route-calibrate": {"ok": True, "primary_metric": "semantic_macro_f1", "dataset_size": 100, "model_results": [], "recommended_model": ""},
     }
     for command, data in cases.items():
@@ -2731,154 +2574,16 @@ def test_smoke_command_uses_service(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["mode"] == "mock"
 
 
-def test_anysearch_commands_use_service_wrappers(monkeypatch, capsys):
-    calls = []
-
-    async def fake_domains(domain=""):
-        calls.append(("domains", domain))
-        return {"ok": True, "provider": "anysearch", "tool": "list_domains", "results": []}
-
-    async def fake_search(query, domain="", sub_domain="", max_results=5):
-        calls.append(("search", query, domain, sub_domain, max_results))
-        return {"ok": True, "provider": "anysearch", "tool": "search", "query": query, "results": []}
-
-    async def fake_extract(url, max_length=20000):
-        calls.append(("extract", url, max_length))
-        return {"ok": True, "provider": "anysearch", "tool": "extract", "url": url, "content": "# Page"}
-
-    async def fake_batch(queries, max_results=3):
-        calls.append(("batch", queries, max_results))
-        return {"ok": True, "provider": "anysearch", "tool": "batch_search", "results": []}
-
-    monkeypatch.setattr(cli.service, "anysearch_domains", fake_domains)
-    monkeypatch.setattr(cli.service, "anysearch_search", fake_search)
-    monkeypatch.setattr(cli.service, "anysearch_extract", fake_extract)
-    monkeypatch.setattr(cli.service, "anysearch_batch", fake_batch)
-
-    assert cli.main(["anysearch-domains", "security"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["tool"] == "list_domains"
-    assert cli.main(["as", "CVE-2024-3094", "--domain", "security.cve", "--sub-domain", "xz", "--max-results", "2"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["query"] == "CVE-2024-3094"
-    assert cli.main(["as-extract", "https://example.com", "--max-length", "123"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["url"] == "https://example.com"
-    assert cli.main(["as-batch", "a", "b", "--max-results", "1"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["tool"] == "batch_search"
-
-    assert calls == [
-        ("domains", "security"),
-        ("search", "CVE-2024-3094", "security.cve", "xz", 2),
-        ("extract", "https://example.com", 123),
-        ("batch", ["a", "b"], 1),
-    ]
-
-
-def test_zhipu_mcp_commands_use_service_wrappers(monkeypatch, capsys):
-    calls = []
-
-    async def fake_search(query, count=5):
-        calls.append(("search", query, count))
-        return {"ok": True, "provider": "zhipu-mcp", "tool": "web_search_prime", "results": []}
-
-    async def fake_reader(url):
-        calls.append(("reader", url))
-        return {"ok": True, "provider": "zhipu-mcp-reader", "tool": "webReader", "content": "# Page"}
-
-    async def fake_search_doc(repo, query, max_results=5):
-        calls.append(("search_doc", repo, query, max_results))
-        return {"ok": True, "provider": "zhipu-mcp-zread", "tool": "search_doc", "results": []}
-
-    async def fake_repo_structure(repo, ref=""):
-        calls.append(("repo_structure", repo, ref))
-        return {"ok": True, "provider": "zhipu-mcp-zread", "tool": "get_repo_structure", "content": "tree"}
-
-    async def fake_read_file(repo, path, ref=""):
-        calls.append(("read_file", repo, path, ref))
-        return {"ok": True, "provider": "zhipu-mcp-zread", "tool": "read_file", "content": "file"}
-
-    monkeypatch.setattr(cli.service, "zhipu_mcp_search", fake_search)
-    monkeypatch.setattr(cli.service, "zhipu_mcp_reader", fake_reader)
-    monkeypatch.setattr(cli.service, "zhipu_mcp_search_doc", fake_search_doc)
-    monkeypatch.setattr(cli.service, "zhipu_mcp_repo_structure", fake_repo_structure)
-    monkeypatch.setattr(cli.service, "zhipu_mcp_read_file", fake_read_file)
-
-    assert cli.main(["zhipu-mcp-search", "news", "--count", "2"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["tool"] == "web_search_prime"
-    assert cli.main(["zmcp-reader", "https://example.com"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["tool"] == "webReader"
-    assert cli.main(["zmcp-doc", "owner/repo", "install", "--max-results", "3"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["tool"] == "search_doc"
-    assert cli.main(["zmcp-tree", "owner/repo", "--ref", "main"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["tool"] == "get_repo_structure"
-    assert cli.main(["zmcp-file", "owner/repo", "README.md", "--ref", "main"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["tool"] == "read_file"
-
-    assert calls == [
-        ("search", "news", 2),
-        ("reader", "https://example.com"),
-        ("search_doc", "owner/repo", "install", 3),
-        ("repo_structure", "owner/repo", "main"),
-        ("read_file", "owner/repo", "README.md", "main"),
-    ]
-
-
 def test_provider_and_smoke_aliases_use_canonical_commands(monkeypatch, capsys):
-    async def fake_exa_search(*args, **kwargs):
-        return {"ok": True, "provider": "exa"}
-
-    async def fake_zhipu_search(*args, **kwargs):
-        return {"ok": True, "provider": "zhipu"}
-
-    async def fake_context7_library(*args, **kwargs):
-        return {"ok": True, "provider": "context7-library"}
-
-    async def fake_context7_docs(*args, **kwargs):
-        return {"ok": True, "provider": "context7-docs"}
-
-    async def fake_anysearch_domains(*args, **kwargs):
-        return {"ok": True, "provider": "anysearch", "tool": "list_domains"}
-
-    async def fake_anysearch_search(*args, **kwargs):
-        return {"ok": True, "provider": "anysearch", "tool": "search"}
-
-    async def fake_anysearch_extract(*args, **kwargs):
-        return {"ok": True, "provider": "anysearch", "tool": "extract"}
-
-    async def fake_anysearch_batch(*args, **kwargs):
-        return {"ok": True, "provider": "anysearch", "tool": "batch_search"}
-
     async def fake_smoke(mode="mock"):
         return {"ok": True, "mode": mode, "failed_cases": [], "cases": []}
 
     async def fake_research(*args, **kwargs):
         return {"ok": True, "query_mode": "research", "content": "Research"}
 
-    monkeypatch.setattr(cli.service, "exa_search", fake_exa_search)
-    monkeypatch.setattr(cli.service, "zhipu_search", fake_zhipu_search)
-    monkeypatch.setattr(cli.service, "context7_library", fake_context7_library)
-    monkeypatch.setattr(cli.service, "context7_docs", fake_context7_docs)
-    monkeypatch.setattr(cli.service, "anysearch_domains", fake_anysearch_domains)
-    monkeypatch.setattr(cli.service, "anysearch_search", fake_anysearch_search)
-    monkeypatch.setattr(cli.service, "anysearch_extract", fake_anysearch_extract)
-    monkeypatch.setattr(cli.service, "anysearch_batch", fake_anysearch_batch)
     monkeypatch.setattr(cli.service, "smoke", fake_smoke)
     monkeypatch.setattr(cli.service, "research", fake_research)
 
-    assert cli.main(["exa", "query"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["provider"] == "exa"
-    assert cli.main(["z", "query"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["provider"] == "zhipu"
-    assert cli.main(["as-domains"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["tool"] == "list_domains"
-    assert cli.main(["as-search", "query"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["tool"] == "search"
-    assert cli.main(["as-extract", "https://example.com"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["tool"] == "extract"
-    assert cli.main(["as-batch", "a", "b"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["tool"] == "batch_search"
-    assert cli.main(["c7", "react"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["provider"] == "context7-library"
-    assert cli.main(["c7docs", "/facebook/react", "hooks"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["provider"] == "context7-docs"
     assert cli.main(["rs", "query"]) == cli.EXIT_OK
     assert json.loads(capsys.readouterr().out)["query_mode"] == "research"
     assert cli.main(["sm"]) == cli.EXIT_OK

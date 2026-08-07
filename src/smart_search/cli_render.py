@@ -812,19 +812,6 @@ def _format_markdown(command: str, data: dict[str, Any]) -> str:
         return "\n".join(lines).strip() + "\n"
     if command == "fetch":
         return (data.get("content") or "") + ("\n" if data.get("content") else "")
-    if command == "context7-docs":
-        content = data.get("content") or ""
-        lines = [
-            "# Context7 Docs",
-            "",
-            f"Status: {_status_label(data.get('ok'))}",
-            f"Library: `{data.get('library_id', '')}`",
-            f"Query: `{data.get('query', '')}`",
-        ]
-        if content:
-            lines.extend(["", content])
-        lines.extend(_error_lines(data))
-        return "\n".join(lines).strip() + "\n"
     if command == "deep":
         lines = [
             "# Deep Research Plan",
@@ -951,19 +938,6 @@ def _format_markdown(command: str, data: dict[str, Any]) -> str:
         return _format_skills_markdown(data)
     titles = {
         "map": "Site Map",
-        "exa-search": "Exa Search",
-        "exa-similar": "Exa Similar Pages",
-        "zhipu-search": "Zhipu Search",
-        "zhipu-mcp-search": "Zhipu Coding Plan MCP Search",
-        "zhipu-mcp-reader": "Zhipu Coding Plan MCP Reader",
-        "zhipu-mcp-search-doc": "Zhipu Coding Plan MCP Search Doc",
-        "zhipu-mcp-repo-structure": "Zhipu Coding Plan MCP Repo Structure",
-        "zhipu-mcp-read-file": "Zhipu Coding Plan MCP Read File",
-        "anysearch-domains": "AnySearch Domains",
-        "anysearch-search": "AnySearch Search",
-        "anysearch-extract": "AnySearch Extract",
-        "anysearch-batch": "AnySearch Batch",
-        "context7-library": "Context7 Library Search",
     }
     if command in titles:
         return _format_result_markdown(command, data, titles[command])
@@ -1002,7 +976,7 @@ def _plain_result_lines(data: dict[str, Any]) -> list[str]:
 
 
 def _format_content(command: str, data: dict[str, Any]) -> str:
-    if command in {"search", "fetch", "context7-docs", "research", "research-run"}:
+    if command in {"search", "fetch", "research", "research-run"}:
         content = data.get("content")
         if content:
             return str(content) + "\n"
@@ -1162,19 +1136,6 @@ def _format_content(command: str, data: dict[str, Any]) -> str:
         return f"Skills {_status_label(data.get('ok'))}: {len(targets)} targets\n"
     if command in {
         "map",
-        "exa-search",
-        "exa-similar",
-        "zhipu-search",
-        "zhipu-mcp-search",
-        "zhipu-mcp-reader",
-        "zhipu-mcp-search-doc",
-        "zhipu-mcp-repo-structure",
-        "zhipu-mcp-read-file",
-        "anysearch-domains",
-        "anysearch-search",
-        "anysearch-extract",
-        "anysearch-batch",
-        "context7-library",
     }:
         lines = _plain_result_lines(data)
         if data.get("error"):

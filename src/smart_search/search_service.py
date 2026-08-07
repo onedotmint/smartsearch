@@ -34,7 +34,6 @@ from .provider_search_commands import (
     exa_search,
     zhipu_search,
 )
-from .provider_vertical_commands import anysearch_search
 from .providers.base import classify_provider_exception, coerce_provider_result
 from .providers.openai_compatible import OpenAICompatibleSearchProvider
 from .providers.xai_responses import XAIResponsesSearchProvider

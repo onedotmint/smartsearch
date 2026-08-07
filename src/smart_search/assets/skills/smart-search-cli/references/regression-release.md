@@ -21,7 +21,7 @@ Run `smart-search regression` before considering CLI or skill changes complete.
 
 - Deep Research smoke coverage is mock-full plus live-limited.
 - Mock-full coverage should cover trigger phrases, normal search requests that should not trigger Deep Research, required `research_plan` fields, allowed tool whitelist, `fetch_before_claim`, evidence paths, capability boundaries, `intent_signals`, `capability_plan`, `gap_check`, simple current prompts such as `深度搜索一下最近的比特币行情`, docs/API prompts, claim-verification prompts, user-provided URL fetch-first flows, missing-provider failure guidance, research provider advantage routing, same-capability research fallback, and the rule that fixed topic recipe ids are not required schema.
-- Live-limited coverage should run `doctor`, one broad `search`, one `exa-search`, and one `fetch` when real keys are available and live checks are expected; add one small `research` smoke when configured keys make it stable.
+- Live-limited coverage should run `doctor`, one broad `search`, and one `fetch` when real keys are available and live checks are expected; add one small `research` smoke when configured keys make it stable.
 - If a smoke issue is found, fix the affected docs/code/tests and rerun the affected smoke until it passes or is proven to be an external provider blocker.
 
 ## Release Lanes

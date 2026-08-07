@@ -512,12 +512,8 @@ def _attribute_uses(subtree: ast.AST, var: str, attr: str) -> list[ast.Attribute
 
 
 def _target_consumer_functions(tree: ast.AST) -> list[ast.FunctionDef]:
-    """Return the three direct research executor consumer function definitions."""
-    names = {
-        "_run_research_context7_docs",
-        "_run_research_exa_docs",
-        "_run_research_vertical_search",
-    }
+    """Return the generic typed-Evidence docs discovery consumer definition."""
+    names = {"_run_research_docs_discovery"}
     return [
         node
         for node in tree.body
@@ -543,61 +539,46 @@ def _link_parents(tree: ast.AST) -> None:
 
 
 
-def test_research_direct_executor_attempts_project_through_legacy_boundary():
-    """Every direct executor handoff in research_service must project typed
-    attempts to dicts via the single project_attempts_dict boundary; raw
-    typed tuples must never leak into legacy stage/attempt collections.
+def test_research_docs_discovery_projects_typed_attempts_through_legacy_boundary():
+    """The live research docs stage must compose the typed Evidence owner and
+    project typed attempts to dicts via the single project_attempts_dict
+    boundary; raw typed tuples must never leak into legacy collections, and
+    the removed Context7/Exa/AnySearch provider-specific research callbacks
+    must not exist.
     """
     source = RESEARCH_SERVICE_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
     _link_parents(tree)
 
-    # The legacy projection helper must be imported into research_service.
+    # The legacy projection helper and the typed Evidence owner must be used.
     assert "project_attempts_dict" in source, "research_service must import project_attempts_dict"
+    assert "docs_discovery" in source, "research_service must compose the typed docs_discovery owner"
 
-    # Narrow the check to the three direct consumer function bodies so a future
-    # function that reuses an ``execution`` variable name cannot cause a false
-    # positive. ``_run_research_context7_docs`` binds two executor results
-    # (library_execution and docs_execution); the other two each bind one.
     consumers = _target_consumer_functions(tree)
-    assert len(consumers) == 3, (
-        f"expected exactly three direct executor consumers, got {len(consumers)}"
+    assert len(consumers) == 1, (
+        f"expected exactly one typed docs_discovery consumer, got {len(consumers)}"
     )
 
     for fn in consumers:
-        executor_vars = _executor_var_names(fn)
-        assert executor_vars, f"expected at least one execute_capability(...) binding in {fn.name}"
+        # The typed owner outcome is bound and its attempts projected.
+        assert "project_attempts_dict" in ast.unparse(fn), (
+            f"{fn.name} must project typed attempts via project_attempts_dict"
+        )
+        outcome_uses = _attribute_uses(fn, "outcome", "attempts")
+        assert outcome_uses, f"no .attempts access on the typed outcome in {fn.name}"
+        for use in outcome_uses:
+            assert _is_inside_project_attempts_call(use), (
+                f"outcome.attempts must be projected via project_attempts_dict(...) "
+                f"before entering a legacy collection in {fn.name} (line {use.lineno})"
+            )
+        assert not _executor_var_names(fn), (
+            f"{fn.name} must not bind a direct execute_capability(...) executor result"
+        )
 
-        for var in executor_vars:
-            attempts_uses = _attribute_uses(fn, var, "attempts")
-            assert attempts_uses, f"no .attempts access on {var!r} in {fn.name}"
-            for use in attempts_uses:
-                assert _is_inside_project_attempts_call(use), (
-                    f"{var}.attempts must be projected via project_attempts_dict(...) "
-                    f"before entering a legacy collection in {fn.name} (line {use.lineno})"
-                )
-
-        # No direct conversion via list(...) of a raw executor attempt value.
-        for node in ast.walk(fn):
-            if not isinstance(node, ast.Call):
-                continue
-            if isinstance(node.func, ast.Name) and node.func.id == "list":
-                for arg in node.args:
-                    if (
-                        isinstance(arg, ast.Attribute)
-                        and arg.attr == "attempts"
-                        and isinstance(arg.value, ast.Name)
-                        and arg.value.id in executor_vars
-                    ):
-                        raise AssertionError(
-                            f"list({arg.value.id}.attempts) bypasses project_attempts_dict "
-                            f"in {fn.name} (line {arg.lineno})"
-                        )
-
-    # The direct executor consumers must each remain present.
+    # The removed provider-specific research callbacks are gone entirely.
     for fn in (
         "_run_research_context7_docs",
         "_run_research_exa_docs",
         "_run_research_vertical_search",
     ):
-        assert fn in source, f"expected executor consumer {fn!r} to remain present"
+        assert fn not in source, f"removed research callback {fn!r} must not remain"

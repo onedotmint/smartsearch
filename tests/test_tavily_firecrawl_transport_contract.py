@@ -62,7 +62,7 @@ async def test_tavily_search_http_errors_remain_classified(monkeypatch, status_c
     _install_request_client(monkeypatch, provider_search_commands, client)
 
     with pytest.raises(ProviderError) as exc:
-        await service.call_tavily_search("query")
+        await provider_search_commands.call_tavily_search("query")
 
     assert exc.value.error_type == expected_error_type
     assert exc.value.provider == "tavily"
@@ -79,7 +79,7 @@ async def test_tavily_search_timeout_and_schema_errors_are_not_empty_success(mon
     )
     _install_request_client(monkeypatch, provider_search_commands, timeout_client)
     with pytest.raises(ProviderError) as timeout_exc:
-        await service.call_tavily_search("query")
+        await provider_search_commands.call_tavily_search("query")
     assert timeout_exc.value.error_type == "timeout"
     assert timeout_exc.value.capability == "web_search"
 
@@ -92,7 +92,7 @@ async def test_tavily_search_timeout_and_schema_errors_are_not_empty_success(mon
     )
     _install_request_client(monkeypatch, provider_search_commands, schema_client)
     with pytest.raises(ProviderError) as schema_exc:
-        await service.call_tavily_search("query")
+        await provider_search_commands.call_tavily_search("query")
     assert schema_exc.value.error_type == "parse_error"
     # ValueError path is classified; never silently returns []/None as success without classification.
     assert schema_exc.value.provider == "tavily"
@@ -110,7 +110,7 @@ async def test_tavily_search_empty_results_return_none_not_fake_success_payload(
     )
     _install_request_client(monkeypatch, provider_search_commands, client)
 
-    result = await service.call_tavily_search("query")
+    result = await provider_search_commands.call_tavily_search("query")
     # Empty discovery is None (empty), not an ok payload with zero rows.
     assert result is None
 
@@ -124,14 +124,14 @@ async def test_tavily_extract_transport_http_and_schema_errors_raise(monkeypatch
     )
     _install_request_client(monkeypatch, provider_fetch_commands, transport_client)
     with pytest.raises(ProviderError) as transport_exc:
-        await service.call_tavily_extract("https://example.com")
+        await provider_fetch_commands.call_tavily_extract("https://example.com")
     assert transport_exc.value.error_type == "network_error"
     assert transport_exc.value.capability == "web_fetch"
 
     http_client = _FakeResponseClient(exception=_http_error(401, "https://api.tavily.com/extract"))
     _install_request_client(monkeypatch, provider_fetch_commands, http_client)
     with pytest.raises(ProviderError) as http_exc:
-        await service.call_tavily_extract("https://example.com")
+        await provider_fetch_commands.call_tavily_extract("https://example.com")
     assert http_exc.value.error_type == "auth_error"
 
     schema_client = _FakeResponseClient(
@@ -143,7 +143,7 @@ async def test_tavily_extract_transport_http_and_schema_errors_raise(monkeypatch
     )
     _install_request_client(monkeypatch, provider_fetch_commands, schema_client)
     with pytest.raises(ProviderError) as schema_exc:
-        await service.call_tavily_extract("https://example.com")
+        await provider_fetch_commands.call_tavily_extract("https://example.com")
     assert schema_exc.value.error_type == "parse_error"
     assert schema_exc.value.provider == "tavily"
 
@@ -160,7 +160,7 @@ async def test_tavily_extract_empty_body_is_none_not_success_string(monkeypatch)
     )
     _install_request_client(monkeypatch, provider_fetch_commands, client)
 
-    result = await service.call_tavily_extract("https://example.com")
+    result = await provider_fetch_commands.call_tavily_extract("https://example.com")
     assert result is None
 
 
@@ -193,13 +193,13 @@ async def test_tavily_map_http_timeout_schema_and_empty_classification(monkeypat
     FakeAsyncClient.exception = _http_error(503, "https://api.tavily.com/map")
     FakeAsyncClient.response = None
     FakeAsyncClient.calls = []
-    http_result = await service.call_tavily_map("https://example.com")
+    http_result = await provider_fetch_commands.call_tavily_map("https://example.com")
     assert http_result["ok"] is False
     assert http_result["error_type"] == "network_error"
     assert "results" not in http_result or http_result.get("results") in (None, [])
 
     FakeAsyncClient.exception = httpx.TimeoutException("slow")
-    timeout_result = await service.call_tavily_map("https://example.com")
+    timeout_result = await provider_fetch_commands.call_tavily_map("https://example.com")
     assert timeout_result["ok"] is False
     assert timeout_result["error_type"] == "timeout"
 
@@ -209,7 +209,7 @@ async def test_tavily_map_http_timeout_schema_and_empty_classification(monkeypat
         json={"results": "nope"},
         request=httpx.Request("POST", "https://api.tavily.com/map"),
     )
-    schema_result = await service.call_tavily_map("https://example.com")
+    schema_result = await provider_fetch_commands.call_tavily_map("https://example.com")
     assert schema_result["ok"] is False
     assert schema_result["error_type"] == "parse_error"
 
@@ -218,7 +218,7 @@ async def test_tavily_map_http_timeout_schema_and_empty_classification(monkeypat
         json={"base_url": "https://example.com", "results": [], "response_time": 0.1},
         request=httpx.Request("POST", "https://api.tavily.com/map"),
     )
-    empty_result = await service.call_tavily_map("https://example.com")
+    empty_result = await provider_fetch_commands.call_tavily_map("https://example.com")
     assert empty_result["ok"] is False
     assert empty_result["error_type"] == "empty"
     assert empty_result["results"] == []
@@ -240,7 +240,7 @@ async def test_firecrawl_search_http_errors_remain_classified(monkeypatch, statu
     _install_request_client(monkeypatch, provider_search_commands, client)
 
     with pytest.raises(ProviderError) as exc:
-        await service.call_firecrawl_search("query")
+        await provider_search_commands.call_firecrawl_search("query")
 
     assert exc.value.error_type == expected_error_type
     assert exc.value.provider == "firecrawl"
@@ -256,7 +256,7 @@ async def test_firecrawl_search_timeout_schema_and_empty_classification(monkeypa
     )
     _install_request_client(monkeypatch, provider_search_commands, timeout_client)
     with pytest.raises(ProviderError) as timeout_exc:
-        await service.call_firecrawl_search("query")
+        await provider_search_commands.call_firecrawl_search("query")
     assert timeout_exc.value.error_type == "timeout"
 
     schema_client = _FakeResponseClient(
@@ -268,7 +268,7 @@ async def test_firecrawl_search_timeout_schema_and_empty_classification(monkeypa
     )
     _install_request_client(monkeypatch, provider_search_commands, schema_client)
     with pytest.raises(ProviderError) as schema_exc:
-        await service.call_firecrawl_search("query")
+        await provider_search_commands.call_firecrawl_search("query")
     assert schema_exc.value.error_type == "parse_error"
     assert schema_exc.value.provider == "firecrawl"
 
@@ -280,7 +280,7 @@ async def test_firecrawl_search_timeout_schema_and_empty_classification(monkeypa
         )
     )
     _install_request_client(monkeypatch, provider_search_commands, empty_client)
-    empty = await service.call_firecrawl_search("query")
+    empty = await provider_search_commands.call_firecrawl_search("query")
     assert empty is None
 
 
@@ -292,7 +292,7 @@ async def test_firecrawl_scrape_non_retryable_and_schema_errors_are_classified(m
     auth_client = _FakeResponseClient(exception=_http_error(401, "https://api.firecrawl.dev/v2/scrape"))
     _install_request_client(monkeypatch, provider_fetch_commands, auth_client)
     with pytest.raises(ProviderError) as auth_exc:
-        await service.call_firecrawl_scrape("https://example.com")
+        await provider_fetch_commands.call_firecrawl_scrape("https://example.com")
     assert auth_exc.value.error_type == "auth_error"
     assert auth_exc.value.capability == "web_fetch"
 
@@ -305,7 +305,7 @@ async def test_firecrawl_scrape_non_retryable_and_schema_errors_are_classified(m
     )
     _install_request_client(monkeypatch, provider_fetch_commands, schema_client)
     with pytest.raises(ProviderError) as schema_exc:
-        await service.call_firecrawl_scrape("https://example.com")
+        await provider_fetch_commands.call_firecrawl_scrape("https://example.com")
     assert schema_exc.value.error_type == "parse_error"
     assert schema_exc.value.provider == "firecrawl"
 
@@ -323,7 +323,7 @@ async def test_firecrawl_scrape_empty_markdown_is_none_not_success(monkeypatch):
     )
     _install_request_client(monkeypatch, provider_fetch_commands, client)
 
-    result = await service.call_firecrawl_scrape("https://example.com")
+    result = await provider_fetch_commands.call_firecrawl_scrape("https://example.com")
     assert result is None
 
 

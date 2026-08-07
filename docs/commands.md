@@ -91,7 +91,7 @@ V1 remains the default compatibility renderer and v2 remains the evidence-first 
 
 ## Command discovery
 
-Root `smart-search --help` intentionally advertises only `search`, `fetch`, `capabilities`, and `setup`. `map` is Advanced; provider, developer, experimental, and legacy-compatible entries remain callable but are not root-help commands. Run `smart-search --help-all` for the deterministic complete command inventory.
+Root `smart-search --help` intentionally advertises only `search`, `fetch`, `capabilities`, and `setup`. `map` is Advanced; provider, developer, and legacy-compatible entries remain callable but are not root-help commands. Run `smart-search --help-all` for the deterministic complete command inventory.
 
 ## Core commands
 
@@ -169,11 +169,7 @@ Namespace leaves preserve the existing v1 renderer, JSON envelope, redaction, fi
 | `provider list` / `provider status` | Local provider catalog | Local only; no provider client or probe |
 | `provider probe PROVIDER` | `provider-probe` | One explicit provider/family probe; no fallback |
 | `provider routes current\|list\|add\|remove` | `model` | Local config |
-| `provider exa search\|similar` | `exa-search` / `exa-similar` | Exact Exa operation |
-| `provider context7 library\|docs` | Context7 commands | Exact Context7 operation |
-| `provider zhipu search` / `provider zhipu-mcp search\|reader` | Zhipu direct commands | Exact provider operation |
 | `dev route-explain`, `dev route-calibrate`, `dev diagnose openai-compatible`, `dev smoke`, `dev regression`, `dev skills status\|update` | Matching legacy command | Diagnostic, local, or explicit network behavior |
-| `experimental anysearch ...` / `experimental zread ...` | Matching explicit provider command | Experimental exact-provider operation |
 
 Examples:
 
@@ -186,9 +182,7 @@ smart-search provider list --format json
 smart-search provider status --format json
 smart-search provider probe exa --format json
 smart-search provider routes current --format json
-smart-search provider exa search "OpenAI Responses API documentation" --num-results 5 --format json
 smart-search dev route-explain "React useEffect docs" --router-mode rules --format json
-smart-search experimental anysearch search "CVE-2024-3094" --domain security.cve --format json
 ```
 
 `doctor status` reports local configuration and evidence-path readiness (`local_only=true`). Bare `doctor` and `doctor probe` remain the live aggregate diagnostic. `provider probe PROVIDER` validates the id against the runtime registry, checks local eligibility first, and then runs only that provider's smallest supported connection operation.
@@ -235,38 +229,9 @@ Supported providers are `openai-compatible` and `xai-responses`. xAI routes may 
 
 On the first local `model add`, saved legacy `XAI_*` and `OPENAI_COMPATIBLE_*` main-search settings are retained as `legacy-xai-responses` and `legacy-openai-compatible` routes before the new route. This migration never copies environment-controlled legacy settings into the local file. When a legacy provider is controlled by the environment, define the complete `SMART_SEARCH_MODEL_ROUTES` array in the environment instead.
 
-## Provider-specific commands
+## Provider capability routing
 
-These commands are explicit tools for focused discovery or extraction. They are not interchangeable fallback providers.
-
-| Command | Alias | Purpose |
-| --- | --- | --- |
-| `exa-search` | `exa`, `x` | Exa source-first search |
-| `exa-similar` | `xs` | Find pages similar to a URL with Exa |
-| `zhipu-search` | `z`, `zp` | Zhipu Web Search API |
-| `zhipu-mcp-search` | `zmcp-search` | Zhipu Coding Plan MCP `web_search_prime` |
-| `zhipu-mcp-reader` | `zmcp-reader` | Zhipu Coding Plan MCP `webReader` |
-| `zhipu-mcp-search-doc` | `zmcp-doc` | Search repository docs through zread MCP |
-| `zhipu-mcp-repo-structure` | `zmcp-tree` | Read repository structure through zread MCP |
-| `zhipu-mcp-read-file` | `zmcp-file` | Read one repository file through zread MCP |
-| `context7-library` | `c7`, `ctx7` | Resolve Context7 library candidates |
-| `context7-docs` | `c7d`, `c7docs`, `ctx7-docs` | Fetch Context7 docs |
-| `anysearch-domains` | `as-domains` | List experimental AnySearch domains |
-| `anysearch-search` | `as-search`, `as` | Experimental vertical or general search |
-| `anysearch-extract` | `as-extract` | Extract a URL through AnySearch |
-| `anysearch-batch` | `as-batch` | Run up to five AnySearch queries in parallel |
-
-Examples:
-
-```sh
-smart-search exa-search "OpenAI Responses API documentation" --include-domains platform.openai.com developers.openai.com --num-results 5 --include-text --format json
-smart-search exa-similar "https://example.com/source" --num-results 5 --format json
-smart-search zhipu-search "today China AI news" --search-engine search_pro_sogou --count 5 --format json
-smart-search zhipu-mcp-reader "https://example.com/source" --format json
-smart-search context7-library "react" "hooks" --format json
-smart-search context7-docs "/facebook/react" "useEffect cleanup" --format json
-smart-search anysearch-search "CVE-2024-3094" --domain security.cve --max-results 3 --format json
-```
+Provider selection is internal to the generic `search`, `fetch`, and `map` commands; there are no provider-branded public commands. Configured `docs_search` (Context7/Exa), `web_search` (Zhipu REST/MCP, Tavily, Firecrawl), `web_fetch` (Tavily, Jina, Zhipu MCP Reader, Firecrawl), and `vertical_search` (AnySearch) providers are chosen by capability and intent. Exact-provider leaves such as `exa-search`, `zhipu-search`, `context7-library`, `anysearch-search`, and the `provider exa|context7|zhipu` / `experimental` namespaces are removed; their spellings are rejected at parse time without any provider call.
 
 Provider configuration and capability boundaries are documented in [Providers](providers.md).
 

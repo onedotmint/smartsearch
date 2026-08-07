@@ -16,7 +16,7 @@ smart-search setup
 
 The npm package creates an isolated Python runtime during installation. Direct Python use is also supported; see [Getting started](docs/getting-started.md).
 
-Root help intentionally shows only `search`, `fetch`, `capabilities`, and `setup`. Use `smart-search --help-all` to discover Advanced, provider, developer, experimental, and legacy-compatible commands.
+Root help intentionally shows only `search`, `fetch`, `capabilities`, and `setup`. Use `smart-search --help-all` to discover Advanced, provider, developer, and legacy-compatible commands.
 
 Prerequisites:
 

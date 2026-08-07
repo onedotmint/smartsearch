@@ -83,13 +83,13 @@ Use `smart-search model add` to append the same structure, `smart-search model l
 
 ### Zhipu REST and Coding Plan MCP
 
-`zhipu-search` is the Zhipu Web Search API route. It is not Zhipu Chat Completions or Search Agent, and it is not the MCP Server. `TAVILY_API_URL` affects Tavily only; it does not proxy Zhipu. `ZHIPU_SEARCH_ENGINE` accepts values such as `search_std`, `search_pro`, `search_pro_sogou`, and `search_pro_quark`.
+The Zhipu Web Search API route (`ZHIPU_API_URL` plus `ZHIPU_SEARCH_ENGINE`) is selected internally for Chinese/current/domestic `web_search` intent. It is not Zhipu Chat Completions or Search Agent, and it is not the MCP Server. `TAVILY_API_URL` affects Tavily only; it does not proxy Zhipu. `ZHIPU_SEARCH_ENGINE` accepts values such as `search_std`, `search_pro`, `search_pro_sogou`, and `search_pro_quark`.
 
 Zhipu Coding Plan is a separate Remote MCP route:
 
 - `web_search_prime` maps to `web_search`;
 - `webReader` maps to `web_fetch`;
-- `search_doc`, `get_repo_structure`, and `read_file` are explicit zread repository/document commands.
+- `search_doc`, `get_repo_structure`, and `read_file` are internal zread repository/document operations without public command leaves.
 
 Do not route it through the existing `/paas/v4/web_search` REST path. A normal `ZHIPU_API_KEY` for Web Search API does not prove Coding Plan access. The route requires a separate Coding Plan entitlement and `ZHIPU_MCP_API_KEY`; an unavailable MCP provider is skipped while same-capability fallback remains available. Its absence does not affect the standard minimum profile when another provider satisfies the role.
 
@@ -99,17 +99,13 @@ Jina Reader is `web_fetch` only. It is not a general search provider. `JINA_API_
 
 ### AnySearch
 
-AnySearch exposes `vertical_search` commands for explicit experiments:
+AnySearch is an experimental `vertical_search` provider selected internally for explicit vertical intent; it has no public command leaves.
 
 ```sh
 smart-search setup --non-interactive --anysearch-api-url "https://api.anysearch.com/mcp" --anysearch-key "your-anysearch-key"
-smart-search anysearch-domains security --format json
-smart-search anysearch-search "CVE-2024-3094" --domain security.cve --max-results 3 --format json
-smart-search anysearch-extract "https://example.com/source" --format json
-smart-search anysearch-batch "AAPL" "RAG papers" --max-results 2 --format json
 ```
 
-At the adapter/API layer, a missing key means no `Authorization` header; the CLI preflight still requires `ANYSEARCH_API_KEY` for every `anysearch-*` command. A JSON-RPC 200 response with `result.isError=true` is a provider error, not successful evidence.
+At the adapter/API layer, a missing key means no `Authorization` header. A JSON-RPC 200 response with `result.isError=true` is a provider error, not successful evidence.
 
 ## Intent router configuration
 

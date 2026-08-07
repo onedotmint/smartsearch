@@ -94,37 +94,15 @@ COMMAND_CAPABILITY_MATRIX: dict[str, dict[str, tuple[str, ...]]] = {
     "route": {"required": (), "optional": ()},
     "doctor": {"required": (), "optional": ()},
     "capabilities": {"required": (), "optional": ()},
-    "exa-search": {"required": ("docs_search",), "required_providers": ("exa",), "optional": ()},
-    "exa-similar": {"required": ("docs_search",), "required_providers": ("exa",), "optional": ()},
-    "context7-library": {"required": ("docs_search",), "required_providers": ("context7",), "optional": ()},
-    "context7-docs": {"required": ("docs_search",), "required_providers": ("context7",), "optional": ()},
-    "zhipu-search": {"required": ("web_search",), "required_providers": ("zhipu",), "optional": ()},
-    "zhipu-mcp-search": {"required": ("web_search",), "required_providers": ("zhipu-mcp",), "optional": ()},
-    "zhipu-mcp-reader": {"required": ("web_fetch",), "required_providers": ("zhipu-mcp-reader",), "optional": ()},
-    "zhipu-mcp-search-doc": {"required": ("zread",), "required_providers": ("zhipu-mcp-zread",), "optional": ()},
-    "zhipu-mcp-repo-structure": {"required": ("zread",), "required_providers": ("zhipu-mcp-zread",), "optional": ()},
-    "zhipu-mcp-read-file": {"required": ("zread",), "required_providers": ("zhipu-mcp-zread",), "optional": ()},
-    "anysearch-domains": {"required": ("vertical_search",), "required_providers": ("anysearch",), "optional": ()},
-    "anysearch-search": {"required": ("vertical_search",), "required_providers": ("anysearch",), "optional": ()},
-    "anysearch-extract": {"required": ("vertical_search",), "required_providers": ("anysearch",), "optional": ()},
-    "anysearch-batch": {"required": ("vertical_search",), "required_providers": ("anysearch",), "optional": ()},
 }
 OPENAI_COMPATIBLE_DIAGNOSE_COMMAND = "smart-search diagnose openai-compatible --format markdown"
 DOCS_INTENT_KEYWORDS = ROUTER_DOCS_INTENT_KEYWORDS
 ZH_CURRENT_KEYWORDS = ROUTER_CURRENT_INTENT_KEYWORDS
 FETCH_INTENT_KEYWORDS = ROUTER_FETCH_INTENT_KEYWORDS
+# Retained canonical generic tools that deep/research plans may advertise.
+# Removed exact Provider/Experimental spellings are never planned tools.
 DEEP_ALLOWED_TOOLS = {
     "search",
-    "exa-search",
-    "exa-similar",
-    "zhipu-search",
-    "zhipu-mcp-search",
-    "zhipu-mcp-reader",
-    "zhipu-mcp-search-doc",
-    "zhipu-mcp-repo-structure",
-    "zhipu-mcp-read-file",
-    "context7-library",
-    "context7-docs",
     "fetch",
     "map",
 }

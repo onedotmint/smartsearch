@@ -25,61 +25,23 @@ from .operations_service import (
     smoke,
     write_output,
 )
-from .provider_fetch_commands import (
-    call_firecrawl_scrape,
-    call_jina_reader,
-    call_tavily_extract,
-    call_tavily_map,
-    fetch,
-    map_site,
-)
-from .provider_mcp_commands import (
-    zhipu_mcp_read_file,
-    zhipu_mcp_reader,
-    zhipu_mcp_repo_structure,
-    zhipu_mcp_search,
-    zhipu_mcp_search_doc,
-)
-from .provider_search_commands import (
-    call_firecrawl_search,
-    call_tavily_search,
-    context7_docs,
-    context7_library,
-    exa_find_similar,
-    exa_search,
-    zhipu_search,
-)
-from .provider_vertical_commands import anysearch_batch, anysearch_domains, anysearch_extract, anysearch_search
+from .provider_fetch_commands import fetch, map_site
 from .research_service import build_deep_research_plan, research
 from .search_service import extra_results_to_sources, fetch_available_models, get_available_models_cached, search
 from .service_support import DEEP_ALLOWED_TOOLS, RESEARCH_ROUTE_POLICY_VERSION
 
 
 __all__ = [
-    "anysearch_batch",
-    "anysearch_domains",
-    "anysearch_extract",
-    "anysearch_search",
     "build_deep_research_plan",
-    "call_firecrawl_scrape",
-    "call_firecrawl_search",
-    "call_jina_reader",
-    "call_tavily_extract",
-    "call_tavily_map",
-    "call_tavily_search",
     "capabilities",
     "config",
     "config_list",
     "config_path",
     "config_set",
     "config_unset",
-    "context7_docs",
-    "context7_library",
     "current_model",
     "diagnose_openai_compatible",
     "doctor",
-    "exa_find_similar",
-    "exa_search",
     "extra_results_to_sources",
     "fetch",
     "fetch_available_models",
@@ -99,12 +61,6 @@ __all__ = [
     "validate_command_capabilities",
     "validate_minimum_profile",
     "write_output",
-    "zhipu_mcp_read_file",
-    "zhipu_mcp_reader",
-    "zhipu_mcp_repo_structure",
-    "zhipu_mcp_search",
-    "zhipu_mcp_search_doc",
-    "zhipu_search",
     "DEEP_ALLOWED_TOOLS",
     "RESEARCH_ROUTE_POLICY_VERSION",
 ]

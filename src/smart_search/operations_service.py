@@ -1252,11 +1252,6 @@ async def _smoke_mock(start: float) -> dict[str, Any]:
 
     deep_allowed_tools = {
         "search",
-        "exa-search",
-        "exa-similar",
-        "zhipu-search",
-        "context7-library",
-        "context7-docs",
         "fetch",
         "map",
     }
@@ -1291,8 +1286,6 @@ async def _smoke_mock(start: float) -> dict[str, Any]:
             and market_plan["preflight"]["executed_by_deep_command"] is False
             and market_plan["evidence_policy"] == "fetch_before_claim"
             and "search" in market_tools
-            and "zhipu-search" in market_tools
-            and "exa-search" not in market_tools
             and "fetch" in market_tools
             and market_tools <= deep_allowed_tools,
             {"research_plan": market_plan},
@@ -1303,10 +1296,9 @@ async def _smoke_mock(start: float) -> dict[str, Any]:
     docs_tools = {step["tool"] for step in docs_plan["steps"]}
     cases.append(
         _case(
-            "deep_research docs api prompt uses docs capabilities",
+            "deep_research docs api prompt uses retained generic tools",
             docs_plan["intent_signals"]["docs_api_intent"]
-            and {"context7-library", "context7-docs", "fetch"} <= docs_tools
-            and "exa-search" not in docs_tools
+            and {"search", "fetch"} <= docs_tools
             and docs_tools <= deep_allowed_tools,
             {"research_plan": docs_plan},
         )
@@ -1319,7 +1311,7 @@ async def _smoke_mock(start: float) -> dict[str, Any]:
             claim_plan["evidence_policy"] == "fetch_before_claim"
             and claim_plan["intent_signals"]["cross_validation_need"] == "high"
             and any(step["tool"] == "fetch" for step in claim_plan["steps"])
-            and not any(step["tool"] == "exa-search" for step in claim_plan["steps"])
+            and all(step["tool"] in deep_allowed_tools for step in claim_plan["steps"])
             and claim_plan["gap_check"]["unsupported_claim_action"] == "downgrade_to_unverified_candidate",
             {"research_plan": claim_plan},
         )
@@ -1331,7 +1323,8 @@ async def _smoke_mock(start: float) -> dict[str, Any]:
             "deep_research url prompt is fetch first",
             url_first_plan["intent_signals"]["known_url"]
             and url_first_plan["steps"][0]["tool"] == "fetch"
-            and any(step["tool"] == "exa-similar" for step in url_first_plan["steps"]),
+            and any(step["tool"] == "search" for step in url_first_plan["steps"])
+            and all(step["tool"] in deep_allowed_tools for step in url_first_plan["steps"]),
             {"research_plan": url_first_plan},
         )
     )
@@ -1395,7 +1388,7 @@ async def _smoke_mock(start: float) -> dict[str, Any]:
         _case(
             "research router docs api prefers context7 then exa",
             docs_routes["capabilities"]["docs_search"]["providers"][:2] == ["context7", "exa"]
-            and docs_routes["capabilities"]["vertical_search"]["providers"] == [],
+            and "vertical_search" not in docs_routes["capabilities"],
             {"routing_decision": docs_routes},
         )
     )
@@ -1422,8 +1415,9 @@ async def _smoke_mock(start: float) -> dict[str, Any]:
     )
     cases.append(
         _case(
-            "research router vertical intent uses anysearch only when matched",
-            vertical_routes["capabilities"]["vertical_search"]["providers"] == ["anysearch"],
+            "research router vertical intent has no provider-specific route",
+            "vertical_search" not in vertical_routes["capabilities"]
+            and "vertical_intent" not in vertical_routes["signals"],
             {"routing_decision": vertical_routes},
         )
     )

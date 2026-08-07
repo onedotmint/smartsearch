@@ -1,8 +1,9 @@
 """v1 Deep Research plan projection from structured ResearchPlan.
 
 This module owns shell quoting, evidence path construction, and legacy step
-rendering. It never mutates the structured plan and is the only place where
-Provider-branded renderer kinds are allowed.
+rendering. It never mutates the structured plan and renders only retained
+canonical generic commands (``search``, ``fetch``, ``map``). Removed exact
+Provider/Experimental spellings are never rendered as tools or commands.
 """
 
 from __future__ import annotations
@@ -23,28 +24,15 @@ from .research_plan import (
 LEGACY_PLAN_PROJECTION_VERSION = "v1-plan-projection-1"
 
 # Renderer kinds permitted only in the non-serialized projection context.
-LEGACY_RENDERER_KINDS = frozenset(
-    {
-        "search",
-        "fetch",
-        "exa_search",
-        "exa_similar",
-        "context7_library",
-        "context7_docs",
-        "zhipu_search",
-    }
-)
+# All kinds render to retained canonical generic commands only.
+LEGACY_RENDERER_KINDS = frozenset({"search", "fetch", "map"})
 
-# Map renderer_kind -> frozen v1 tool name.
+# Map renderer_kind -> frozen v1 tool name (subset of the retained surface).
 RENDERER_KIND_TO_TOOL: Mapping[str, str] = MappingProxyType(
     {
         "search": "search",
         "fetch": "fetch",
-        "exa_search": "exa-search",
-        "exa_similar": "exa-similar",
-        "context7_library": "context7-library",
-        "context7_docs": "context7-docs",
-        "zhipu_search": "zhipu-search",
+        "map": "map",
     }
 )
 
@@ -147,40 +135,11 @@ def _render_command(
             f"smart-search fetch {quote_arg(target)} --format markdown "
             f"--output {quote_arg(output_path)}"
         )
-    if kind == "exa_search":
-        query = str(args.get("query", ""))
-        num_results = int(args.get("num_results", 5))
+    if kind == "map":
+        target = str(args.get("url") or args.get("resource") or "<key-url>")
         return (
-            f"smart-search exa-search {quote_arg(query)} --num-results {num_results} "
-            f"--format json --output {quote_arg(output_path)}"
-        )
-    if kind == "exa_similar":
-        url = str(args.get("url", ""))
-        num_results = int(args.get("num_results", 5))
-        return (
-            f"smart-search exa-similar {quote_arg(url)} --num-results {num_results} "
-            f"--format json --output {quote_arg(output_path)}"
-        )
-    if kind == "context7_library":
-        library = str(args.get("library", ""))
-        query = str(args.get("query", ""))
-        return (
-            f"smart-search context7-library {quote_arg(library)} {quote_arg(query)} "
-            f"--format json --output {quote_arg(output_path)}"
-        )
-    if kind == "context7_docs":
-        library_id = str(args.get("library_id", "<library_id>"))
-        query = str(args.get("query", ""))
-        return (
-            f"smart-search context7-docs {quote_arg(library_id)} {quote_arg(query)} "
-            f"--format json --output {quote_arg(output_path)}"
-        )
-    if kind == "zhipu_search":
-        query = str(args.get("query", ""))
-        count = int(args.get("count", 5))
-        return (
-            f"smart-search zhipu-search {quote_arg(query)} --count {count} "
-            f"--format json --output {quote_arg(output_path)}"
+            f"smart-search map {quote_arg(target)} --format json "
+            f"--output {quote_arg(output_path)}"
         )
     raise ResearchPlanError(f"unhandled renderer_kind: {kind!r}")
 

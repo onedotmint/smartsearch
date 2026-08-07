@@ -3,12 +3,9 @@
 import time
 from typing import Any
 
+from .capability_service import _capability_preflight, _command_capability_failure
 from .config import config
-from .provider_command_support import (
-    _command_capability_failure,
-    _command_capability_preflight,
-    decode_provider_json,
-)
+from .provider_command_support import decode_provider_json
 from .providers.zhipu_mcp import ZhipuMCPProvider
 
 
@@ -30,7 +27,7 @@ def _zhipu_mcp_provider(*, route: str, provider_id: str) -> ZhipuMCPProvider:
 async def zhipu_mcp_search(query: str, count: int = 5) -> dict[str, Any]:
     """Run the explicit Zhipu MCP web_search route."""
     start = time.time()
-    preflight = _command_capability_preflight("zhipu-mcp-search")
+    preflight = _capability_preflight("web_search", provider="zhipu-mcp")
     if not preflight.get("ok"):
         return _command_capability_failure(preflight, start, extra={"query": query})
     result = await decode_provider_json(
@@ -45,7 +42,7 @@ async def zhipu_mcp_search(query: str, count: int = 5) -> dict[str, Any]:
 async def zhipu_mcp_reader(url: str) -> dict[str, Any]:
     """Run the explicit Zhipu MCP webReader route."""
     start = time.time()
-    preflight = _command_capability_preflight("zhipu-mcp-reader")
+    preflight = _capability_preflight("web_fetch", provider="zhipu-mcp-reader")
     if not preflight.get("ok"):
         return _command_capability_failure(preflight, start, extra={"url": url})
     result = await decode_provider_json(
@@ -57,25 +54,10 @@ async def zhipu_mcp_reader(url: str) -> dict[str, Any]:
     return result
 
 
-async def zhipu_mcp_search_doc(repo: str, query: str, max_results: int = 5) -> dict[str, Any]:
-    """Search repository documentation through the explicit zread capability."""
-    start = time.time()
-    preflight = _command_capability_preflight("zhipu-mcp-search-doc")
-    if not preflight.get("ok"):
-        return _command_capability_failure(preflight, start, extra={"repo": repo, "query": query})
-    result = await decode_provider_json(
-        await _zhipu_mcp_provider(route="zread", provider_id="zhipu-mcp-zread").search_doc(repo, query, max_results=max_results),
-        provider="zhipu-mcp-zread",
-        capability="zread",
-    )
-    result.update(preflight.get("metadata") or {})
-    return result
-
-
 async def zhipu_mcp_repo_structure(repo: str, ref: str = "") -> dict[str, Any]:
     """Read repository structure through the explicit zread capability."""
     start = time.time()
-    preflight = _command_capability_preflight("zhipu-mcp-repo-structure")
+    preflight = _capability_preflight("zread", provider="zhipu-mcp-zread")
     if not preflight.get("ok"):
         return _command_capability_failure(preflight, start, extra={"repo": repo, "ref": ref})
     result = await decode_provider_json(
@@ -87,25 +69,8 @@ async def zhipu_mcp_repo_structure(repo: str, ref: str = "") -> dict[str, Any]:
     return result
 
 
-async def zhipu_mcp_read_file(repo: str, path: str, ref: str = "") -> dict[str, Any]:
-    """Read one repository file through the explicit zread capability."""
-    start = time.time()
-    preflight = _command_capability_preflight("zhipu-mcp-read-file")
-    if not preflight.get("ok"):
-        return _command_capability_failure(preflight, start, extra={"repo": repo, "path": path, "ref": ref})
-    result = await decode_provider_json(
-        await _zhipu_mcp_provider(route="zread", provider_id="zhipu-mcp-zread").read_file(repo, path, ref=ref),
-        provider="zhipu-mcp-zread",
-        capability="zread",
-    )
-    result.update(preflight.get("metadata") or {})
-    return result
-
-
 __all__ = [
-    "zhipu_mcp_read_file",
     "zhipu_mcp_reader",
     "zhipu_mcp_repo_structure",
     "zhipu_mcp_search",
-    "zhipu_mcp_search_doc",
 ]

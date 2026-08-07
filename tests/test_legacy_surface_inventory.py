@@ -101,7 +101,7 @@ def test_inventory_and_scan_artifacts_exist() -> None:
 
 def test_entries_have_unique_ids_and_required_fields() -> None:
     entries = inv.inventory_entries()
-    assert len(entries) == 254, "the complete baseline inventory has 254 rows"
+    assert len(entries) == 184, "the removal-task inventory has 184 rows"
     ids = [entry["id"] for entry in entries]
     assert len(ids) == len(set(ids))
     identities = [(entry["kind"], entry["surface"]) for entry in entries]

@@ -64,11 +64,7 @@ Intent router rules:
 - `fetch` tries Tavily first, then Jina with `JINA_API_KEY`, then Zhipu Coding Plan MCP Reader, then Firecrawl.
 - `map` currently uses Tavily only.
 - `TAVILY_ENABLED=false` keeps a configured Tavily key visible as disabled in diagnostics, but removes Tavily from eligible search, fetch, and map calls; skipped fallback attempts include the disabled reason.
-- `exa-search` and `exa-similar` use Exa only.
-- `context7-library` and `context7-docs` use Context7 only.
-- `anysearch-domains`, `anysearch-search`, `anysearch-extract`, and `anysearch-batch` use AnySearch only. Treat results as acceptance evidence until the target vertical domain is reviewed.
-- `zhipu-search` uses Zhipu only.
-- `zhipu-mcp-search`, `zhipu-mcp-reader`, and `zhipu-mcp-*` zread commands use Zhipu Coding Plan Remote MCP only.
+- Provider selection is internal: `search` routes to Exa only for Exa-qualified docs intent, Context7 only for Context7-qualified docs intent, Zhipu only for Zhipu-qualified web intent, and AnySearch only for explicit vertical intent. Exact provider leaves and aliases are removed; their spellings fail at parse time.
 - Runtime config priority is environment variables first, then local config file, then defaults.
 - `setup` and `config` read/write the local Smart Search config file and do not call providers.
 - `SMART_SEARCH_MODEL_ROUTES` stores an ordered JSON array of independent main-search routes. Each route has its own `id`, `provider`, `api_url`, `api_key`, and `model`; `model add`, `model list`, `model current`, and `model remove` manage the same list. Route keys are masked in inspection output, and existing `XAI_*` / `OPENAI_COMPATIBLE_*` settings remain compatible when the array is absent.
@@ -76,7 +72,7 @@ Intent router rules:
 
 Zhipu Web Search API:
 
-- `zhipu-search` corresponds to the official Zhipu Web Search API route, using `ZHIPU_API_URL` plus `ZHIPU_SEARCH_ENGINE`; it is not Zhipu Chat Completions `tools=[web_search]`, not Search Agent, and not the MCP Server.
+- The Zhipu Web Search API route uses `ZHIPU_API_URL` plus `ZHIPU_SEARCH_ENGINE` through the generic `search` command; it is not Zhipu Chat Completions `tools=[web_search]`, not Search Agent, and not the MCP Server.
 - `ZHIPU_SEARCH_ENGINE` defaults to `search_std`. Official Web Search API service values include `search_std`, `search_pro`, `search_pro_sogou`, and `search_pro_quark`; keep custom values possible because official services may change.
 - `TAVILY_API_URL` only affects Tavily REST calls and does not proxy Zhipu.
 
@@ -85,7 +81,7 @@ Zhipu Coding Plan Remote MCP:
 - `ZHIPU_MCP_API_KEY` configures the Coding Plan MCP auth token and must be sent as `Authorization: Bearer ...`; it must never be logged unmasked.
 - `ZHIPU_MCP_SEARCH_API_URL` defaults to `https://open.bigmodel.cn/api/mcp/web_search_prime/mcp` and calls `web_search_prime` for `web_search`.
 - `ZHIPU_MCP_READER_API_URL` defaults to `https://open.bigmodel.cn/api/mcp/web_reader/mcp` and calls `webReader` for `web_fetch`.
-- `ZHIPU_MCP_ZREAD_API_URL` defaults to `https://open.bigmodel.cn/api/mcp/zread/mcp` and calls `search_doc`, `get_repo_structure`, and `read_file` through explicit repo/docs commands.
+- `ZHIPU_MCP_ZREAD_API_URL` defaults to `https://open.bigmodel.cn/api/mcp/zread/mcp` and calls `search_doc`, `get_repo_structure`, and `read_file` internally for repo/docs operations.
 - Zhipu Coding Plan MCP must be implemented as a separate Remote MCP-over-HTTP provider layer. Do not route it through the existing `/paas/v4/web_search` Zhipu REST provider.
 - A normal Zhipu Web Search API key is not sufficient evidence of Coding Plan entitlement. If `ZHIPU_MCP_API_KEY` is missing or returns auth/provider errors, MCP providers are skipped or fall through within the same capability; zread remains explicit and does not affect the standard minimum profile.
 - Provider failures must appear in `provider_attempts` and fallback must remain same-capability.
@@ -109,7 +105,6 @@ AnySearch:
 - Markdown URL/title/snippet candidates should be parsed into `results`, while raw text remains in `content` and `raw_content`.
 - Structured results without URLs must be preserved as raw/structured evidence, not dropped.
 - Dotted vertical domain shorthand such as `security.cve` must be normalized to `domain=security` plus `sub_domain=cve` before calling AnySearch.
-- `anysearch-batch` accepts at most 5 CLI query strings and returns `error_type=parameter_error` without sending a request when the limit is exceeded.
 
 OpenAI-compatible streaming:
 
@@ -135,11 +130,9 @@ Exa domain filters:
 ## Routing Heuristics
 
 - Use `smart-search route "query" --format markdown` when you need to explain why a query maps to `docs_search`, `web_search`, `web_fetch`, or `vertical_search` without executing providers.
-- Use `exa-search --include-domains` when official documentation domains are known.
-- Use `context7-library` / `context7-docs` for docs/API/SDK/library/framework intent when Context7 is configured.
-- Use `zhipu-search` for Chinese, domestic, current, or domain-filtered source discovery when Zhipu is configured.
-- Use `exa-search --start-published-date` for recency-constrained source discovery.
-- Use `exa-similar` when a known good page is available and adjacent sources are needed.
+- Use `search` with intent-matched routing for official/domain-constrained discovery; capability selection is internal.
+- Use `search` for docs/API/SDK/library/framework intent when Context7/Exa are configured.
+- Use `search` for Chinese, domestic, current, or domain-filtered source discovery when Zhipu is configured.
 - Use `search --format content` when a human wants only the generated answer body.
 - Use `fetch --format markdown` or `fetch --format content` for user-supplied URLs or when exact page text matters.
 - Use `map` before fetching many pages from a documentation site.

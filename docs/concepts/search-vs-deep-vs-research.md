@@ -33,7 +33,7 @@ The planner emits a `research_plan` with these stable sections:
 - `final_answer_policy`: how to cite fetched evidence;
 - `usage_boundary`: the user-facing distinction between `search`, `deep`, and `research`.
 
-Allowed planned tools are `search`, `exa-search`, `exa-similar`, `zhipu-search`, `context7-library`, `context7-docs`, `fetch`, and `map`. `doctor` is a `preflight` action, not a `steps[]` item. Plans must not require fixed topic recipe ids. Even `--budget quick` plans retain at least one `fetch` step when evidence policy requires it.
+Allowed planned tools are `search`, `fetch`, and `map`. `doctor` is a `preflight` action, not a `steps[]` item. Plans must not require fixed topic recipe ids. Even `--budget quick` plans retain at least one `fetch` step when evidence policy requires it.
 
 The plan's `steps[].command` and `steps[].output_path` are one contract. Prefer PowerShell-safe quoted commands when a plan is intended for Windows. An evidence directory shown in a plan may be a platform temporary directory; explicit persistent examples are user-controlled paths, not the runtime default.
 
@@ -56,7 +56,7 @@ The executor uses capability-based orchestration and provider advantage routing:
 - Zhipu Coding Plan MCP remains a separate quota route through `web_search_prime` and `webReader`.
 - Jina is favored for known public URLs, PDFs, and arXiv extraction when its key is configured.
 - Firecrawl is favored for JS-heavy, dynamic, browser-like, OCR/PDF, or robust fallback extraction.
-- AnySearch participates only when vertical intent is explicit.
+- AnySearch is an experimental vertical capability with no generic Evidence owner and does not participate in the research executor.
 
 `research --fallback auto` permits same-capability fallback. `--fallback off` tries only the first eligible provider in each capability. Research provider overrides can reorder or disable providers only within their declared capabilities.
 

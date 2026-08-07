@@ -65,11 +65,6 @@ DOC_REFERENCE_PATTERNS: dict[str, str] = {
     "docs.ref.schema-version": r"--schema-version|schema-version",
     "docs.ref.final_answer": r"\bfinal_answer\b",
     "docs.ref.synthesize": r"--synthesize|synthesis_enabled|synthesis_error|response_mode|synthesize",
-    "docs.ref.experimental": r"\bexperimental\b",
-    "docs.ref.exact_provider": (
-        r"\b(?:exa-search|exa-similar|zhipu-search|zhipu-mcp-(?:search|reader|search-doc|repo-structure|read-file)|"
-        r"context7-(?:library|docs)|anysearch-(?:domains|search|extract|batch)|provider (?:exa|context7|zhipu|zhipu-mcp))\b"
-    ),
     "docs.ref.legacy_control": r"\b(?:cfg|mdl|model (?:current|list|add|remove)|route-calibrate|diagnose|regression|skills (?:status|update))\b",
 }
 

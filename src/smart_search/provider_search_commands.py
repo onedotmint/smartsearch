@@ -4,8 +4,8 @@ import time
 from typing import Any
 
 from .capability_service import (
+    _capability_preflight,
     _command_capability_failure,
-    _command_capability_preflight,
     _provider_availability,
 )
 from .config import config
@@ -169,7 +169,7 @@ async def exa_search(
      * ================================================================================
      * 步骤2：执行 Exa 文档搜索命令
      * ================================================================================
-     * 目标：保留显式 exa-search 的 preflight、参数归一化和 uncached 语义。
+     * 目标：保留显式 docs_search 的 preflight、参数归一化和 uncached 语义。
      * 数据源：命令参数、EXA_API_KEY 和 Exa adapter。
      * 操作：
      * 1) 校验 named provider 与 docs_search capability。
@@ -179,7 +179,7 @@ async def exa_search(
      */
     """
     start = time.time()
-    preflight = _command_capability_preflight("exa-search")
+    preflight = _capability_preflight("docs_search", provider="exa")
     if not preflight.get("ok"):
         return _command_capability_failure(preflight, start, extra={"query": query})
     if not config.exa_api_key:
@@ -205,28 +205,6 @@ async def exa_search(
     return result
 
 
-async def exa_find_similar(url: str, num_results: int = 5) -> dict[str, Any]:
-    """Run the explicit Exa similar-documents command without result caching."""
-    start = time.time()
-    preflight = _command_capability_preflight("exa-similar")
-    if not preflight.get("ok"):
-        return _command_capability_failure(preflight, start, extra={"url": url})
-    if not config.exa_api_key:
-        return {
-            "ok": False,
-            "error_type": "config_error",
-            "error": "EXA_API_KEY 未配置。请运行 `smart-search setup`，或使用 `smart-search config set EXA_API_KEY <key>`。",
-        }
-    provider = ExaSearchProvider(config.exa_base_url, config.exa_api_key, config.exa_timeout)
-    result = await decode_provider_json(
-        await provider.find_similar(url=url, num_results=num_results),
-        provider="exa",
-        capability="docs_search",
-    )
-    result.update(preflight.get("metadata") or {})
-    return result
-
-
 async def zhipu_search(
     query: str,
     count: int = 10,
@@ -237,7 +215,7 @@ async def zhipu_search(
 ) -> dict[str, Any]:
     """Run the explicit Zhipu REST web-search command."""
     start = time.time()
-    preflight = _command_capability_preflight("zhipu-search")
+    preflight = _capability_preflight("web_search", provider="zhipu")
     if not preflight.get("ok"):
         return _command_capability_failure(preflight, start, extra={"query": query})
     if not config.zhipu_api_key:
@@ -268,7 +246,7 @@ async def zhipu_search(
 async def context7_library(name: str, query: str = "") -> dict[str, Any]:
     """Resolve a Context7 library for the docs_search capability."""
     start = time.time()
-    preflight = _command_capability_preflight("context7-library")
+    preflight = _capability_preflight("docs_search", provider="context7")
     if not preflight.get("ok"):
         return _command_capability_failure(preflight, start, extra={"name": name, "query": query})
     if not config.context7_api_key:
@@ -287,34 +265,10 @@ async def context7_library(name: str, query: str = "") -> dict[str, Any]:
     return result
 
 
-async def context7_docs(library_id: str, query: str) -> dict[str, Any]:
-    """Read Context7 documentation for an already resolved library."""
-    start = time.time()
-    preflight = _command_capability_preflight("context7-docs")
-    if not preflight.get("ok"):
-        return _command_capability_failure(preflight, start, extra={"library_id": library_id, "query": query})
-    if not config.context7_api_key:
-        return {
-            "ok": False,
-            "error_type": "config_error",
-            "error": "CONTEXT7_API_KEY 未配置。请运行 `smart-search setup`，或使用 `smart-search config set CONTEXT7_API_KEY <key>`。",
-        }
-    provider = Context7Provider(config.context7_base_url, config.context7_api_key, config.context7_timeout)
-    result = await decode_provider_json(
-        await provider.docs(library_id, query),
-        provider="context7",
-        capability="docs_search",
-    )
-    result.update(preflight.get("metadata") or {})
-    return result
-
-
 __all__ = [
     "call_firecrawl_search",
     "call_tavily_search",
-    "context7_docs",
     "context7_library",
-    "exa_find_similar",
     "exa_search",
     "zhipu_search",
 ]

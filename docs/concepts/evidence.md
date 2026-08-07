@@ -16,7 +16,7 @@ The default Deep Research policy is `fetch_before_claim`. The Agent default uses
 
 The evidence workflow is:
 
-1. Discover candidate URLs with `search`, `exa-search`, `zhipu-search`, `exa-similar`, or an explicit docs command.
+1. Discover candidate URLs with `search` (intent-matched internal provider routing) or `map`.
 2. Fetch exact pages with `fetch` or a capability-owned reader.
 3. Cite the fetched text for material claims.
 4. If a key claim cannot be fetched, mark it as an unverified candidate or list it in the gap report.
@@ -42,7 +42,7 @@ Search and research results may contain:
 The planner may display a platform temporary `evidence_dir`. Runtime artifacts are persisted only when `--evidence-dir` is explicit or `SMART_SEARCH_PERSIST_EVIDENCE=true` is set. Use a stable, user-controlled directory when evidence must survive the process:
 
 ```sh
-smart-search exa-search "Reuters Iran Hormuz latest" --format json --output ./evidence/01-exa.json
+smart-search search "Reuters Iran Hormuz latest" --format json --output ./evidence/01-search.json
 smart-search fetch "https://example.com/source" --format markdown --output ./evidence/02-fetch.md
 ```
 

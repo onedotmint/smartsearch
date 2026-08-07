@@ -16,7 +16,7 @@ smart-search setup
 
 npm 包会在安装时创建隔离的 Python 运行时。源码 checkout 也支持直接使用 Python，见[入门指南](docs/getting-started.md)。
 
-根级 `--help` 有意只显示 `search`、`fetch`、`capabilities` 和 `setup`。使用 `smart-search --help-all` 可发现 Advanced、provider、developer、experimental 和 legacy-compatible 命令。
+根级 `--help` 有意只显示 `search`、`fetch`、`capabilities` 和 `setup`。使用 `smart-search --help-all` 可发现 Advanced、provider、developer 和 legacy-compatible 命令。
 
 前置条件：
 

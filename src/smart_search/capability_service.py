@@ -573,6 +573,80 @@ def _command_capability_metadata(
     )
     return metadata
 
+def _capability_preflight(capability: str, provider: str = "") -> dict[str, Any]:
+    """Capability-qualified local gate for retained internal provider wrappers.
+
+    Provider command modules no longer reference removed public command
+    spellings in the command capability matrix. This gate validates one named
+    capability and an optional named provider against the current local status
+    without network I/O, and returns the same stable metadata shape as
+    ``_command_capability_preflight`` so wrapper results stay compatible.
+    """
+    logger.info("开始执行能力预检: capability=%s provider=%s", capability, provider)
+    minimum = validate_minimum_profile()
+    if minimum.get("error_type") == "parameter_error":
+        result = {
+            "ok": False,
+            "command": capability,
+            "error_type": "parameter_error",
+            "error": minimum.get("error", "Invalid minimum profile"),
+            "required_capabilities": [capability],
+            "required_capability_groups": [[capability]],
+            "missing_capabilities": [],
+            "required_providers": [provider] if provider else [],
+            "missing_providers": [],
+            "optional_missing": [],
+            "optional_missing_capabilities": [],
+            "source_only": False,
+            "degraded": False,
+            "degraded_reason": "",
+            "capability_status": {},
+        }
+        result["metadata"] = _command_capability_metadata(result, minimum)
+        logger.info("能力预检完成: capability=%s ok=false error_type=parameter_error", capability)
+        return result
+
+    status = minimum.get("capability_status", {})
+    missing_capabilities = [] if _capability_available(status, capability) else [capability]
+    missing_providers: list[str] = []
+    if provider:
+        availability = _provider_availability(provider, capability)
+        if not availability.get("eligible"):
+            missing_providers.append(provider)
+    error_parts: list[str] = []
+    if missing_capabilities:
+        error_parts.append(f"{capability} 缺少必需能力: {capability}")
+    if missing_providers:
+        error_parts.append(f"{capability} 缺少必需 provider: {provider}")
+    error = "; ".join(error_parts)
+    result = {
+        "ok": not missing_capabilities and not missing_providers,
+        "command": capability,
+        "error_type": "config_error" if error else "",
+        "error": error,
+        "required_capabilities": [capability],
+        "required_capability_groups": [[capability]],
+        "missing_capabilities": missing_capabilities,
+        "required_providers": [provider] if provider else [],
+        "missing_providers": missing_providers,
+        "optional_missing": [],
+        "optional_missing_capabilities": [],
+        "source_only": False,
+        "degraded": False,
+        "degraded_reason": "",
+        "capability_status": status,
+    }
+    result["metadata"] = _command_capability_metadata(result, minimum)
+    logger.info(
+        "能力预检完成: capability=%s ok=%s missing=%s providers=%s",
+        capability,
+        result["ok"],
+        result["missing_capabilities"],
+        result["missing_providers"],
+    )
+    return result
+
+
 def _command_capability_preflight(command: str, *, response_mode: str = "") -> dict[str, Any]:
     """
     /*

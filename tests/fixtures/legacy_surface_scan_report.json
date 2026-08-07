@@ -1,47 +1,34 @@
 {
   "schema_version": 1,
-  "source_revision": "2131a1156730844d574794ab5a30938df5c717be",
+  "source_revision": "773e77d2add7898a2e8a9c49b24ea17c94b1eda5",
   "reconciliation_algorithm": "tests/fixtures/legacy_surface_inventory.py derives live parser aliases/leaves, service exports, research result keys, documentation hits, and config anchors before comparing them to this report.",
   "totals": {
-    "entries": 254,
+    "entries": 184,
     "by_kind": {
-      "command_alias": 36,
-      "docs_skill_ref": 6,
-      "exact_provider_command": 14,
+      "command_alias": 16,
+      "docs_skill_ref": 4,
       "legacy_control_command": 16,
       "legacy_workflow_command": 2,
-      "namespace_leaf": 14,
       "nested_alias": 15,
       "persisted_data_reader": 5,
-      "python_export": 63,
+      "python_export": 43,
       "research_compat_field": 36,
       "schema_selector": 11,
       "v1_field": 36
     },
     "by_disposition": {
       "data-upgrade-only": 5,
-      "remove": 249
+      "remove": 179
     }
   },
   "scan_sources": {
     "command_aliases": {
-      "count": 36,
+      "count": 16,
       "entry_ids": [
-        "alias.top.as",
-        "alias.top.as-batch",
-        "alias.top.as-domains",
-        "alias.top.as-extract",
-        "alias.top.as-search",
-        "alias.top.c7",
-        "alias.top.c7d",
-        "alias.top.c7docs",
         "alias.top.cfg",
-        "alias.top.ctx7",
-        "alias.top.ctx7-docs",
         "alias.top.d",
         "alias.top.diag",
         "alias.top.dr",
-        "alias.top.exa",
         "alias.top.f",
         "alias.top.init",
         "alias.top.m",
@@ -53,23 +40,12 @@
         "alias.top.rt",
         "alias.top.s",
         "alias.top.skill",
-        "alias.top.sm",
-        "alias.top.x",
-        "alias.top.xs",
-        "alias.top.z",
-        "alias.top.zmcp-doc",
-        "alias.top.zmcp-file",
-        "alias.top.zmcp-reader",
-        "alias.top.zmcp-search",
-        "alias.top.zmcp-tree",
-        "alias.top.zp"
+        "alias.top.sm"
       ]
     },
     "docs_skill_refs": {
-      "count": 6,
+      "count": 4,
       "entry_ids": [
-        "docs.ref.exact_provider",
-        "docs.ref.experimental",
         "docs.ref.final_answer",
         "docs.ref.legacy_control",
         "docs.ref.schema-version",
@@ -77,23 +53,8 @@
       ]
     },
     "exact_provider_commands": {
-      "count": 14,
-      "entry_ids": [
-        "command.exact_provider.anysearch-batch",
-        "command.exact_provider.anysearch-domains",
-        "command.exact_provider.anysearch-extract",
-        "command.exact_provider.anysearch-search",
-        "command.exact_provider.context7-docs",
-        "command.exact_provider.context7-library",
-        "command.exact_provider.exa-search",
-        "command.exact_provider.exa-similar",
-        "command.exact_provider.zhipu-mcp-read-file",
-        "command.exact_provider.zhipu-mcp-reader",
-        "command.exact_provider.zhipu-mcp-repo-structure",
-        "command.exact_provider.zhipu-mcp-search",
-        "command.exact_provider.zhipu-mcp-search-doc",
-        "command.exact_provider.zhipu-search"
-      ]
+      "count": 0,
+      "entry_ids": []
     },
     "legacy_control_commands": {
       "count": 16,
@@ -124,23 +85,8 @@
       ]
     },
     "namespace_remove": {
-      "count": 14,
-      "entry_ids": [
-        "namespace.remove.experimental-anysearch-batch",
-        "namespace.remove.experimental-anysearch-domains",
-        "namespace.remove.experimental-anysearch-extract",
-        "namespace.remove.experimental-anysearch-search",
-        "namespace.remove.experimental-zread-read-file",
-        "namespace.remove.experimental-zread-repo-structure",
-        "namespace.remove.experimental-zread-search-doc",
-        "namespace.remove.provider-context7-docs",
-        "namespace.remove.provider-context7-library",
-        "namespace.remove.provider-exa-search",
-        "namespace.remove.provider-exa-similar",
-        "namespace.remove.provider-zhipu-mcp-reader",
-        "namespace.remove.provider-zhipu-mcp-search",
-        "namespace.remove.provider-zhipu-search"
-      ]
+      "count": 0,
+      "entry_ids": []
     },
     "namespace_retained": {
       "count": 18,
@@ -268,7 +214,7 @@
       ]
     },
     "python_exports": {
-      "count": 63,
+      "count": 43,
       "entry_ids": [
         "export.cli.PUBLIC_COMMANDS",
         "export.cli.Path",
@@ -284,30 +230,16 @@
         "export.cli.subprocess",
         "export.service.DEEP_ALLOWED_TOOLS",
         "export.service.RESEARCH_ROUTE_POLICY_VERSION",
-        "export.service.anysearch_batch",
-        "export.service.anysearch_domains",
-        "export.service.anysearch_extract",
-        "export.service.anysearch_search",
         "export.service.build_deep_research_plan",
-        "export.service.call_firecrawl_scrape",
-        "export.service.call_firecrawl_search",
-        "export.service.call_jina_reader",
-        "export.service.call_tavily_extract",
-        "export.service.call_tavily_map",
-        "export.service.call_tavily_search",
         "export.service.capabilities",
         "export.service.config",
         "export.service.config_list",
         "export.service.config_path",
         "export.service.config_set",
         "export.service.config_unset",
-        "export.service.context7_docs",
-        "export.service.context7_library",
         "export.service.current_model",
         "export.service.diagnose_openai_compatible",
         "export.service.doctor",
-        "export.service.exa_find_similar",
-        "export.service.exa_search",
         "export.service.extra_results_to_sources",
         "export.service.fetch",
         "export.service.fetch_available_models",
@@ -326,13 +258,7 @@
         "export.service.smoke",
         "export.service.validate_command_capabilities",
         "export.service.validate_minimum_profile",
-        "export.service.write_output",
-        "export.service.zhipu_mcp_read_file",
-        "export.service.zhipu_mcp_reader",
-        "export.service.zhipu_mcp_repo_structure",
-        "export.service.zhipu_mcp_search",
-        "export.service.zhipu_mcp_search_doc",
-        "export.service.zhipu_search"
+        "export.service.write_output"
       ]
     },
     "research_fields": {
@@ -443,15 +369,15 @@
     }
   },
   "cross_checks": {
-    "alias_freeze_count": 36,
-    "alias_inventory_count": 36,
-    "service_export_freeze_count": 51,
-    "service_export_inventory_count": 51,
+    "alias_freeze_count": 16,
+    "alias_inventory_count": 16,
+    "service_export_freeze_count": 43,
+    "service_export_inventory_count": 43,
     "schema_selector_remove_count": 11,
     "persisted_data_upgrade_only_count": 5,
     "v3_retained_operation_count": 20,
     "namespace_retained_count": 18,
-    "namespace_remove_count": 14
+    "namespace_remove_count": 0
   },
   "unmatched_scan_hits": [],
   "unmatched_inventory_rows": [],

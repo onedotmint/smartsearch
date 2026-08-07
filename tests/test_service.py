@@ -17,6 +17,7 @@ from smart_search import (
     search_service,
     service_support,
 )
+from smart_search.evidence_operations import EvidenceOperationOutcome, EvidenceOperationStatus
 from smart_search.logger import logger
 from smart_search.utils import PromptConfigurationError
 
@@ -397,7 +398,6 @@ def test_deep_research_plan_current_market_is_offline_and_fetch_before_claim(mon
 
     monkeypatch.setattr(search_service, "search", should_not_run_provider)
     monkeypatch.setattr(provider_fetch_commands, "fetch", should_not_run_provider)
-    monkeypatch.setattr(research_service, "exa_search", should_not_run_provider)
     monkeypatch.setattr(provider_search_commands, "zhipu_search", should_not_run_provider)
 
     result = service.build_deep_research_plan(
@@ -415,7 +415,7 @@ def test_deep_research_plan_current_market_is_offline_and_fetch_before_claim(mon
     assert result["preflight"]["executed_by_deep_command"] is False
     tools = {step["tool"] for step in result["steps"]}
     assert {"search", "fetch"} <= tools
-    assert "zhipu-search" in tools
+    assert "zhipu-search" not in tools
     assert "exa-search" not in tools
     assert tools <= service.DEEP_ALLOWED_TOOLS
     assert all(step["subquestion_id"] for step in result["steps"])
@@ -448,12 +448,15 @@ def test_deep_research_plan_complex_docs_query_has_decomposition():
     assert result["intent_signals"]["docs_api_intent"] is True
     assert len(result["decomposition"]) >= 4
     tools = [step["tool"] for step in result["steps"]]
-    assert {"search", "context7-library", "context7-docs", "fetch"} <= set(tools)
+    assert {"search", "fetch"} <= set(tools)
+    assert all(tool in service.DEEP_ALLOWED_TOOLS for tool in tools)
+    assert "context7-library" not in tools
+    assert "context7-docs" not in tools
     assert "exa-search" not in tools
     assert result["gap_check"]["unsupported_claim_action"] == "downgrade_to_unverified_candidate"
 
 
-def test_deep_research_plan_docs_official_domain_can_add_exa_after_context7():
+def test_deep_research_plan_docs_official_domain_uses_only_retained_generic_tools():
     result = service.build_deep_research_plan(
         "React useEffect 官方 API docs",
         budget="deep",
@@ -461,9 +464,14 @@ def test_deep_research_plan_docs_official_domain_can_add_exa_after_context7():
     )
 
     tools = [step["tool"] for step in result["steps"]]
-    assert {"context7-library", "context7-docs", "exa-search"} <= set(tools)
-    assert tools.index("context7-library") < tools.index("exa-search")
-    assert tools.index("context7-docs") < tools.index("exa-search")
+    assert all(tool in service.DEEP_ALLOWED_TOOLS for tool in tools)
+    assert "search" in tools
+    assert "fetch" in tools
+    assert "exa-search" not in tools
+    assert "context7-library" not in tools
+    assert "context7-docs" not in tools
+    purposes = [step["purpose"] for step in result["steps"]]
+    assert any("official" in purpose for purpose in purposes)
 
 
 def test_deep_research_plan_url_first_starts_with_fetch():
@@ -476,7 +484,8 @@ def test_deep_research_plan_url_first_starts_with_fetch():
     assert result["difficulty"] == "standard"
     assert result["steps"][0]["tool"] == "fetch"
     assert "https://example.com/source" in result["steps"][0]["command"]
-    assert any(step["tool"] == "exa-similar" for step in result["steps"])
+    assert any(step["tool"] == "search" for step in result["steps"])
+    assert all(step["tool"] in service.DEEP_ALLOWED_TOOLS for step in result["steps"])
 
 
 def test_deep_research_claim_verification_does_not_unconditionally_add_exa():
@@ -608,7 +617,10 @@ def test_research_router_prefers_context7_for_docs_and_keeps_anysearch_out(monke
 
     assert routes["signals"]["docs_api_intent"] is True
     assert routes["capabilities"]["docs_search"]["providers"][:2] == ["context7", "exa"]
-    assert routes["capabilities"]["vertical_search"]["providers"] == []
+    # Research has no provider-specific vertical route: AnySearch cannot enter
+    # research through an exact public path.
+    assert "vertical_search" not in routes["capabilities"]
+    assert "vertical_intent" not in routes["signals"]
 
 
 def test_research_router_uses_zhipu_for_chinese_current_policy(monkeypatch):
@@ -629,15 +641,16 @@ def test_research_router_favors_jina_for_known_url_pdf_and_firecrawl_for_dynamic
     assert research_service._research_fetch_order("抓取这个 dynamic javascript cloudflare 页面", "https://example.com/app")[0] == "firecrawl"
 
 
-def test_research_router_uses_anysearch_only_for_vertical_intent(monkeypatch):
+def test_research_router_has_no_provider_specific_vertical_route(monkeypatch):
     _configure_research_minimum(monkeypatch)
     monkeypatch.setenv("ANYSEARCH_API_KEY", "any-secret")
 
     generic = research_service._research_capability_routes("React useEffect API docs", _research_plan("React useEffect API docs"), "auto")
     vertical = research_service._research_capability_routes("CVE-2026 OpenSSL 漏洞影响范围", _research_plan("CVE-2026 OpenSSL 漏洞影响范围"), "auto")
 
-    assert generic["capabilities"]["vertical_search"]["providers"] == []
-    assert vertical["capabilities"]["vertical_search"]["providers"] == ["anysearch"]
+    assert "vertical_search" not in generic["capabilities"]
+    assert "vertical_search" not in vertical["capabilities"]
+    assert "vertical_intent" not in vertical["signals"]
 
 
 def test_research_overrides_cannot_move_provider_across_capability(monkeypatch):
@@ -799,15 +812,21 @@ async def test_research_fallback_off_limits_same_capability_fetch(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_research_fallback_off_does_not_run_supplemental_exa(monkeypatch, tmp_path):
+async def test_research_fallback_off_runs_single_typed_docs_hop(monkeypatch, tmp_path):
     _configure_research_minimum(monkeypatch)
     monkeypatch.setenv("ZHIPU_API_KEY", "zhipu-secret")
 
-    async def fake_context7_library(*args, **kwargs):
-        return {"ok": False, "error_type": "", "error": "", "results": []}
+    docs_calls: list[str] = []
+
+    async def fake_docs_discovery(request):
+        docs_calls.append(request.query)
+        return EvidenceOperationOutcome(
+            operation="docs_discovery",
+            status=EvidenceOperationStatus.COMPLETE,
+        )
 
     async def fail_exa(*args, **kwargs):
-        raise AssertionError("research --fallback off must not run supplemental Exa outside the selected route")
+        raise AssertionError("research must not call an Exa provider-specific callback")
 
     async def fake_web_search(query, count=5, providers="auto", fallback="auto"):
         return (
@@ -821,13 +840,16 @@ async def test_research_fallback_off_does_not_run_supplemental_exa(monkeypatch, 
             [service_support._attempt("web_fetch", preferred_order[0], "ok", time.time(), result_count=1)],
         )
 
-    monkeypatch.setattr(research_service, "context7_library", fake_context7_library)
-    monkeypatch.setattr(research_service, "exa_search", fail_exa)
+    monkeypatch.setattr(research_service, "docs_discovery", fake_docs_discovery)
+    monkeypatch.setattr(research_service, "exa_search", fail_exa, raising=False)
     monkeypatch.setattr(research_service, "_run_web_search_fallback", fake_web_search)
     monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)
 
     result = await service.research("React official API docs", evidence_dir=str(tmp_path), fallback="off")
 
+    # One typed docs_discovery hop through the generic Evidence owner, never a
+    # provider-specific supplemental second hop.
+    assert docs_calls == ["React official API docs"]
     assert result["ok"] is True
     assert all(attempt["provider"] != "exa" for attempt in result["provider_attempts"])
 
@@ -900,8 +922,8 @@ async def test_zhipu_search_uses_configured_engine_and_command_override(monkeypa
 
     monkeypatch.setattr(provider_search_commands, "ZhipuWebSearchProvider", FakeZhipuProvider)
 
-    configured_result = await service.zhipu_search("test")
-    override_result = await service.zhipu_search("test", search_engine="search_pro_quark")
+    configured_result = await provider_search_commands.zhipu_search("test")
+    override_result = await provider_search_commands.zhipu_search("test", search_engine="search_pro_quark")
 
     assert configured_result["search_engine"] == "search_pro"
     assert override_result["search_engine"] == "search_pro_quark"
@@ -1471,18 +1493,26 @@ def test_command_capability_matrix_keeps_profile_diagnostics_separate():
 
 def test_provider_command_requires_named_provider(monkeypatch):
     monkeypatch.delenv("EXA_API_KEY", raising=False)
-    result = service.validate_command_capabilities(
-        "exa-search",
-        minimum_profile="standard",
-        capability_status={
-            "docs_search": {
-                "ok": True,
-                "configured": ["context7"],
-                "provider_status": [
-                    {"provider": "context7", "eligible": True, "configured": True},
-                ],
-            }
+    monkeypatch.setattr(
+        capability_service,
+        "validate_minimum_profile",
+        lambda: {
+            "ok": False,
+            "profile": "standard",
+            "capability_status": {
+                "docs_search": {
+                    "ok": True,
+                    "configured": ["context7"],
+                    "provider_status": [
+                        {"provider": "context7", "eligible": True, "configured": True},
+                    ],
+                }
+            },
         },
+    )
+    result = capability_service._capability_preflight(
+        "docs_search",
+        provider="exa",
     )
 
     assert result["ok"] is False
@@ -1491,6 +1521,13 @@ def test_provider_command_requires_named_provider(monkeypatch):
     assert result["required_providers"] == ["exa"]
     assert result["missing_providers"] == ["exa"]
     assert result["error_type"] == "config_error"
+
+
+def test_command_capability_matrix_has_no_removed_provider_spellings():
+    from tests.fixtures.removed_provider_surface import REMOVED_EXACT_PROVIDER_COMMANDS
+
+    assert set(service_support.COMMAND_CAPABILITY_MATRIX).isdisjoint(REMOVED_EXACT_PROVIDER_COMMANDS)
+    assert service_support.DEEP_ALLOWED_TOOLS == {"search", "fetch", "map"}
 
 
 @pytest.mark.asyncio
@@ -1572,7 +1609,7 @@ async def test_provider_specific_command_reports_missing_named_provider(monkeypa
 
     monkeypatch.setattr(provider_search_commands.ExaSearchProvider, "search", should_not_run)
 
-    result = await service.exa_search("python docs")
+    result = await provider_search_commands.exa_search("python docs")
 
     assert result["ok"] is False
     assert result["error_type"] == "config_error"
@@ -1827,7 +1864,7 @@ async def test_search_vertical_intent_uses_anysearch_when_configured(monkeypatch
         }
 
     monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(search_service, "anysearch_search", fake_anysearch)
+    monkeypatch.setattr("smart_search.operation_runtime._default_anysearch_search", fake_anysearch)
 
     result = await service.search("CVE-2026 OpenSSL 漏洞影响范围", validation="balanced")
 
@@ -2073,9 +2110,9 @@ async def test_tavily_custom_base_is_used_for_search_extract_and_map(monkeypatch
 
     monkeypatch.setattr(provider_fetch_commands.httpx, "AsyncClient", FakeAsyncClient)
 
-    search_result = await service.call_tavily_search("query", max_results=1)
-    extract_result = await service.call_tavily_extract("https://example.com")
-    map_result = await service.call_tavily_map("https://example.com", timeout=1)
+    search_result = await provider_search_commands.call_tavily_search("query", max_results=1)
+    extract_result = await provider_fetch_commands.call_tavily_extract("https://example.com")
+    map_result = await provider_fetch_commands.call_tavily_map("https://example.com", timeout=1)
 
     assert [call[0] for call in calls] == [
         "https://tavily.example.com/api/tavily/search",
@@ -2124,7 +2161,7 @@ async def test_tavily_map_empty_results_are_reported_as_empty_failure(monkeypatc
 
     monkeypatch.setattr(provider_fetch_commands.httpx, "AsyncClient", FakeAsyncClient)
 
-    result = await service.call_tavily_map("https://example.com")
+    result = await provider_fetch_commands.call_tavily_map("https://example.com")
 
     assert result["ok"] is False
     assert result["error_type"] == "empty"
@@ -2175,7 +2212,7 @@ async def test_firecrawl_retries_retryable_http_error(monkeypatch):
 
     monkeypatch.setattr(provider_fetch_commands, "request_client", fake_request_client)
 
-    result = await service.call_firecrawl_scrape("https://example.com")
+    result = await provider_fetch_commands.call_firecrawl_scrape("https://example.com")
 
     assert result == "# Scraped"
     assert calls == 2
@@ -2209,8 +2246,8 @@ async def test_firecrawl_custom_base_is_used_for_search_and_scrape(monkeypatch):
 
     monkeypatch.setattr(provider_fetch_commands.httpx, "AsyncClient", FakeAsyncClient)
 
-    search_result = await service.call_firecrawl_search("query", limit=1)
-    scrape_result = await service.call_firecrawl_scrape("https://example.com")
+    search_result = await provider_search_commands.call_firecrawl_search("query", limit=1)
+    scrape_result = await provider_fetch_commands.call_firecrawl_scrape("https://example.com")
 
     assert [call[0] for call in calls] == [
         "https://firecrawl.example.com/v2/search",
@@ -2231,7 +2268,7 @@ async def test_exa_search_passes_parameters(monkeypatch):
 
     monkeypatch.setattr(provider_search_commands.ExaSearchProvider, "search", fake_search)
 
-    result = await service.exa_search(
+    result = await provider_search_commands.exa_search(
         "python docs",
         num_results=2,
         include_text=True,
@@ -2255,7 +2292,7 @@ async def test_exa_search_accepts_powershell_split_domain_filter(monkeypatch):
 
     monkeypatch.setattr(provider_search_commands.ExaSearchProvider, "search", fake_search)
 
-    result = await service.exa_search(
+    result = await provider_search_commands.exa_search(
         "freertos release",
         include_domains="github.com freertos.org",
         exclude_domains=["youtube.com", "x.com linkedin.com"],
@@ -2275,7 +2312,7 @@ async def test_exa_search_normalizes_error_json(monkeypatch):
 
     monkeypatch.setattr(provider_search_commands.ExaSearchProvider, "search", fake_search)
 
-    result = await service.exa_search("python docs")
+    result = await provider_search_commands.exa_search("python docs")
 
     assert result["ok"] is False
     assert result["error_type"] == "network_error"
@@ -2291,7 +2328,7 @@ async def test_exa_search_preserves_provider_error_type(monkeypatch):
 
     monkeypatch.setattr(provider_search_commands.ExaSearchProvider, "search", fake_search)
 
-    result = await service.exa_search("python docs")
+    result = await provider_search_commands.exa_search("python docs")
 
     assert result["ok"] is False
     assert result["error_type"] == "parameter_error"
@@ -2314,37 +2351,21 @@ async def test_anysearch_service_wrappers_decode_provider_json(monkeypatch):
             calls.append(("search", query, domain, sub_domain, max_results))
             return json.dumps({"ok": True, "provider": "anysearch", "tool": "search", "query": query})
 
-        async def extract(self, url, max_length=20000):
-            calls.append(("extract", url, max_length))
-            return json.dumps({"ok": True, "provider": "anysearch", "tool": "extract", "url": url})
-
-        async def batch_search(self, queries, max_results=3):
-            calls.append(("batch", queries, max_results))
-            return json.dumps({"ok": True, "provider": "anysearch", "tool": "batch_search", "results": []})
-
     monkeypatch.setenv("ANYSEARCH_API_URL", "https://anysearch.example.com/mcp")
     monkeypatch.setenv("ANYSEARCH_API_KEY", "as-test-secret")
     monkeypatch.setenv("ANYSEARCH_TIMEOUT_SECONDS", "7")
     monkeypatch.setattr(provider_vertical_commands, "AnySearchProvider", FakeAnySearchProvider)
 
-    domains = await service.anysearch_domains("security")
-    search = await service.anysearch_search("CVE-2024-3094", domain="security.cve", sub_domain="xz", max_results=2)
-    extract = await service.anysearch_extract("https://example.com", max_length=123)
-    batch = await service.anysearch_batch(["a", "b"], max_results=1)
+    domains = await provider_vertical_commands.anysearch_domains("security")
+    search = await provider_vertical_commands.anysearch_search("CVE-2024-3094", domain="security.cve", sub_domain="xz", max_results=2)
 
     assert domains["tool"] == "list_domains"
     assert search["query"] == "CVE-2024-3094"
-    assert extract["url"] == "https://example.com"
-    assert batch["tool"] == "batch_search"
     assert calls == [
         ("init", "https://anysearch.example.com/mcp", "as-test-secret", 7.0),
         ("domains", "security"),
         ("init", "https://anysearch.example.com/mcp", "as-test-secret", 7.0),
         ("search", "CVE-2024-3094", "security.cve", "xz", 2),
-        ("init", "https://anysearch.example.com/mcp", "as-test-secret", 7.0),
-        ("extract", "https://example.com", 123),
-        ("init", "https://anysearch.example.com/mcp", "as-test-secret", 7.0),
-        ("batch", ["a", "b"], 1),
     ]
 
 
@@ -2360,7 +2381,7 @@ async def test_anysearch_service_parse_error(monkeypatch):
     monkeypatch.setattr(provider_vertical_commands, "AnySearchProvider", FakeAnySearchProvider)
     monkeypatch.setenv("ANYSEARCH_API_KEY", "anysearch-test-secret")
 
-    result = await service.anysearch_domains()
+    result = await provider_vertical_commands.anysearch_domains()
 
     assert result["ok"] is False
     assert result["error_type"] == "parse_error"
@@ -2761,7 +2782,7 @@ async def test_call_jina_reader_decodes_provider_json(monkeypatch):
 
     monkeypatch.setattr(provider_fetch_commands, "JinaReaderProvider", FakeJinaReaderProvider)
 
-    result = await service.call_jina_reader("https://example.com")
+    result = await provider_fetch_commands.call_jina_reader("https://example.com")
 
     assert result == {"ok": True, "provider": "jina", "url": "https://example.com", "content": "# Page"}
 
@@ -2799,17 +2820,13 @@ async def test_zhipu_mcp_service_wrappers_decode_provider_json(monkeypatch):
     monkeypatch.setenv("ZHIPU_MCP_TIMEOUT_SECONDS", "7")
     monkeypatch.setattr(provider_mcp_commands, "ZhipuMCPProvider", FakeZhipuMCPProvider)
 
-    search = await service.zhipu_mcp_search("query", count=2)
-    reader = await service.zhipu_mcp_reader("https://example.com")
-    doc = await service.zhipu_mcp_search_doc("owner/repo", "install", max_results=3)
-    tree = await service.zhipu_mcp_repo_structure("owner/repo", ref="main")
-    file_data = await service.zhipu_mcp_read_file("owner/repo", "README.md", ref="main")
+    search = await provider_mcp_commands.zhipu_mcp_search("query", count=2)
+    reader = await provider_mcp_commands.zhipu_mcp_reader("https://example.com")
+    tree = await provider_mcp_commands.zhipu_mcp_repo_structure("owner/repo", ref="main")
 
     assert search["tool"] == "web_search_prime"
     assert reader["content"] == "# Page"
-    assert doc["tool"] == "search_doc"
     assert tree["tool"] == "get_repo_structure"
-    assert file_data["path"] == "README.md"
     assert calls[0] == (
         "init",
         "zhipu-mcp",

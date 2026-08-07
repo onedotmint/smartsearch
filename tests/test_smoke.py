@@ -31,7 +31,7 @@ async def test_mock_smoke_covers_deep_research_capability_matrix():
 
     expected = {
         "deep_research explicit planner simple current prompt uses capability plan",
-        "deep_research docs api prompt uses docs capabilities",
+        "deep_research docs api prompt uses retained generic tools",
         "deep_research claim verification requires fetch_before_claim",
         "deep_research url prompt is fetch first",
         "deep_research normal search prompt does not trigger",

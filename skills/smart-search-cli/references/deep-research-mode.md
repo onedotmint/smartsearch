@@ -48,7 +48,7 @@ Default orchestration:
 2. Call `smart-search deep "question" --format json` to create an offline `research_plan`.
 3. Inspect `intent_signals`, `decomposition`, and `capability_plan`; do not choose fixed topic recipe ids.
 4. Execute planned `smart-search search ... --validation balanced --extra-sources 1..3` steps for broad discovery and read routing metadata.
-5. Execute planned `exa-search`, `exa-similar`, `zhipu-search`, `context7-library`, `context7-docs`, or `map` only when their capability boundary matches the intent.
+5. Execute planned `smart-search search` steps for intent-matched discovery (docs/API, Chinese/current, or official-domain routes are selected internally by capability), or planned `map` steps when site structure is needed.
 6. Use `fetch` on key URLs before making claim-level statements.
 7. Run `gap_check`: if an important claim lacks fetched evidence, fetch another source or mark the claim/source as unverified.
 
@@ -142,7 +142,7 @@ Use this shape as the planning artifact:
 
 ## Step Contract
 
-Allowed `tool` values are `search`, `exa-search`, `exa-similar`, `zhipu-search`, `context7-library`, `context7-docs`, `fetch`, and `map`; these are the only valid `steps[].tool` values and map to existing CLI commands only. `doctor` is a `preflight` action, not a `steps[]` item. Simple plans may have one subquestion; complex plans should use 2-6 subquestions unless the user explicitly asks for exhaustive coverage.
+Allowed `tool` values are `search`, `fetch`, and `map`; these are the only valid `steps[].tool` values and map to existing CLI commands only. `doctor` is a `preflight` action, not a `steps[]` item. Simple plans may have one subquestion; complex plans should use 2-6 subquestions unless the user explicitly asks for exhaustive coverage.
 
 Each `steps[]` item must include `id`, `subquestion_id`, `tool`, `purpose`, `command`, and `output_path`. `steps[].command` and `steps[].output_path` are one contract: the `--output` path embedded in the executable command must match `output_path`, otherwise the AI agent cannot reliably find saved evidence.
 
@@ -150,13 +150,8 @@ Prefer PowerShell-safe quoted commands in generated plans because Windows users 
 
 ## Capability Boundaries
 
-- `search`: broad discovery and synthesis through `main_search`; use returned `routing_decision`, `provider_attempts`, `fallback_used`, and `source_warning` as orchestration signals, not as claim proof.
-- `zhipu-search`: Chinese, domestic, current, policy/regulatory, announcement, and China-local source discovery.
-- `context7-library` and `context7-docs`: library, SDK, API, framework, and documentation intent. Prefer Context7 before Exa for docs/API questions.
-- `exa-search`: low-noise source discovery for official domains, papers, product pages, known domains, and trusted pages. Do not treat Exa as the universal second hop for every high-risk or verification task.
-- `exa-similar`: adjacent-source discovery when a known reliable URL is available.
+- `search`: broad discovery and synthesis through `main_search`; use returned `routing_decision`, `provider_attempts`, `fallback_used`, and `source_warning` as orchestration signals, not as claim proof. Provider selection inside `search` is internal and intent-driven (for example `docs_search` providers for library/API intent and `web_search` providers for Chinese/current topics).
 - `search --extra-sources N`: Tavily/Firecrawl horizontal candidate collection for breadth. Treat those candidates as discovery until fetched.
-- `anysearch-domains` and `anysearch-search`: experimental vertical search. Inspect domains first, then search a selected domain; do not insert it into the default fallback chain.
 - `fetch`: page-content evidence. Key claims require fetched page text under `fetch_before_claim`.
 - `map`: site structure exploration before many fetches from one site; not claim evidence by itself.
 
@@ -190,7 +185,7 @@ Research provider advantage routing:
 - Tavily: broad source discovery and site map.
 - Jina: known public URL, PDF, and arXiv clean extraction; ReaderLM-v2 requires `JINA_API_KEY`.
 - Firecrawl: robust fetch fallback, JS-heavy/dynamic pages, browser-like extraction, OCR/PDF/structured extraction.
-- AnySearch: explicit vertical intent only, such as CVE, finance, legal, academic, and repository/codebase search.
+- AnySearch: experimental vertical capability only; it does not join research routes (no generic Evidence owner).
 
 Safe research overrides are `SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS` and `SMART_SEARCH_RESEARCH_DISABLED_PROVIDERS`. They may reorder or disable providers only inside capabilities the provider already supports; they must not move a provider across capability boundaries.
 
@@ -204,7 +199,7 @@ Safe research overrides are `SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS` and `SMA
 
 Deep Research smoke matrix for workflow maintenance is mock-full plus live-limited. Mock-full coverage should cover trigger phrases, normal search requests that should not trigger Deep Research, required `research_plan` fields, allowed tool whitelist, `fetch_before_claim`, evidence output paths, capability boundaries, `intent_signals`, `capability_plan`, `gap_check`, simple current prompts such as `深度搜索一下最近的比特币行情`, docs/API prompts, claim-verification prompts, user-provided URL fetch-first flows, missing-provider failure guidance, research provider advantage routing, same-capability research fallback, and the rule that fixed topic recipe ids are not required schema.
 
-Live-limited coverage should run `doctor`, one broad `search`, one `exa-search`, and one `fetch` only when real keys are available and the user expects live checks. Add one small `research` smoke when configured keys make it stable.
+Live-limited coverage should run `doctor`, one broad `search`, and one `fetch` only when real keys are available and the user expects live checks. Add one small `research` smoke when configured keys make it stable.
 
 Standard user-facing Deep Research tests:
 

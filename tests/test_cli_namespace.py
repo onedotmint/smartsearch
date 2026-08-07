@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from smart_search import cli
-from smart_search.cli_constants import NAMESPACE_COMMANDS
+from smart_search.cli_constants import CLIParseError, NAMESPACE_COMMANDS
 from smart_search.cli_parser import build_parser
 
 ROOT = Path(__file__).parents[1]
@@ -28,20 +28,28 @@ ROOT = Path(__file__).parents[1]
         (["provider", "status"], "provider-status", "provider-status"),
         (["provider", "probe", "exa"], "provider-probe", "provider-probe"),
         (["provider", "routes", "current"], "model", "provider-routes-current"),
-        (["provider", "exa", "search", "topic"], "exa-search", "provider-exa-search"),
-        (["provider", "context7", "docs", "/react", "hooks"], "context7-docs", "provider-context7-docs"),
-        (["provider", "zhipu", "search", "topic"], "zhipu-search", "provider-zhipu-search"),
-        (["provider", "zhipu-mcp", "reader", "https://example.com"], "zhipu-mcp-reader", "provider-zhipu-mcp-reader"),
         (["dev", "route-explain", "topic"], "route", "dev-route-explain"),
         (["dev", "skills", "status"], "skills", "dev-skills-status"),
-        (["experimental", "anysearch", "search", "topic"], "anysearch-search", "experimental-anysearch-search"),
-        (["experimental", "zread", "search-doc", "owner/repo", "topic"], "zhipu-mcp-search-doc", "experimental-zread-search-doc"),
     ],
 )
 def test_namespace_paths_normalize_to_v1_command(argv, command, operation):
     args = build_parser().parse_args(argv)
     assert args.command == command
     assert getattr(args, "namespace_operation", None) == operation
+
+
+def test_removed_provider_and_experimental_namespace_paths_are_rejected():
+    parser = build_parser(raise_on_error=True)
+    for argv in (
+        ["provider", "exa", "search", "topic"],
+        ["provider", "context7", "docs", "/react", "hooks"],
+        ["provider", "zhipu", "search", "topic"],
+        ["provider", "zhipu-mcp", "reader", "https://example.com"],
+        ["experimental", "anysearch", "search", "topic"],
+        ["experimental", "zread", "search-doc", "owner/repo", "topic"],
+    ):
+        with pytest.raises(CLIParseError):
+            parser.parse_args(argv)
 
 
 def test_collision_and_deferred_paths_remain_honest():
@@ -98,7 +106,7 @@ def test_root_help_and_help_all_are_deterministic_and_local(capsys):
     root_help = capsys.readouterr().out
     for name in ("search", "fetch", "capabilities", "setup"):
         assert f"    {name}" in root_help
-    for name in ("doctor", "provider", "dev", "experimental", "map"):
+    for name in ("doctor", "provider", "dev", "map"):
         assert f"    {name}" not in root_help
 
     assert cli.main(["--help-all"]) == 0
@@ -139,22 +147,6 @@ def test_research_plan_and_deep_share_one_handler(monkeypatch, capsys):
     assert calls == [("topic", "quick", ""), ("topic", "quick", "")]
     assert deep["command"] == namespaced["command"] == "deep"
     assert deep["steps"] == namespaced["steps"]
-
-
-def test_direct_provider_namespace_uses_same_exact_handler(monkeypatch, capsys):
-    calls = []
-
-    async def fake_exa(query, **kwargs):
-        calls.append((query, kwargs))
-        return {"ok": True, "provider": "exa", "query": query, "results": []}
-
-    monkeypatch.setattr(cli.service, "exa_search", fake_exa)
-    assert cli.main(["exa-search", "topic", "--num-results", "2"]) == 0
-    capsys.readouterr()
-    assert cli.main(["provider", "exa", "search", "topic", "--num-results", "2"]) == 0
-    capsys.readouterr()
-    assert len(calls) == 2
-    assert calls[0] == calls[1]
 
 
 def test_provider_catalog_is_one_snapshot_and_never_probes(monkeypatch, capsys):
@@ -219,10 +211,10 @@ def test_provider_catalog_maps_qualifications_and_excludes_synthetic_profile(mon
             "v2_capabilities": ["docs_discovery"],
             "tier": "core",
             "stability": "stable",
-            "replacement": "provider exa search|similar",
+            "replacement": "search (V2 source/docs discovery)",
             "network_behavior": "network_on_explicit_command",
-            "legacy_commands": ["exa-search", "exa-similar"],
-            "legacy_aliases": ["exa", "x", "xs"],
+            "legacy_commands": [],
+            "legacy_aliases": [],
             "qualifications": [{"provider": "exa", "capability": "docs_discovery", "tier": "core", "stability": "stable"}],
         }
     ]

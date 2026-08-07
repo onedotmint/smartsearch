@@ -14,12 +14,12 @@ from .capability_taxonomy import list_provider_qualifications, map_v1_to_v2_capa
 from .cli_constants import COMMAND_ALIASES, MODEL_COMMAND_ALIASES
 
 _REPLACEMENTS = {
-    "exa": "provider exa search|similar",
-    "context7": "provider context7 library|docs",
-    "zhipu": "provider zhipu search",
-    "zhipu-mcp": "provider zhipu-mcp search|reader",
-    "zhipu-mcp-zread": "experimental zread search-doc|repo-structure|read-file",
-    "anysearch": "experimental anysearch domains|search|extract|batch",
+    "exa": "search (V2 source/docs discovery)",
+    "context7": "search (V2 docs_discovery)",
+    "zhipu": "search (V2 source_discovery)",
+    "zhipu-mcp": "search | fetch (V2 source_discovery / content_fetch)",
+    "zhipu-mcp-zread": "no public command surface",
+    "anysearch": "no public command surface",
     "xai-responses": "provider routes",
     "openai-compatible": "provider routes",
     "tavily": "search | fetch | map",
@@ -28,16 +28,7 @@ _REPLACEMENTS = {
     "zhipu-mcp-reader": "fetch",
 }
 
-_LEGACY_COMMANDS = {
-    "exa": ["exa-search", "exa-similar"],
-    "context7": ["context7-library", "context7-docs"],
-    "zhipu": ["zhipu-search"],
-    "zhipu-mcp": ["zhipu-mcp-search", "zhipu-mcp-reader"],
-    "zhipu-mcp-zread": ["zhipu-mcp-search-doc", "zhipu-mcp-repo-structure", "zhipu-mcp-read-file"],
-    "anysearch": ["anysearch-domains", "anysearch-search", "anysearch-extract", "anysearch-batch"],
-    "xai-responses": ["model"],
-    "openai-compatible": ["model"],
-}
+_LEGACY_COMMANDS: dict[str, list[str]] = {}
 
 
 def _legacy_aliases(provider: str) -> list[str]:
