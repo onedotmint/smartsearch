@@ -46,12 +46,12 @@ smart-search --schema-version 2 map URL
 
 Rules:
 
-- v2 output is JSON only (`--format markdown|content` is `INVALID_ARGUMENT`).
+- v2 output defaults to JSON, the only stable machine contract. `--format markdown|content` selects one non-stable human presentation document of the same validated envelope.
 - v2 `search` has no `response_mode`; any `--response-mode` fails before network I/O.
 - v2 `search` is evidence-first discovery (candidates + routing/attempts). It never routes through legacy `main_search`.
 - v2 `capabilities` uses envelope operation `capability_status` with empty evidence/attempts/routing capability arrays and no Provider calls.
 - Only the root-global flag placement is supported: `smart-search --schema-version 2 <command>`.
-- Apart from an explicit `--format json`, v2 rejects v1 command options before configuration or Provider work; `map` remains Advanced and accepts only its URL in this release.
+- Apart from the explicit `--format json|markdown|content` selection, v2 rejects v1 command options before configuration or Provider work; `map` remains Advanced and accepts only its URL in this release.
 - Existing v1 command semantics, JSON wrapper, and Skill workflows are unchanged.
 
 ## Opt-in schema version 3 control-plane API
@@ -84,7 +84,7 @@ side_effects, error, meta
 - `status` is `complete`, `degraded`, or `failed`. Empty successful lists and successful no-op removals are `complete`; `degraded` means the requested operation completed with observable partial outcomes; `failed` includes a structured error.
 - `network` reports declared policy/scope and actual `attempted` state. `side_effects` separately reports config/filesystem reads and write attempt/commit state plus subprocess start. Do not infer I/O from status.
 - V3 error codes are `INVALID_ARGUMENT`, `CONFIGURATION_ERROR`, `AUTHENTICATION_FAILED`, `UPSTREAM_TIMEOUT`, `PROVIDER_UNAVAILABLE`, `FILE_SYSTEM_ERROR`, `SUBPROCESS_FAILED`, and `INTERNAL_ERROR`. `--fail-on-degraded` changes only the process exit to `6`.
-- V3 is JSON-only. It rejects markdown/content rendering, `--output`, `--force`, prompt overrides, `--trace`, aliases, Core evidence commands, exact Provider direct commands, and all `experimental` leaves before an owner runs.
+- V3 output defaults to JSON, the only stable machine contract. `--format markdown|content` selects one non-stable human presentation document of the same validated envelope. V3 rejects `--output`, `--force`, prompt overrides, `--trace`, aliases, Core evidence commands, exact Provider direct commands, and all `experimental` leaves before an owner runs.
 - Values, error details, URLs, and route credentials are recursively redacted. V3 does not expose v2 `evidence`, `routing`, capability-attempt fields, or trace types.
 
 V1 remains the default compatibility renderer and v2 remains the evidence-first Agent Core API. Existing scripts receive no new shape unless they explicitly select `--schema-version 3`. Rollback removes the v3 parser/dispatcher and this section only; it does not modify v1/v2 behavior or persisted configuration.

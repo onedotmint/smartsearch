@@ -218,6 +218,29 @@ def test_research_run_emits_one_strict_workflow_document(mock_evidence_owners, c
     assert mock_evidence_owners[0].startswith("fetch:")
 
 
+def test_research_run_presentation_formats_are_one_stdout_document(mock_evidence_owners, capsys):
+    """Markdown/content select one human stdout document after validation."""
+    code = cli.main(
+        ["research", "run", "https://example.com/about", "--format", "markdown"]
+    )
+    assert code == cli.EXIT_OK
+    out = capsys.readouterr().out
+    assert out.count("# Research Run") == 1
+    assert "Status: COMPLETE" in out
+    assert "## Evidence" in out
+    assert '"schema_version"' not in out
+    assert out.count("research.run") >= 1
+
+    code = cli.main(
+        ["research", "run", "https://example.com/about", "--format", "content"]
+    )
+    assert code == cli.EXIT_OK
+    out = capsys.readouterr().out
+    assert out.startswith("research.run COMPLETE:")
+    assert "evidence items" in out
+    assert out.count("\n") == 1
+
+
 def test_research_run_accepts_budget_and_profile(mock_evidence_owners, monkeypatch, capsys):
     captured: list[tuple[str, str]] = []
 
@@ -263,8 +286,6 @@ def test_research_run_accepts_budget_and_profile(mock_evidence_owners, monkeypat
     ("argv", "message"),
     [
         (["research", "run", "topic", "--synthesize", "--format", "json"], "answer synthesis"),
-        (["research", "run", "topic", "--format", "markdown"], "strict workflow JSON"),
-        (["research", "run", "topic", "--format", "content"], "strict workflow JSON"),
         (["research", "run", "topic", "--output", "out.json"], "output path"),
         (["research", "run", "topic", "--force"], "output path"),
         (["research", "run", "topic", "--evidence-dir", "/tmp/evidence"], "logical artifacts only"),

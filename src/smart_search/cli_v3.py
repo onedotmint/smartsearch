@@ -116,8 +116,8 @@ def _reject(args: Any, argv: list[str] | None) -> tuple[V3OperationDescriptor | 
         return descriptor, "v3 does not define trace output; omit --trace"
     if "format" in supplied:
         value = options.get("format")
-        if value != "json":
-            return descriptor, f"v3 supports only JSON output; got --format {value or ''}".rstrip()
+        if value not in ("json", "markdown", "content"):
+            return descriptor, f"v3 supports only --format json|markdown|content; got --format {value or ''}".rstrip()
     unsupported = sorted(supplied - _COMMON_OPTIONS - descriptor.permitted_options)
     if unsupported:
         return descriptor, f"v3 does not support --{unsupported[0]} for {descriptor.operation}"
@@ -178,7 +178,22 @@ async def dispatch(args: Any, *, argv: list[str] | None = None) -> int:
     except Exception:
         return _internal_error(descriptor)
 
-    _json_stdout(payload)
+    # The shared parser defaults differ per subcommand (the v1 diagnose parser
+    # defaults to markdown), so the typed family honors only an explicit
+    # ``--format`` in argv; otherwise JSON is the contract default.
+    fmt = "json"
+    options = _argv_options(argv)
+    if "format" in options:
+        fmt = options.get("format") or "json"
+    if fmt == "json":
+        _json_stdout(payload)
+    else:
+        # The validated payload above is the contract authority; the
+        # presentation view is a pure one-way human rendering of the same
+        # validated redacted payload. Exactly one stdout document is emitted.
+        from .presentation import render_v3
+
+        sys.stdout.write(render_v3(payload, fmt))
     return exit_code_for(
         payload,
         fail_on_degraded=bool(getattr(args, "fail_on_degraded", False)),

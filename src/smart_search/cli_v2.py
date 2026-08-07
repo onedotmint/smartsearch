@@ -116,8 +116,8 @@ def _reject_v1_only(args: Any, *, argv: list[str] | None = None) -> str | None:
     if command not in _V2_SUPPORTED:
         return f"command {command!r} is not supported under --schema-version 2"
     fmt = getattr(args, "format", "json")
-    if fmt and fmt != "json":
-        return f"v2 supports only JSON output; got --format {fmt}"
+    if fmt not in ("json", "markdown", "content"):
+        return f"v2 supports only --format json|markdown|content; got --format {fmt}"
     disallowed = _V2_DISALLOWED_NONEMPTY.get(command, frozenset())
     present_options = _argv_option_names(argv)
     for name in disallowed:
@@ -234,7 +234,15 @@ async def dispatch(args: Any, *, argv: list[str] | None = None) -> int:
     except Exception:
         return _emit_internal_error(command, _COMMAND_OPERATION.get(command))
 
-    _json_stdout(payload)
+    fmt = getattr(args, "format", "json")
+    if fmt == "json":
+        _json_stdout(payload)
+    else:
+        # Pure one-way human presentation over the validated redacted payload.
+        # The exit code is always derived from the validated JSON authority.
+        from .presentation import render_v2
+
+        sys.stdout.write(render_v2(payload, fmt))
     return exit_code_for(payload, fail_on_degraded=bool(getattr(args, "fail_on_degraded", False)))
 
 

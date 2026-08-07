@@ -115,8 +115,11 @@ be promoted to Deep Research merely because the word "latest" appears.
 
 ### Agent default: schema v2
 
-Use root-global `--schema-version 2` for the evidence-first Core path. Output is
-JSON-only. stdout contains exactly one final JSON document.
+Use root-global `--schema-version 2` for the evidence-first Core path. Output
+defaults to JSON, the only stable machine contract. `--format markdown|content`
+selects one non-stable human presentation document of the same validated
+envelope; those views have no field-level machine compatibility promise.
+stdout contains exactly one document.
 
 The top-level v2 envelope order is:
 

@@ -67,7 +67,7 @@ smart-search --schema-version 2 fetch "https://example.com/page"
 
 `map` is available as the Advanced `site_discovery` operation; see the command reference for its v2 invocation.
 
-- v2 is **JSON-only** and returns the Phase 2 envelope (`status`, `operation`, `evidence`, `routing`, `attempts`, ...).
+- v2 defaults to JSON, the only stable machine contract, and returns the Phase 2 envelope (`status`, `operation`, `evidence`, `routing`, `attempts`, ...). `--format markdown|content` renders a non-stable human view of the same validated envelope; JSON keeps no field-level compatibility promise for those views.
 - v2 `search` returns discovery candidates only; it never calls legacy `main_search` or accepts `--response-mode`.
 - Host agents write the final answer from fetched `evidence.items`; discovery candidates are not claim-level proof.
 - `capabilities` uses envelope-only meta operation `capability_status` (local inspection, no Provider network).
@@ -84,7 +84,7 @@ smart-search --schema-version 3 doctor status
 smart-search --schema-version 3 dev smoke --mock
 ```
 
-V3 returns `complete` / `degraded` / `failed` plus explicit `network` and `side_effects` objects. It is root-global, JSON-only, and additive: v1 stays the default and v2 stays the evidence-first Core API. See the [command reference](docs/commands.md#opt-in-schema-version-3-control-plane-api) for its allowlist, errors, exits, and migration boundary.
+V3 returns `complete` / `degraded` / `failed` plus explicit `network` and `side_effects` objects. It is root-global, JSON-default, and additive: v1 stays the default and v2 stays the evidence-first Core API. JSON is the only stable machine contract; `--format markdown|content` renders non-stable human views of the validated envelope. See the [command reference](docs/commands.md#opt-in-schema-version-3-control-plane-api) for its allowlist, errors, exits, and migration boundary.
 
 ## Choose a workflow
 

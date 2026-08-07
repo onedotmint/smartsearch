@@ -67,7 +67,7 @@ smart-search --schema-version 2 fetch "https://example.com/page"
 
 `map` 作为 Advanced `site_discovery` operation 提供；v2 用法见命令参考。
 
-- v2 **仅支持 JSON**，返回 Phase 2 envelope（`status`、`operation`、`evidence`、`routing`、`attempts` 等）。
+- v2 默认输出 JSON——唯一稳定的机器契约——并返回 Phase 2 envelope（`status`、`operation`、`evidence`、`routing`、`attempts` 等）。`--format markdown|content` 渲染同一 validated envelope 的非稳定人类视图；这些视图不提供字段级机器兼容承诺。
 - v2 `search` 只返回 discovery candidates；不会调用 legacy `main_search`，也不接受 `--response-mode`。
 - Host Agent 基于 fetched `evidence.items` 写最终回答；discovery candidates 不是 claim-level 证据。
 - `capabilities` 使用 envelope-only 元操作 `capability_status`（本地只读检查，不发 Provider 网络请求）。
@@ -84,7 +84,7 @@ smart-search --schema-version 3 doctor status
 smart-search --schema-version 3 dev smoke --mock
 ```
 
-V3 返回 `complete` / `degraded` / `failed`，并以独立的 `network` 与 `side_effects` 对象声明实际执行影响。它只接受根级全局入口和 JSON，且是 additive 的：v1 仍为默认，v2 仍为 evidence-first Core API。完整 allowlist、错误、退出码和迁移边界见[命令参考](docs/commands.md#opt-in-schema-version-3-control-plane-api)。
+V3 返回 `complete` / `degraded` / `failed`，并以独立的 `network` 与 `side_effects` 对象声明实际执行影响。它只接受根级全局入口，默认输出 JSON（唯一稳定机器契约），且是 additive 的：v1 仍为默认，v2 仍为 evidence-first Core API。`--format markdown|content` 渲染同一 validated envelope 的非稳定人类视图。完整 allowlist、错误、退出码和迁移边界见[命令参考](docs/commands.md#opt-in-schema-version-3-control-plane-api)。
 
 ## 选择工作流
 

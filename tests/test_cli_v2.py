@@ -58,13 +58,65 @@ def test_v2_response_mode_rejected_before_network(monkeypatch):
     assert "response_mode" in payload["error"]["message"]
 
 
-def test_v2_markdown_format_rejected():
+def test_v2_presentation_formats_are_one_stdout_document(monkeypatch):
+    """Markdown/content select one human stdout document after validation."""
+    from smart_search import api_v2
+    from smart_search.v2_contract import (
+        V2Candidate,
+        V2Envelope,
+        V2Evidence,
+        V2Meta,
+        V2Routing,
+        V2Status,
+        validate_result,
+    )
+
+    async def fake_composite(query, max_results=5):
+        return validate_result(
+            V2Envelope(
+                V2Status.COMPLETE,
+                "search",
+                "source_discovery",
+                {"total": 1, "items": [{"id": "c1"}]},
+                V2Evidence(candidates=(V2Candidate("c1", "https://example.com", "tavily", "T", "s"),)),
+                V2Routing(("source_discovery",), ("source_discovery",), "v2", ("source_discovery",)),
+                (),
+                (),
+                None,
+                V2Meta("fmt-test", 1),
+            )
+        )
+
+    monkeypatch.setattr(api_v2, "_composite_search", fake_composite)
+    code, out, err = _run_main(["--schema-version", "2", "search", "q", "--format", "markdown"])
+    assert code == 0, err
+    assert out.count("# V2 Search") == 1
+    assert "Status: COMPLETE" in out
+    assert out.count('"schema_version"') == 0
+
+    code, out, err = _run_main(["--schema-version", "2", "search", "q", "--format", "content"])
+    assert code == 0, err
+    assert out.strip() == "s"
+
+    code, out, err = _run_main(["--schema-version", "2", "search", "q", "--format", "json"])
+    assert code == 0, err
+    assert json.loads(out)["status"] == "complete"
+
+
+def test_v2_output_and_force_remain_rejected(monkeypatch):
+    """The typed family never projects an output path; JSON contract rules."""
     code, out, err = _run_main([
-        "--schema-version", "2", "search", "q", "--format", "markdown",
+        "--schema-version", "2", "search", "q", "--output", "out.md",
     ])
     assert code == 2
     payload = json.loads(out)
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert "output" in payload["error"]["message"]
+    code, out, err = _run_main(["--schema-version", "2", "search", "q", "--force"])
+    assert code == 2
+    payload = json.loads(out)
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert "force" in payload["error"]["message"]
 
 
 def test_v2_capabilities_complete_shape(monkeypatch, tmp_path):

@@ -1,8 +1,11 @@
 """Narrow strict research workflow CLI route.
 
-Routes only the canonical ``research run QUERY --format json`` path to the
-strict typed Research Workflow owner (``research_workflow``) and its contract
-serializer (``research_workflow_contract``). The route validates options and
+Routes only the canonical ``research run QUERY`` path to the strict typed
+Research Workflow owner (``research_workflow``) and its contract serializer
+(``research_workflow_contract``). ``--format json|markdown|content`` selects
+one stdout document after the workflow result is validated; JSON is the only
+stable machine contract and the presentation views are pure human renderings
+of the same validated redacted payload. The route validates options and
 input before any owner/provider/config work: invalid argv fails with a strict
 workflow INVALID_ARGUMENT result and never imports the legacy research
 service, providers, or configuration.
@@ -79,9 +82,9 @@ def _argv_option_names(argv: list[str] | None) -> set[str]:
 def _reject_invalid_options(args: Any, *, argv: list[str] | None) -> tuple[str, str] | None:
     """Return ``(message, argument)`` for the first invalid option, else None."""
     fmt = getattr(args, "format", "json")
-    if fmt and fmt != "json":
+    if fmt not in ("json", "markdown", "content"):
         return (
-            f"research.run emits only strict workflow JSON; got --format {fmt}",
+            f"research.run supports only --format json|markdown|content; got --format {fmt}",
             "--format",
         )
     present = _argv_option_names(argv)
@@ -169,7 +172,16 @@ async def dispatch(args: Any, *, argv: list[str] | None = None) -> int:
             return emit_parser_error(str(exc))
         _json_stdout(_internal_error_payload())
         return EXIT_INTERNAL
-    _json_stdout(payload)
+    fmt = getattr(args, "format", "json")
+    if fmt == "json":
+        _json_stdout(payload)
+    else:
+        # The validated workflow payload above is the contract authority; the
+        # presentation view is a pure one-way human rendering of the same
+        # validated redacted payload. Exactly one stdout document is emitted.
+        from .presentation import render_workflow
+
+        sys.stdout.write(render_workflow(payload, fmt))
     return exit_code_for(payload, fail_on_degraded=bool(getattr(args, "fail_on_degraded", False)))
 
 

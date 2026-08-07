@@ -225,7 +225,7 @@ def build_parser(*, raise_on_error: bool = False) -> argparse.ArgumentParser:
     diagnose_parser.set_defaults(command="diagnose")
     diagnose_parser.add_argument("diagnose_target", choices=["openai-compatible"])
     diagnose_parser.add_argument("--timeout", type=float, default=30, metavar="SECONDS", help="Per search-shape probe timeout in seconds.")
-    diagnose_parser.add_argument("--format", choices=["json", "markdown"], default="markdown")
+    diagnose_parser.add_argument("--format", choices=["json", "markdown", "content"], default="markdown")
     diagnose_parser.add_argument("--output", default="", help="Write rendered output to a file.")
     diagnose_parser.add_argument("--force", action="store_true", help="Allow replacing an existing output file.")
 
@@ -446,7 +446,7 @@ def build_parser(*, raise_on_error: bool = False) -> argparse.ArgumentParser:
     diagnose_openai = diagnose_sub.add_parser("openai-compatible")
     diagnose_openai.set_defaults(command="diagnose", diagnose_target="openai-compatible", namespace_operation="dev-diagnose-openai-compatible")
     diagnose_openai.add_argument("--timeout", type=float, default=30, metavar="SECONDS")
-    diagnose_openai.add_argument("--format", choices=["json", "markdown"], default="markdown")
+    diagnose_openai.add_argument("--format", choices=["json", "markdown", "content"], default="markdown")
     diagnose_openai.add_argument("--output", default="")
     diagnose_openai.add_argument("--force", action="store_true")
     smoke = dev_sub.add_parser("smoke")
@@ -459,6 +459,7 @@ def build_parser(*, raise_on_error: bool = False) -> argparse.ArgumentParser:
     _add_format_args(smoke)
     regression = dev_sub.add_parser("regression")
     regression.set_defaults(command="regression", namespace_operation="dev-regression")
+    _add_format_args(regression)
     dev_skills = dev_sub.add_parser("skills")
     dev_skills_sub = dev_skills.add_subparsers(dest="skills_command", required=True, parser_class=_SubParser)
     for name in ("status", "update"):

@@ -337,6 +337,63 @@ def test_v3_packaged_regression_fallback_works_inside_event_loop(monkeypatch, ca
     assert payload["side_effects"]["subprocess"]["started"] is False
 
 
+def test_v3_dev_regression_format_owner_once_and_strict_rejection(monkeypatch, capsys):
+    """Explicit dev regression --format json|markdown|content selects one
+    stdout document and runs the owner exactly once per invocation;
+    --output, --force, and an invalid format value are strictly rejected
+    with a v3 INVALID_ARGUMENT document and no owner execution."""
+    from smart_search import control_operations, operations_service
+
+    calls = []
+    monkeypatch.setattr(control_operations, "_regression_test_files_available", lambda _root: False)
+
+    async def fake_smoke(mode="mock"):
+        return {"ok": True, "mode": mode, "cases": [], "failed_cases": [], "degraded_cases": []}
+
+    monkeypatch.setattr(operations_service, "_execute_smoke", fake_smoke)
+
+    def fake_regression():
+        calls.append("regression")
+        return {"ok": True, "exit_code": 0, "subprocess_started": True, "fallback": ""}
+
+    monkeypatch.setattr(control_operations, "_execute_regression", fake_regression)
+
+    assert main(["--schema-version", "3", "dev", "regression", "--format", "markdown"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("# V3 Regression")
+    assert '"schema_version"' not in out
+    assert calls == ["regression"]
+
+    assert main(["--schema-version", "3", "dev", "regression", "--format", "content"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("dev.regression COMPLETE:")
+    assert calls == ["regression", "regression"]
+
+    assert main(["--schema-version", "3", "dev", "regression", "--format", "json"]) == 0
+    payload = _payload(capsys)
+    assert payload["operation"] == "dev.regression"
+    assert calls == ["regression", "regression", "regression"]
+
+    # --output / --force remain strictly rejected without running the owner.
+    for argv in (
+        ["--schema-version", "3", "dev", "regression", "--output", "out.md"],
+        ["--schema-version", "3", "dev", "regression", "--force"],
+    ):
+        assert main(argv) == 2
+        payload = _payload(capsys)
+        assert payload["error"]["code"] == "INVALID_ARGUMENT"
+        assert payload["operation"] == "dev.regression"
+    assert calls == ["regression", "regression", "regression"]
+
+    # An invalid format value is rejected before any owner execution.
+    assert main(["--schema-version", "3", "dev", "regression", "--format", "yaml"]) == 2
+    payload = _payload(capsys)
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert "yaml" in payload["error"]["message"]
+    assert calls == ["regression", "regression", "regression"]
+
+
+
 def test_v3_internal_error_does_not_claim_writes_or_leak_secrets(monkeypatch, capsys):
     from smart_search import control_operations
 

@@ -30,7 +30,7 @@
 - `smart-search route-calibrate [--models CSV] [--format json|markdown|content] [--output PATH]`
 - `smart-search map URL [--instructions TEXT] [--max-depth N] [--max-breadth N] [--limit N] [--timeout SECONDS] [--format json|markdown|content] [--output PATH]`
 - `smart-search doctor [--format json|markdown|content] [--output PATH]`
-- `smart-search diagnose openai-compatible [--timeout SECONDS] [--format json|markdown] [--output PATH]`
+- `smart-search diagnose openai-compatible [--timeout SECONDS] [--format json|markdown|content] [--output PATH]`
 - `smart-search setup [--lang zh|en] [--advanced] [--non-interactive] [--skip-skills] [--install-skills CSV] [--skills-root PATH] [--minimum-profile lite|standard|full|off] [--format json|markdown|content] [--output PATH]`
 - `smart-search config path|list|set|unset ... [--format json|markdown|content] [--output PATH]`
 - `smart-search model current|list [--format json|markdown|content] [--output PATH]`
@@ -45,7 +45,7 @@
 - `smart-search provider probe PROVIDER [--format json|markdown|content] [--output PATH]` probes exactly one named provider/family (`command=provider-probe`).
 - `smart-search provider routes current|list|add|remove ...` preserves the matching legacy `model` behavior.
 - `smart-search dev route-explain|route-calibrate|diagnose|smoke|regression|skills ...` are namespace-compatible developer entries with no new aliases.
-- Agent default Core path: `smart-search --schema-version 2 capabilities|search|fetch` (JSON-only evidence-first envelope).
+- Agent default Core path: `smart-search --schema-version 2 capabilities|search|fetch` (JSON-default evidence-first envelope; JSON is the only stable machine contract).
 
 ## Aliases
 
