@@ -31,8 +31,8 @@ Run deterministic checks before any live provider probe:
 ```sh
 python -m compileall -q src tests
 python -m pytest tests -q
-python -m smart_search.cli regression
-python -m smart_search.cli smoke --mock --format json
+python -m smart_search.cli dev regression
+python -m smart_search.cli dev smoke --mock --format json
 npm test
 npm pack --dry-run
 git diff --check
@@ -40,11 +40,11 @@ git diff --check
 
 Live `doctor`, live smoke, and provider probes require intentional credentials and network access. They supplement deterministic checks; they do not replace them.
 
-The regression suite checks the public README entrypoint, docs links, public/packaged skill parity, CLI contract markers, provider contract references, and release workflow assumptions. README should not become the source of truth for provider internals or AI-agent orchestration.
+The developer quality-gate suite checks the public README entrypoint, docs links, public/packaged skill parity, CLI contract markers, provider contract references, and release workflow assumptions. README should not become the source of truth for provider internals or AI-agent orchestration.
 
 ### Versioned JSON contracts
 
-Keep the schema families independent during maintenance. The canonical command domain alone decides the contract: evidence commands always use V2, retained control-plane leaves always use V3, and `research plan` / `research run` use the Research Workflow family. There is no schema v1 runtime path and no `--schema-version` selector. V3 fixtures live in `tests/fixtures/control_plane_v3.py`; contract and CLI coverage lives in `tests/test_control_plane_v3_contract.py` and `tests/test_cli_v3.py`.
+Keep the schema families independent during maintenance. The canonical command domain alone decides the contract: evidence commands always use V2, retained control-plane leaves always use V3, and `research plan` / `research run` use the Research Workflow family. There is no schema v1 runtime path and no schema selector. V3 fixtures live in `tests/fixtures/control_plane_v3.py`; contract and CLI coverage lives in `tests/test_control_plane_v3_contract.py` and `tests/test_cli_v3.py`.
 
 For a v3 change, verify the exact ten top-level fields, the operation allowlist, structured error/exit mapping, recursive redaction, and actual `network` / `side_effects` metadata. Run at least:
 

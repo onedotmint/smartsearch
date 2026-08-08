@@ -44,8 +44,8 @@ smart-search search "Reuters Iran Hormuz latest" --format json > ./evidence/01-s
 smart-search fetch "https://example.com/source" --format markdown > ./evidence/02-fetch.md
 ```
 
-The runtime cache never stores synthesis answers, credentials, prompts, errors, empty results, or research artifacts. It may cache cleaned successful source/content results when explicitly enabled; caching does not change freshness or evidence requirements.
+The runtime cache never stores generated answers, credentials, prompts, errors, empty results, or research artifacts. It may cache cleaned successful source/content results when explicitly enabled; caching does not change freshness or evidence requirements.
 
 ## Degraded results
 
-When provider or synthesis failures prevent complete coverage, keep the fetched evidence and report the missing support. `research run` may finish with `degraded` status or explicit gaps while intentionally leaving answer fields empty. Bare `research`, `rs`, `deep`, and `dr` are removed spellings that fail with the workflow family's strict error, and `research run --synthesize` is rejected before any owner work. Neither path may invent evidence, treat a discovery snippet as a citation, or silently call another capability as a substitute.
+When provider or answer-generation failures prevent complete coverage, keep the fetched evidence and report the missing support. `research run` may finish with `degraded` status or explicit gaps while intentionally leaving answer fields empty. Bare `research`, `rs`, `deep`, and `dr` are removed spellings that fail with the workflow family's strict error, and answer-generation flags are rejected before any owner work. Neither path may invent evidence, treat a discovery snippet as a citation, or silently call another capability as a substitute.

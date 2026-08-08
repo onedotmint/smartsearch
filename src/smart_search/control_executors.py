@@ -1,10 +1,17 @@
-"""Diagnostics, configuration, smoke, and output operations."""
+"""Private low-level executors owned by the typed Control plane.
+
+These raw executors were historically supplied by the v1 ``operations_service``
+compatibility seam. With the v1 runtime removed they live beside the typed
+``control_operations`` owner that consumes them. They return raw execution
+facts; status, network, side-effect and degradation semantics are always
+derived by the typed owner (``control_operations``), never by this module.
+This module is not a public API and is not exported anywhere.
+"""
+
+from __future__ import annotations
 
 import json
-import os
-import tempfile
 import time
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -21,25 +28,17 @@ from .capability_service import (
 )
 from .config import config
 from .logger import logger
+from .operation_runtime import _run_web_fetch_fallback
 from .provider_diagnostics import (
-    _error_type_for_status,
-    _normalize_probe_status,
     _test_context7_connection,
     _test_exa_connection,
     _test_jina_connection,
     _test_tavily_connection,
     _test_zhipu_connection,
     _test_zhipu_mcp_connection,
-    provider_probe_base,
-    run_probe_adapter,
 )
-from .provider_fetch_commands import fetch
 from .providers.openai_compatible import OpenAICompatibleSearchProvider, get_local_time_info
-from .research_service import (
-    _research_capability_routes,
-    _research_fetch_order,
-    build_deep_research_plan,
-)
+from .research_service import build_research_workflow_plan
 from .security import sanitize_data
 from .service_support import (
     COMMAND_CAPABILITY_MATRIX,
@@ -89,6 +88,7 @@ async def _test_primary_chat_completion(api_url: str, api_key: str, model: str) 
             "has_content": bool(response.text.strip()),
         }
 
+
 def _diagnose_check_result(
     *,
     name: str,
@@ -114,6 +114,7 @@ def _diagnose_check_result(
     if stream is not None:
         result["stream"] = stream
     return result
+
 
 def _openai_compatible_diagnosis(quick: dict[str, Any], no_stream: dict[str, Any], stream: dict[str, Any]) -> tuple[bool, str, str]:
     quick_ok = quick.get("status") == "ok"
@@ -156,6 +157,7 @@ def _openai_compatible_diagnosis(quick: dict[str, Any], no_stream: dict[str, Any
         "OpenAI-compatible 基础请求不可用。",
         "请先检查 API URL、API key、模型名和网络；修好后再运行本诊断命令。",
     )
+
 
 async def _probe_openai_compatible_search_shape(
     api_url: str,
@@ -271,6 +273,7 @@ async def _probe_openai_compatible_search_shape(
     except Exception as e:
         return _diagnose_check_result(name=name, status="error", message=f"运行错误: {e}", start=start, stream=stream)
 
+
 async def _execute_diagnose_openai_compatible(timeout_seconds: float = 30.0) -> dict[str, Any]:
     """Shared OpenAI-compatible diagnosis execution (private low-level owner)."""
     start = time.time()
@@ -345,10 +348,6 @@ async def _execute_diagnose_openai_compatible(timeout_seconds: float = 30.0) -> 
     )
     return result
 
-async def diagnose_openai_compatible(timeout_seconds: float = 30.0) -> dict[str, Any]:
-    """v1 compatibility wrapper over the shared diagnosis execution."""
-    return await _execute_diagnose_openai_compatible(timeout_seconds=timeout_seconds)
-
 
 async def _test_primary_connection(api_url: str, api_key: str, model: str) -> dict[str, Any]:
     chat_test = await _test_primary_chat_completion(api_url, api_key, model)
@@ -407,6 +406,7 @@ async def _test_primary_connection(api_url: str, api_key: str, model: str) -> di
         result["available_models"] = models_test["available_models"]
     return result
 
+
 async def _test_primary_responses(api_url: str, api_key: str, model: str) -> dict[str, Any]:
     responses_url = f"{api_url.rstrip('/')}/responses"
     start = time.time()
@@ -425,10 +425,12 @@ async def _test_primary_responses(api_url: str, api_key: str, model: str) -> dic
             return {"status": "warning", "message": f"HTTP {response.status_code}: {response.text[:100]}", "response_time_ms": response_time}
         return {"status": "ok", "message": f"xAI Responses API 可用 (HTTP {response.status_code})", "response_time_ms": response_time}
 
+
 async def _test_main_provider_connection(provider_config: dict[str, Any]) -> dict[str, Any]:
     if provider_config["mode"] == "xai-responses":
         return await _test_primary_responses(provider_config["api_url"], provider_config["api_key"], provider_config["model"])
     return await _test_primary_connection(provider_config["api_url"], provider_config["api_key"], provider_config["model"])
+
 
 async def _safe_test_main_provider_connection(provider_config: dict[str, Any]) -> dict[str, Any]:
     try:
@@ -439,6 +441,7 @@ async def _safe_test_main_provider_connection(provider_config: dict[str, Any]) -
         return {"status": "error", "message": f"{provider_config['provider']} 网络错误: {str(e)}"}
     except Exception as e:
         return {"status": "error", "message": f"{provider_config['provider']} 未知错误: {str(e)}"}
+
 
 def _execute_doctor_status() -> dict[str, Any]:
     """Local readiness only: config, capability snapshot, evidence path, router.
@@ -532,168 +535,6 @@ def _execute_doctor_status() -> dict[str, Any]:
 
     sanitized = sanitize_data(result)
     return sanitized if isinstance(sanitized, dict) else result
-
-
-def doctor_status() -> dict[str, Any]:
-    """v1 compatibility wrapper over the shared local-readiness execution."""
-    return _execute_doctor_status()
-
-
-async def _execute_provider_probe(provider: str) -> dict[str, Any]:
-    """Probe exactly one named provider or main-search route family.
-
-    Shared low-level execution used by the v1 compatibility wrapper and the
-    typed ``provider.probe`` owner.
-    """
-    base = provider_probe_base(provider)
-    if base.get("error_type") == "parameter_error":
-        sanitized = sanitize_data(base)
-        return sanitized if isinstance(sanitized, dict) else base
-    if base.get("status") == "unsupported":
-        sanitized = sanitize_data(base)
-        return sanitized if isinstance(sanitized, dict) else base
-
-    if base.get("availability_reason") == "invalid_model_routes":
-        result = {
-            **base,
-            "ok": False,
-            "network_attempted": False,
-            "status": "config_error",
-            "error_type": "config_error",
-            "error": base.get("availability_error") or "Invalid SMART_SEARCH_MODEL_ROUTES",
-            "message": base.get("availability_error") or "Invalid SMART_SEARCH_MODEL_ROUTES",
-        }
-        sanitized = sanitize_data(result)
-        return sanitized if isinstance(sanitized, dict) else result
-
-    if not base.get("configured"):
-        result = {
-            **base,
-            "ok": False,
-            "network_attempted": False,
-            "status": "not_configured",
-            "error_type": "config_error",
-            "error": str(base.get("availability_reason") or "not_configured"),
-            "message": str(base.get("availability_reason") or "not_configured"),
-        }
-        sanitized = sanitize_data(result)
-        return sanitized if isinstance(sanitized, dict) else result
-
-    if not base.get("enabled"):
-        result = {
-            **base,
-            "ok": False,
-            "network_attempted": False,
-            "status": "disabled",
-            "error_type": "config_error",
-            "error": str(base.get("availability_reason") or "disabled"),
-            "message": str(base.get("availability_reason") or "disabled"),
-        }
-        sanitized = sanitize_data(result)
-        return sanitized if isinstance(sanitized, dict) else result
-
-    if not base.get("eligible"):
-        result = {
-            **base,
-            "ok": False,
-            "network_attempted": False,
-            "status": "config_error",
-            "error_type": "config_error",
-            "error": str(base.get("availability_error") or base.get("availability_reason") or "provider_not_eligible"),
-            "message": str(base.get("availability_error") or base.get("availability_reason") or "provider_not_eligible"),
-            "response_time_ms": 0,
-        }
-        sanitized = sanitize_data(result)
-        return sanitized if isinstance(sanitized, dict) else result
-
-    provider_id = str(base.get("provider") or "")
-    if base.get("route_family"):
-        try:
-            routes = [
-                item
-                for item in _main_search_provider_configs()
-                if item.get("provider") == provider_id
-            ]
-        except ValueError as exc:
-            result = {
-                **base,
-                "ok": False,
-                "network_attempted": False,
-                "status": "config_error",
-                "error_type": "config_error",
-                "error": str(exc),
-                "message": str(exc),
-                "routes": [],
-            }
-            sanitized = sanitize_data(result)
-            return sanitized if isinstance(sanitized, dict) else result
-
-        if not routes:
-            result = {
-                **base,
-                "ok": False,
-                "network_attempted": False,
-                "status": "not_configured",
-                "error_type": "config_error",
-                "error": f"No configured {provider_id} routes",
-                "message": f"No configured {provider_id} routes",
-                "routes": [],
-            }
-            sanitized = sanitize_data(result)
-            return sanitized if isinstance(sanitized, dict) else result
-
-        route_results: list[dict[str, Any]] = []
-        for route in routes:
-            probe = _normalize_probe_status(dict(await _safe_test_main_provider_connection(route)))
-            probe["route_id"] = route.get("route_id") or ""
-            probe["provider"] = provider_id
-            route_results.append(probe)
-        ok = any(item.get("status") == "ok" for item in route_results)
-        primary = next((item for item in route_results if item.get("status") == "ok"), route_results[0])
-        status = "ok" if ok else str(primary.get("status") or "network_error")
-        result = {
-            **base,
-            "ok": ok,
-            "network_attempted": True,
-            "status": status,
-            "error_type": _error_type_for_status(status, network_attempted=True),
-            "error": "" if ok else str(primary.get("message") or status),
-            "message": str(primary.get("message") or ("ok" if ok else status)),
-            "response_time_ms": primary.get("response_time_ms", 0),
-            "routes": route_results,
-        }
-        result.pop("availability_reason", None)
-        result.pop("availability_error", None)
-        result.pop("route_family", None)
-        sanitized = sanitize_data(result)
-        return sanitized if isinstance(sanitized, dict) else result
-
-    probe = await run_probe_adapter(provider_id)
-    status = str(probe.get("status") or "provider_error")
-    network_attempted = status not in {"not_configured", "disabled", "config_error", "unsupported"}
-    ok = status == "ok"
-    result = {
-        **base,
-        "ok": ok,
-        "network_attempted": network_attempted,
-        "status": status,
-        "error_type": _error_type_for_status(status, network_attempted=network_attempted),
-        "error": "" if ok else str(probe.get("message") or status),
-        "message": str(probe.get("message") or status),
-        "response_time_ms": probe.get("response_time_ms", 0),
-    }
-    if probe.get("experimental"):
-        result["experimental"] = True
-    result.pop("availability_reason", None)
-    result.pop("availability_error", None)
-    result.pop("route_family", None)
-    sanitized = sanitize_data(result)
-    return sanitized if isinstance(sanitized, dict) else result
-
-
-async def provider_probe(provider: str) -> dict[str, Any]:
-    """v1 compatibility wrapper over the shared exact-provider probe."""
-    return await _execute_provider_probe(provider)
 
 
 async def _execute_doctor_probe() -> dict[str, Any]:
@@ -885,9 +726,6 @@ async def _execute_doctor_probe() -> dict[str, Any]:
     logger.info("doctor 诊断完成: ok=%s profile=%s", safe_info.get("ok", False), active_profile)
     return safe_info
 
-async def doctor() -> dict[str, Any]:
-    """v1 compatibility wrapper over the shared aggregate doctor execution."""
-    return await _execute_doctor_probe()
 
 def _model_routes_result(action: str) -> dict[str, Any]:
     """
@@ -967,164 +805,6 @@ def _model_routes_result(action: str) -> dict[str, Any]:
     return result
 
 
-def current_model() -> dict[str, Any]:
-    from .control_operations import run_provider_routes_current
-
-    outcome = _run_sync(run_provider_routes_current())
-    return _project_legacy_outcome(outcome)
-
-
-def model_list() -> dict[str, Any]:
-    from .control_operations import run_provider_routes_list
-
-    outcome = _run_sync(run_provider_routes_list())
-    return _project_legacy_outcome(outcome)
-
-def model_add(
-    route_id: str,
-    provider: str,
-    api_url: str,
-    api_key: str,
-    model: str,
-    *,
-    tools: str = "",
-    stream: bool = False,
-    fallback_models: str = "",
-) -> dict[str, Any]:
-    """
-    /*
-     * ==============================================================================
-     * 步骤2：添加模型路由
-     * ==============================================================================
-     * 目标：把 CLI 提交的一条独立模型服务追加到有序路由数组末尾。
-     * 数据源：model add 参数；持久化目标为 SMART_SEARCH_MODEL_ROUTES。
-     * 操作：
-     * 1) 只写入当前 provider 支持的可选字段。
-     * 2) 由 Config 统一校验、规范化并原子保存，返回脱敏后的完整列表。
-     * ==============================================================================
-     */
-    """
-    logger.info("步骤2开始：添加模型路由，id=%s provider=%s", route_id, provider)
-    from .control_operations import run_provider_routes_add
-
-    outcome = _run_sync(
-        run_provider_routes_add(
-            route_id,
-            provider,
-            api_url,
-            api_key,
-            model,
-            tools=tools,
-            stream=stream,
-            fallback_models=fallback_models,
-        )
-    )
-    result = _project_legacy_outcome(outcome)
-    logger.info("步骤2结束：模型路由添加完成，id=%s ok=%s", route_id, result.get("ok", False))
-    return result
-
-
-def model_remove(route_id: str) -> dict[str, Any]:
-    """
-    /*
-     * ==============================================================================
-     * 步骤3：删除模型路由
-     * ==============================================================================
-     * 目标：按稳定 route ID 删除一条配置，并保持其余路由的顺序。
-     * 数据源：model remove 参数和当前 SMART_SEARCH_MODEL_ROUTES 数组。
-     * 操作：
-     * 1) 由 Config 查找并删除精确 ID。
-     * 2) 保存后重新读取脱敏列表，供 CLI 直接展示结果。
-     * ==============================================================================
-     */
-    """
-    logger.info("步骤3开始：删除模型路由，id=%s", route_id)
-    from .control_operations import run_provider_routes_remove
-
-    outcome = _run_sync(run_provider_routes_remove(route_id))
-    result = _project_legacy_outcome(outcome)
-    logger.info("步骤3结束：模型路由删除完成，id=%s ok=%s", route_id, result.get("ok", False))
-    return result
-
-def _project_legacy_outcome(outcome: Any) -> dict[str, Any]:
-    """Project one typed control outcome back to the legacy v1 dict shape.
-
-    The legacy dict keeps its historical ``ok``/``error_type``/``error`` keys
-    derived from the typed outcome; the canonical result carries the rest.
-    """
-    from .control_operations import ControlOperationStatus
-
-    data = outcome.result_dict
-    data["ok"] = outcome.status is not ControlOperationStatus.FAILED
-    if outcome.error is not None:
-        data["error_type"] = outcome.error.type
-        data["error"] = outcome.error.message
-    return data
-
-
-def _run_sync(owner_coro: Any) -> Any:
-    """Run a typed owner from a synchronous v1 compatibility wrapper."""
-    from .control_operations import _run_coroutine_sync
-
-    return _run_coroutine_sync(owner_coro)
-
-
-def config_path() -> dict[str, Any]:
-    from .control_operations import run_config_path
-
-    outcome = _run_sync(run_config_path())
-    result = _project_legacy_outcome(outcome)
-    result.setdefault("error_type", "")
-    result.setdefault("error", "")
-    return result
-
-def config_list(show_secrets: bool = False) -> dict[str, Any]:
-    """
-    /*
-     * ==============================================================================
-     * 步骤4：读取已保存配置
-     * ==============================================================================
-     * 目标：让 config list 对损坏模型路由返回 config_error 而不是伪成功占位值。
-     * 数据源：配置目录状态和 config.json 中的已保存配置。
-     * 操作：
-     * 1) 先检查配置目录是否可用。
-     * 2) 先校验原始保存路由，再校验环境覆盖后的生效路由。
-     * 3) 两层都有效时返回脱敏后的保存配置值。
-     * ==============================================================================
-    */
-    """
-    logger.info("步骤4开始：读取已保存配置")
-    from .control_operations import ControlOperationStatus, run_config_list
-
-    outcome = _run_sync(run_config_list(show_secrets=show_secrets))
-    result = outcome.result_dict
-    if outcome.status is not ControlOperationStatus.COMPLETE:
-        data = dict(result)
-        data["values"] = result.get("values", {})
-        data["ok"] = False
-        data["error_type"] = outcome.error.type if outcome.error else "config_error"
-        data["error"] = outcome.error.message if outcome.error else ""
-        logger.info("步骤4结束：配置目录不可用或模型路由无效")
-        return data
-    logger.info("步骤4结束：已保存配置读取完成")
-    return {
-        "ok": True,
-        "config_file": result.get("config_file", ""),
-        "values": result.get("values", {}),
-    }
-
-def config_set(key: str, value: str) -> dict[str, Any]:
-    from .control_operations import run_config_set
-
-    outcome = _run_sync(run_config_set(key, value))
-    return _project_legacy_outcome(outcome)
-
-def config_unset(key: str) -> dict[str, Any]:
-    from .control_operations import run_config_unset
-
-    outcome = _run_sync(run_config_unset(key))
-    return _project_legacy_outcome(outcome)
-
 async def _execute_smoke(mode: str = "mock") -> dict[str, Any]:
     """Shared smoke execution (mock or live) used by the v1 wrapper and the
     typed ``dev.smoke`` owner."""
@@ -1136,15 +816,14 @@ async def _execute_smoke(mode: str = "mock") -> dict[str, Any]:
         return await _smoke_live(start)
     return await _smoke_mock(start)
 
-async def smoke(mode: str = "mock") -> dict[str, Any]:
-    """v1 compatibility wrapper over the shared smoke execution."""
-    return await _execute_smoke(mode)
 
 def _case(name: str, ok: bool, details: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"name": name, "ok": ok, **(details or {})}
 
+
 def _case_failed(case: dict[str, Any]) -> bool:
     return not case.get("ok") and case.get("severity", "critical") != "degraded"
+
 
 async def _smoke_mock(start: float) -> dict[str, Any]:
     cases: list[dict[str, Any]] = []
@@ -1250,82 +929,69 @@ async def _smoke_mock(start: float) -> dict[str, Any]:
         )
     )
 
-    deep_allowed_tools = {
-        "search",
-        "fetch",
-        "map",
-    }
-    fixed_recipe_ids = {
-        "current_market_research",
-        "product_comparison_research",
-        "technical_docs_research",
-        "news_or_policy_research",
-        "claim_verification_research",
-        "url_first_research",
-    }
-    base_plan_fields = {
-        "mode",
-        "question",
-        "difficulty",
-        "intent_signals",
-        "capability_plan",
-        "evidence_policy",
-        "steps",
-        "gap_check",
-        "final_answer_policy",
-    }
-    market_plan = build_deep_research_plan("深度搜索一下最近的比特币行情", evidence_dir=r"C:\tmp\smart-search-evidence\market")
-    market_tools = {step["tool"] for step in market_plan["steps"]}
+    from .research_plan import (
+        PLAN_EXECUTABLE_OPERATION_IDS,
+        PLAN_FORBIDDEN_SERIALIZED_FIELDS,
+        serialize_research_plan,
+    )
+
+    def plan_ops(plan):
+        return serialize_research_plan(plan)["operations"]
+
+    def plan_ok(plan, *, has_fetch=False, first_fetch=False, has_docs=False, has_locale_zh=False):
+        ops = plan_ops(plan)
+        operations = {item["operation"] for item in ops}
+        if not operations or not operations <= set(PLAN_EXECUTABLE_OPERATION_IDS):
+            return False
+        if any(field in item for item in ops for field in PLAN_FORBIDDEN_SERIALIZED_FIELDS):
+            return False
+        if has_fetch and "content_fetch" not in operations:
+            return False
+        if first_fetch and (not ops or ops[0]["operation"] != "content_fetch"):
+            return False
+        if has_docs and "docs_discovery" not in operations:
+            return False
+        if has_locale_zh and not any(
+            item.get("input", {}).get("locale") == "zh" for item in ops
+        ):
+            return False
+        return True
+
+    market_plan = build_research_workflow_plan("深度搜索一下最近的比特币行情", budget="standard")
+    market_ops = plan_ops(market_plan)
     cases.append(
         _case(
-            "deep_research explicit planner simple current prompt uses capability plan",
-            base_plan_fields.issubset(market_plan)
-            and market_plan["intent_signals"]["recency_requirement"] == "current"
-            and market_plan["intent_signals"]["claim_risk"] == "high"
-            and market_plan["trigger_source"] == "explicit_cli"
-            and market_plan["preflight"]["executed_by_deep_command"] is False
-            and market_plan["evidence_policy"] == "fetch_before_claim"
-            and "search" in market_tools
-            and "fetch" in market_tools
-            and market_tools <= deep_allowed_tools,
-            {"research_plan": market_plan},
+            "deep_research explicit planner simple current prompt uses typed plan",
+            plan_ok(market_plan, has_fetch=True, has_locale_zh=True)
+            and market_ops[0]["operation"] == "source_discovery",
+            {"research_plan": serialize_research_plan(market_plan), "operations": market_ops},
         )
     )
 
-    docs_plan = build_deep_research_plan("深度调研 React useEffect 最新文档", evidence_dir=r"C:\tmp\smart-search-evidence\docs")
-    docs_tools = {step["tool"] for step in docs_plan["steps"]}
+    docs_plan = build_research_workflow_plan("深度调研 React useEffect 最新文档", budget="standard")
     cases.append(
         _case(
-            "deep_research docs api prompt uses retained generic tools",
-            docs_plan["intent_signals"]["docs_api_intent"]
-            and {"search", "fetch"} <= docs_tools
-            and docs_tools <= deep_allowed_tools,
-            {"research_plan": docs_plan},
+            "deep_research docs api prompt uses typed plan operations",
+            plan_ok(docs_plan, has_fetch=True, has_docs=True),
+            {"research_plan": serialize_research_plan(docs_plan)},
         )
     )
 
-    claim_plan = build_deep_research_plan("帮我核验这个说法是真是假", evidence_dir=r"C:\tmp\smart-search-evidence\claim")
+    claim_plan = build_research_workflow_plan("帮我核验这个说法是真是假", budget="standard")
     cases.append(
         _case(
-            "deep_research claim verification requires fetch_before_claim",
-            claim_plan["evidence_policy"] == "fetch_before_claim"
-            and claim_plan["intent_signals"]["cross_validation_need"] == "high"
-            and any(step["tool"] == "fetch" for step in claim_plan["steps"])
-            and all(step["tool"] in deep_allowed_tools for step in claim_plan["steps"])
-            and claim_plan["gap_check"]["unsupported_claim_action"] == "downgrade_to_unverified_candidate",
-            {"research_plan": claim_plan},
+            "deep_research claim verification requires a fetch operation",
+            plan_ok(claim_plan, has_fetch=True),
+            {"research_plan": serialize_research_plan(claim_plan)},
         )
     )
 
-    url_first_plan = build_deep_research_plan("深度调研 https://example.com/source", evidence_dir=r"C:\tmp\smart-search-evidence\url")
+    url_first_plan = build_research_workflow_plan("深度调研 https://example.com/source", budget="standard")
     cases.append(
         _case(
             "deep_research url prompt is fetch first",
-            url_first_plan["intent_signals"]["known_url"]
-            and url_first_plan["steps"][0]["tool"] == "fetch"
-            and any(step["tool"] == "search" for step in url_first_plan["steps"])
-            and all(step["tool"] in deep_allowed_tools for step in url_first_plan["steps"]),
-            {"research_plan": url_first_plan},
+            plan_ok(url_first_plan, has_fetch=True, first_fetch=True),
+            {"research_plan": serialize_research_plan(url_first_plan)},
         )
     )
 
@@ -1337,6 +1003,14 @@ async def _smoke_mock(start: float) -> dict[str, Any]:
             {"prompt": normal_prompt, "deep_research_triggered": False},
         )
     )
+    fixed_recipe_ids = {
+        "current_market_research",
+        "product_comparison_research",
+        "technical_docs_research",
+        "news_or_policy_research",
+        "claim_verification_research",
+        "url_first_research",
+    }
 
     missing_for_deep = _minimum_profile_result(
         "standard",
@@ -1363,62 +1037,36 @@ async def _smoke_mock(start: float) -> dict[str, Any]:
         )
     )
 
-    mock_research_status = {
-        **minimum_status,
-        "web_search": {
-            "configured": ["zhipu", "zhipu-mcp", "tavily", "firecrawl"],
-            "fallback_chain": ["zhipu", "zhipu-mcp", "tavily", "firecrawl"],
-            "ok": True,
-        },
-        "docs_search": {"configured": ["context7", "exa"], "fallback_chain": ["context7", "exa"], "ok": True},
-        "web_fetch": {
-            "configured": ["tavily", "jina", "zhipu-mcp-reader", "firecrawl"],
-            "fallback_chain": ["tavily", "jina", "zhipu-mcp-reader", "firecrawl"],
-            "ok": True,
-        },
-        "vertical_search": {"configured": ["anysearch"], "fallback_chain": ["anysearch"], "ok": True, "experimental": True},
-    }
-    docs_routes = _research_capability_routes("React useEffect API docs", docs_plan, "auto", capability_status=mock_research_status)
-    zh_routes = _research_capability_routes("今天国内 AI 政策最新公告", market_plan, "auto", capability_status=mock_research_status)
-    pdf_fetch_order = _research_fetch_order("summarize https://arxiv.org/pdf/2401.00001.pdf", capability_status=mock_research_status)
-    dynamic_fetch_order = _research_fetch_order("dynamic javascript cloudflare page", "https://example.com/app", capability_status=mock_research_status)
-    vertical_routes = _research_capability_routes("CVE OpenSSL 漏洞影响范围", claim_plan, "auto", capability_status=mock_research_status)
-
+    zh_plan = build_research_workflow_plan("今天国内 AI 政策最新公告", budget="standard")
     cases.append(
         _case(
-            "research router docs api prefers context7 then exa",
-            docs_routes["capabilities"]["docs_search"]["providers"][:2] == ["context7", "exa"]
-            and "vertical_search" not in docs_routes["capabilities"],
-            {"routing_decision": docs_routes},
+            "research router chinese current plan reinforces web sources",
+            plan_ok(zh_plan, has_locale_zh=True),
+            {"research_plan": serialize_research_plan(zh_plan)},
         )
     )
+    pdf_plan = build_research_workflow_plan("summarize https://arxiv.org/pdf/2401.00001.pdf", budget="standard")
     cases.append(
         _case(
-            "research router chinese current prefers zhipu web_search",
-            zh_routes["capabilities"]["web_search"]["providers"][0] == "zhipu",
-            {"routing_decision": zh_routes},
+            "research router known url pdf plan is fetch first",
+            plan_ok(pdf_plan, has_fetch=True, first_fetch=True),
+            {"research_plan": serialize_research_plan(pdf_plan)},
         )
     )
+    js_plan = build_research_workflow_plan("dynamic javascript cloudflare page", budget="standard")
     cases.append(
         _case(
-            "research router known url pdf favors jina fetch",
-            pdf_fetch_order[0] == "jina",
-            {"fetch_order": pdf_fetch_order},
+            "research router js heavy prompt still plans a fetch operation",
+            plan_ok(js_plan, has_fetch=True),
+            {"research_plan": serialize_research_plan(js_plan)},
         )
     )
+    vertical_plan = build_research_workflow_plan("CVE OpenSSL 漏洞影响范围", budget="standard")
     cases.append(
         _case(
-            "research router js heavy favors firecrawl fetch",
-            dynamic_fetch_order[0] == "firecrawl",
-            {"fetch_order": dynamic_fetch_order},
-        )
-    )
-    cases.append(
-        _case(
-            "research router vertical intent has no provider-specific route",
-            "vertical_search" not in vertical_routes["capabilities"]
-            and "vertical_intent" not in vertical_routes["signals"],
-            {"routing_decision": vertical_routes},
+            "research router vertical intent has no provider-specific operation",
+            plan_ok(vertical_plan, has_fetch=True),
+            {"research_plan": serialize_research_plan(vertical_plan)},
         )
     )
 
@@ -1449,6 +1097,7 @@ async def _smoke_mock(start: float) -> dict[str, Any]:
         "elapsed_ms": _elapsed_ms(start),
     }
 
+
 async def _smoke_live(start: float) -> dict[str, Any]:
     """
     /*
@@ -1466,7 +1115,7 @@ async def _smoke_live(start: float) -> dict[str, Any]:
     """
     logger.info("步骤1开始：执行 live smoke")
     cases: list[dict[str, Any]] = []
-    doctor_result = await doctor()
+    doctor_result = await _execute_doctor_probe()
     capability_status = doctor_result.get("capability_status", {})
     cases.append(
         _case(
@@ -1521,15 +1170,15 @@ async def _smoke_live(start: float) -> dict[str, Any]:
     fetch_provider_ids = ("tavily", "jina", "zhipu-mcp-reader", "firecrawl")
     configured_fetch_providers = [provider for provider in fetch_provider_ids if _provider_configured(provider)]
     if configured_fetch_providers:
-        fetch_result = await fetch("https://example.com")
+        fetch_result, fetch_attempts = await _run_web_fetch_fallback("https://example.com")
         cases.append(
             _case(
                 "web fetch fallback chain",
-                bool(fetch_result.get("ok")),
+                bool(fetch_result),
                 {
-                    "provider": fetch_result.get("provider", ""),
+                    "provider": (fetch_result or {}).get("provider", ""),
                     "configured_providers": configured_fetch_providers,
-                    "provider_attempts": fetch_result.get("provider_attempts", []),
+                    "provider_attempts": fetch_attempts,
                 },
             )
         )
@@ -1552,68 +1201,3 @@ async def _smoke_live(start: float) -> dict[str, Any]:
     }
     logger.info("步骤1结束：live smoke 完成，ok=%s", result["ok"])
     return result
-
-class OutputFileExistsError(FileExistsError):
-    """Raised when a CLI output path exists and overwrite was not requested."""
-
-def write_output(path: str | Path, content: str, *, force: bool = False) -> None:
-    """
-    =================================================================================
-    步骤3：安全写入命令输出
-    =================================================================================
-    目标：避免默认覆盖已有研究结果，并让临时文件以安全权限落盘。
-    数据源：CLI 输出路径和已渲染文本。
-    操作：
-    1) 在目标目录创建 0600 临时文件并写入 UTF-8 内容。
-    2) force 模式用原子替换覆盖目标。
-    3) 默认模式用硬链接占位，目标已存在时保留原文件并抛出稳定错误。
-    """
-    logger.info("开始写入 CLI 输出: path=%s force=%s", path, force)
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() and not force:
-        raise OutputFileExistsError(f"Output file already exists: {target}")
-
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{target.name}.",
-        dir=str(target.parent),
-        text=True,
-    )
-    temporary = Path(temporary_name)
-    try:
-        os.chmod(temporary, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            descriptor = -1
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        if force:
-            os.replace(temporary, target)
-        else:
-            try:
-                os.link(temporary, target)
-            except FileExistsError as exc:
-                raise OutputFileExistsError(f"Output file already exists: {target}") from exc
-            finally:
-                temporary.unlink(missing_ok=True)
-    except Exception:
-        if descriptor >= 0:
-            os.close(descriptor)
-        temporary.unlink(missing_ok=True)
-        raise
-    logger.info("CLI 输出写入完成: path=%s", target)
-
-__all__ = [
-    "config_list",
-    "config_path",
-    "config_set",
-    "config_unset",
-    "current_model",
-    "diagnose_openai_compatible",
-    "doctor",
-    "model_add",
-    "model_list",
-    "model_remove",
-    "smoke",
-    "write_output",
-]

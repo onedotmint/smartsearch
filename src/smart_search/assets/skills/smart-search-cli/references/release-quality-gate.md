@@ -1,21 +1,21 @@
-# Regression And Release
+# Quality Gate And Release
 
 ## Table of Contents
 
-- Regression
+- Quality gate
 - Smoke matrix
 - Release lanes
 - Release closeout lessons
 
-## Regression
+## Quality gate
 
 Run `smart-search dev regression` before considering CLI or skill changes complete.
 
 - In a source checkout, it runs offline pytest coverage for CLI, service, smoke, provider, and skill contract behavior.
-- In npm / mise packaged installs, repository test files are not bundled; since v0.1.8 it falls back to built-in mock smoke regression so users can still verify installed CLI health.
-- For release validation, use a source checkout for full pytest-backed regression and use packaged-install regression only as an install-health check.
+- In npm / mise packaged installs, repository test files are not bundled; since v0.1.8 it falls back to built-in mock smoke quality-gate coverage so users can still verify installed CLI health.
+- For release validation, use a source checkout for full pytest-backed quality-gate coverage and use packaged-install coverage only as an install-health check.
 - Provider architecture changes must be verified as distributable CLI behavior, not as behavior that only works because one developer machine has a specific wrapper, shell profile, or local config file.
-- After provider-routing changes, run source-checkout regression plus `smart-search dev smoke --mock --format json`. If live keys were used, run a targeted secret scan for exact key substrings before committing.
+- After provider-routing changes, run the source-checkout quality gate plus `smart-search dev smoke --mock --format json`. If live keys were used, run a targeted secret scan for exact key substrings before committing.
 
 ## Smoke Matrix
 

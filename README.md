@@ -75,7 +75,7 @@ smart-search fetch "https://example.com/page"
 
 ### V3 control-plane JSON API
 
-V3 is a separate JSON family for stable local administration, explicit probes, developer diagnostics, filesystem work, and regression subprocesses. It is not an evidence envelope:
+V3 is a separate JSON family for stable local administration, explicit probes, developer diagnostics, filesystem work, and the developer quality-gate subprocess. It is not an evidence envelope:
 
 ```sh
 smart-search config list
@@ -99,7 +99,7 @@ V3 returns `complete` / `degraded` / `failed` plus explicit `network` and `side_
 | Live aggregate connectivity | `smart-search doctor probe` | Masked diagnostics and provider checks |
 | One provider reachability check | `smart-search provider probe PROVIDER` | Exactly one provider/family |
 
-`research plan` is offline planning. `research run` is the Agent-facing evidence workflow. Legacy commands, aliases, and the `--schema-version` selector are removed and fail with the replacement family's strict error.
+`research plan` is offline planning. `research run` is the Agent-facing evidence workflow. Legacy commands, aliases, and the schema selector are removed and fail with the replacement family's strict error.
 
 ## Core examples
 
@@ -166,8 +166,8 @@ Source-checkout verification and release instructions live in [Development](http
 ```sh
 python -m compileall -q src tests
 python -m pytest tests -q
-python -m smart_search.cli regression
-python -m smart_search.cli smoke --mock --format json
+python -m smart_search.cli dev regression
+python -m smart_search.cli dev smoke --mock --format json
 npm test
 npm pack --dry-run
 git diff --check

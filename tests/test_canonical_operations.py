@@ -22,7 +22,6 @@ from smart_search import (
     capability_executor,
     evidence_operations,
     operation_runtime,
-    search_service,
 )
 from smart_search.canonical_operations import (
     ContentFetchRequest,
@@ -381,12 +380,10 @@ async def test_source_discovery_config_error_with_only_synthesis_providers(monke
     monkeypatch.delenv("ZHIPU_API_KEY", raising=False)
 
     calls = {"search": 0}
+    import smart_search.research_service as research_service
 
-    async def spy_search(*args, **kwargs):
-        calls["search"] += 1
-        raise AssertionError("legacy search must not run")
-
-    monkeypatch.setattr(search_service, "search", spy_search)
+    # The v1 live search facade is removed entirely.
+    assert not hasattr(research_service, "search")
 
     result = await canonical_operations.source_discovery(SourceDiscoveryRequest("latest AI news"))
     assert result.status is V2Status.FAILED
@@ -534,8 +531,8 @@ async def test_fetch_quality_failure_continues_same_capability_fallback(monkeypa
     async def valid(url):
         return "Verified fetched content"
 
-    monkeypatch.setattr(search_service, "call_tavily_extract", challenge)
-    monkeypatch.setattr(search_service, "call_firecrawl_scrape", valid)
+    monkeypatch.setattr(operation_runtime, "_default_call_tavily_extract", challenge)
+    monkeypatch.setattr(operation_runtime, "_default_call_firecrawl_scrape", valid)
 
     value, attempts = await operation_runtime._run_web_fetch_fallback(
         "https://example.com",
@@ -591,7 +588,7 @@ async def test_v1_context7_runner_does_not_apply_v2_result_limit(monkeypatch):
             ],
         }
 
-    monkeypatch.setattr(search_service, "context7_library", seven_results)
+    monkeypatch.setattr(operation_runtime, "_default_context7_library", seven_results)
     values, attempts = await operation_runtime._run_docs_search_fallback(
         "library docs",
         providers="context7",
@@ -619,7 +616,6 @@ async def test_same_capability_only_no_main_search_spy(monkeypatch):
         return {"ok": True, "answer": "should not run"}
 
     monkeypatch.setattr(evidence_operations, "_execute_web_search", fake_web)
-    monkeypatch.setattr(search_service, "search", spy_search)
     result = await canonical_operations.source_discovery(SourceDiscoveryRequest("q"))
     assert called["search"] == 0
     assert "answer" not in result.result
@@ -729,9 +725,11 @@ async def test_api_v2_facade_matches_canonical(monkeypatch):
         "site_discovery",
         "source_discovery",
     }
-    from smart_search import service
-    for name in api_v2.__all__:
-        assert name not in service.__all__
+    import pytest as _pytest
+
+    # The broad v1 facade is removed; api_v2 is the narrow typed Python facade.
+    with _pytest.raises(ImportError):
+        import smart_search.service  # noqa: F401
 
 
 @pytest.mark.asyncio

@@ -5,8 +5,8 @@ operations: terminal status, classified errors, actual network activity,
 config/filesystem mutation commitment, subprocess facts and degradation
 warnings. It is the single typed authority for Control state and I/O
 semantics; ``control_plane_adapters`` only projects these outcomes into the
-v3 envelope and ``operations_service`` keeps legacy v1 compatibility
-projections over the same owners.
+v3 envelope and the private ``control_executors`` module supplies the raw
+low-level executions the owners consume.
 
 Dependency rules:
 
@@ -15,26 +15,11 @@ Dependency rules:
   ``control_plane_adapters``.
 - It reuses ``ExecutionError`` and ``ExecutionMetadata`` from
   ``execution_primitives`` and never duplicates shared primitive semantics.
-- Temporary private-executor seam (removed by the legacy-runtime-cleanup
-  task): during the v1 compatibility window ``operations_service`` supplies
-  exactly six raw low-level executors that are also covered by deterministic
-  v1 monkeypatches. They are called only through module attribute access,
-  never through the public legacy wrappers (``smoke``, ``doctor``,
-  ``doctor_status``, ``diagnose_openai_compatible``, ``provider_probe``,
-  ``model_*``, ``config_*``) and never through the compatibility projection
-  (``_project_legacy_outcome``):
-
-  - ``_model_routes_result`` -- raw ordered/masked route read
-  - ``_safe_test_main_provider_connection`` -- probe connection attempt
-  - ``_execute_doctor_status`` -- local readiness execution
-  - ``_execute_doctor_probe`` -- aggregate doctor execution
-  - ``_execute_diagnose_openai_compatible`` -- diagnostic execution
-  - ``_execute_smoke`` -- mock/live smoke execution
-
-  Status, network, write/subprocess and degradation facts are always derived
-  here from those raw execution results and owned by
-  ``ControlOperationOutcome``; the v1 wrappers never re-derive them. The
-  owner must not accumulate new ``operations_service`` calls.
+- Raw low-level executors live in the private ``control_executors`` module
+  and are called only through module attribute access. Status, network,
+  write/subprocess and degradation facts are always derived here from those
+  raw execution results and owned by ``ControlOperationOutcome``; the
+  executor module never derives them.
 """
 
 from __future__ import annotations
@@ -68,7 +53,7 @@ from .skill_installer import (
     SkillInstallError,
     parse_skill_targets,
 )
-from . import operations_service
+from . import control_executors
 from . import skill_installer
 
 # ---------------------------------------------------------------------------
@@ -501,7 +486,7 @@ async def run_provider_catalog_status() -> ControlOperationOutcome:
 
 def _routes_outcome(operation: str, action: str) -> ControlOperationOutcome:
     start = time.perf_counter()
-    data = operations_service._model_routes_result(action)
+    data = control_executors._model_routes_result(action)
     result = _strip_legacy_semantics(data)
     if bool(data.get("ok")):
         return _outcome(
@@ -589,7 +574,7 @@ async def run_provider_routes_add(
             side_effects=ControlSideEffectFacts(config=ControlMutationFacts(read=True)),
             metadata=ExecutionMetadata("provider.routes.add", _elapsed_ms(start)),
         )
-    data = operations_service._model_routes_result("add")
+    data = control_executors._model_routes_result("add")
     result = _strip_legacy_semantics(data)
     return _outcome(
         "provider.routes.add",
@@ -638,7 +623,7 @@ async def run_provider_routes_remove(route_id: str) -> ControlOperationOutcome:
             side_effects=ControlSideEffectFacts(config=ControlMutationFacts(read=True)),
             metadata=ExecutionMetadata("provider.routes.remove", _elapsed_ms(start)),
         )
-    data = operations_service._model_routes_result("remove")
+    data = control_executors._model_routes_result("remove")
     result = _strip_legacy_semantics(data)
     return _outcome(
         "provider.routes.remove",
@@ -741,7 +726,7 @@ async def run_provider_probe(provider: str) -> ControlOperationOutcome:
 
         route_results: list[dict[str, Any]] = []
         for route in routes:
-            probe = _normalize_probe_status(dict(await operations_service._safe_test_main_provider_connection(route)))
+            probe = _normalize_probe_status(dict(await control_executors._safe_test_main_provider_connection(route)))
             probe["route_id"] = route.get("route_id") or ""
             probe["provider"] = provider_id
             route_results.append(probe)
@@ -872,7 +857,7 @@ def _any_doctor_check_ok(data: Mapping[str, Any]) -> bool:
 async def run_doctor_status() -> ControlOperationOutcome:
     start = time.perf_counter()
     operation = "doctor.status"
-    data = operations_service._execute_doctor_status()
+    data = control_executors._execute_doctor_status()
     result = _strip_legacy_semantics(data)
     if bool(data.get("ok")):
         return _outcome(
@@ -898,7 +883,7 @@ async def run_doctor_status() -> ControlOperationOutcome:
 async def run_doctor_probe() -> ControlOperationOutcome:
     start = time.perf_counter()
     operation = "doctor.probe"
-    data = await operations_service._execute_doctor_probe()
+    data = await control_executors._execute_doctor_probe()
     result = _strip_legacy_semantics(data)
     ok = bool(data.get("ok"))
     owner_degraded = bool(ok and data.get("degraded"))
@@ -1038,7 +1023,7 @@ async def run_dev_route_calibrate(models: str = "") -> ControlOperationOutcome:
 async def run_dev_diagnose_openai_compatible(timeout_seconds: float = 30.0) -> ControlOperationOutcome:
     start = time.perf_counter()
     operation = "dev.diagnose.openai-compatible"
-    data = await operations_service._execute_diagnose_openai_compatible(timeout_seconds=timeout_seconds)
+    data = await control_executors._execute_diagnose_openai_compatible(timeout_seconds=timeout_seconds)
     result = _strip_legacy_semantics(data)
     checks = list(data.get("checks") or [])
     network = ControlNetworkFacts(attempted=bool(checks), targets=("openai-compatible",) if checks else ())
@@ -1077,7 +1062,7 @@ async def run_dev_smoke(mode: str = "mock") -> ControlOperationOutcome:
             side_effects=ControlSideEffectFacts(config=ControlMutationFacts(read=True)),
             metadata=ExecutionMetadata(operation, _elapsed_ms(start)),
         )
-    data = await operations_service._execute_smoke(mode)
+    data = await control_executors._execute_smoke(mode)
     result = _strip_legacy_semantics(data)
     degraded_cases = list(data.get("degraded_cases") or [])
     degraded = bool(data.get("ok") and degraded_cases)
@@ -1144,13 +1129,16 @@ async def run_dev_smoke(mode: str = "mock") -> ControlOperationOutcome:
 # ---------------------------------------------------------------------------
 
 _REGRESSION_PATTERNS = (
-    "tests/test_cli.py",
-    "tests/test_service.py",
+    "tests/test_cli_v2.py",
+    "tests/test_cli_v3.py",
+    "tests/test_research_cli.py",
+    "tests/test_control_operations.py",
+    "tests/test_control_plane_v3_contract.py",
+    "tests/test_evidence_operations.py",
+    "tests/test_execution_primitives.py",
     "tests/test_providers_new.py",
     "tests/test_jina_provider.py",
     "tests/test_zhipu_mcp_provider.py",
-    "tests/test_smoke.py",
-    "tests/test_intent_router.py",
     "tests/test_regression.py",
     "tests/test_release_workflow.py",
 )
@@ -1195,7 +1183,7 @@ def _execute_regression() -> dict[str, Any]:
     """
     root = Path(__file__).resolve().parents[2]
     if not _regression_test_files_available(root):
-        data = _run_coroutine_sync(operations_service._execute_smoke("mock"))
+        data = _run_coroutine_sync(control_executors._execute_smoke("mock"))
         return {
             "ok": bool(data.get("ok", False)),
             "exit_code": _legacy_exit_code(data),

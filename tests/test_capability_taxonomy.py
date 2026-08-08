@@ -10,7 +10,7 @@ import copy
 
 import pytest
 
-from smart_search import capability_service, capability_taxonomy, service, service_support
+from smart_search import capability_service, capability_taxonomy, service_support
 from smart_search.capability_taxonomy import (
     FORBIDDEN_V2_CAPABILITY_IDS,
     PROVIDER_QUALIFICATIONS,
@@ -38,7 +38,6 @@ from smart_search.capability_taxonomy import (
     v2_core_availability,
     validate_taxonomy_invariants,
 )
-from smart_search.cli_contract import SCHEMA_VERSION
 from smart_search.cli_parser import build_parser
 
 
@@ -545,15 +544,14 @@ def test_v1_capability_status_keys_remain_legacy_names():
 
 
 def test_taxonomy_not_exported_from_service_facade():
-    # Taxonomy stays internal; stable service facade is unchanged even after
-    # Phase 3 opt-in v2 CLI exposure through api_v2.
-    assert SCHEMA_VERSION == "1"
-    assert not hasattr(service, "list_v2_capabilities")
-    assert not hasattr(service, "v2_core_availability")
-    assert not hasattr(service, "get_provider_qualification")
-    assert "list_v2_capabilities" not in service.__all__
-    assert "capability_taxonomy" not in service.__all__
-    assert "api_v2" not in service.__all__
+    # The broad v1 service facade is removed; taxonomy and v2 APIs are never
+    # re-exported from a legacy facade module.
+    import pytest as _pytest
+
+    with _pytest.raises(ImportError):
+        import smart_search.service  # noqa: F401
+    with _pytest.raises(ImportError):
+        import smart_search.cli_contract  # noqa: F401
 
 
 def test_qualification_does_not_participate_in_v1_eligibility():

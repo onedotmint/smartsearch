@@ -21,10 +21,8 @@ from pathlib import Path
 
 import pytest
 
-import smart_search.service as service
 from smart_search import cli, research_service
 from smart_search.cli_constants import (
-    COMMAND_ALIASES,
     NAMESPACE_COMMANDS,
     help_all_text,
 )
@@ -132,11 +130,13 @@ def test_removed_exact_commands_are_not_parser_leaves() -> None:
 
 
 def test_removed_aliases_and_canonicals_are_absent_from_constants() -> None:
+    from smart_search.cli_constants import RESERVED_LEGACY_SPELLINGS
+
     removed_aliases = set(REMOVED_ALIASES)
-    live_aliases = {alias for aliases in COMMAND_ALIASES.values() for alias in aliases}
-    assert removed_aliases.isdisjoint(live_aliases)
+    reserved = {" ".join(tokens) for tokens in RESERVED_LEGACY_SPELLINGS}
+    assert removed_aliases.isdisjoint(reserved)
     removed_canonicals = set(REMOVED_EXACT_PROVIDER_COMMANDS)
-    assert removed_canonicals.isdisjoint(set(COMMAND_ALIASES))
+    assert removed_canonicals.isdisjoint(reserved)
     namespace_paths = {item["path"].removesuffix(" QUERY") for item in NAMESPACE_COMMANDS}
     assert not any(
         path.startswith(("provider exa ", "provider context7 ", "provider zhipu", "experimental "))
@@ -155,27 +155,23 @@ def test_help_all_does_not_advertise_removed_surface() -> None:
 @pytest.mark.parametrize("name", _removed_exports())
 def test_removed_service_exports_raise_importerror(name: str) -> None:
     assert name not in SERVICE_PUBLIC_EXPORTS
-    assert name not in service.__all__
     with pytest.raises(ImportError):
         exec(f"from smart_search.service import {name}", {})
 
 
-def test_service_facade_no_longer_reexports_provider_wrappers() -> None:
-    module_source = (PACKAGE / "service.py").read_text(encoding="utf-8")
-    for name in _removed_exports():
-        assert name not in module_source, name
+def test_service_facade_is_deleted() -> None:
+    assert not (PACKAGE / "service.py").exists()
+    with pytest.raises(ImportError):
+        import smart_search.service  # noqa: F401
 
 
 def test_dispatch_and_render_have_no_removed_command_branches() -> None:
-    dispatch = (PACKAGE / "cli_dispatch.py").read_text(encoding="utf-8")
-    render = (PACKAGE / "cli_render.py").read_text(encoding="utf-8")
+    for name in ("cli_dispatch.py", "cli_render.py", "cli_contract.py", "cli_setup.py", "cli_support.py"):
+        assert not (PACKAGE / name).exists(), name
     parser_source = (PACKAGE / "cli_parser.py").read_text(encoding="utf-8")
     for surface in REMOVED_EXACT_PROVIDER_COMMANDS:
-        assert f'args.command == "{surface}"' not in dispatch
         assert f'"{surface}"' not in parser_source
-        assert surface not in render
-    for surface in REMOVED_NAMESPACE_PATHS:
-        assert f'"{surface}"' not in dispatch
+        assert surface not in parser_source
 
 
 def test_removed_spelling_parse_failure_is_isolated_and_writes_nothing() -> None:
@@ -290,9 +286,7 @@ def test_retained_adapters_reachable_only_from_approved_owners() -> None:
     approved = {
         "operation_runtime",  # generic Evidence owner execution path
         "provider_diagnostics",  # V3 probe path
-        "search_service",  # v1 search workflow (compat window)
-        "operations_service",  # temporary v1 aggregation seam
-        "service",  # retained fetch/map_site exports only
+        "control_executors",  # V3 smoke/doctor raw executors
         "capability_executor",
     }
     modules = ("provider_search_commands", "provider_fetch_commands",
@@ -328,88 +322,52 @@ def test_retained_adapters_reachable_only_from_approved_owners() -> None:
 
 
 def test_live_research_path_uses_typed_evidence_owner_only(monkeypatch) -> None:
-    """The live research execution composes the generic typed Evidence owner
-    and never invokes a Context7/Exa/AnySearch provider-specific callback.
-    Docs candidates flow into the generic fetch stage; resource-id candidates
-    stay discovery-only.
-    """
-    import asyncio
+    """The v1 live research execution is deleted; the strict workflow composes
+    only the generic typed Evidence owner and never invokes a
+    Context7/Exa/AnySearch provider-specific callback."""
+    # The v1 live research entry point and its provider-specific callbacks are
+    # gone from the planner module.
+    module = ast.parse((PACKAGE / "research_service.py").read_text(encoding="utf-8"))
+    defined = {
+        node.name
+        for node in module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    for name in ("research", "_run_research_docs_discovery", "_run_research_context7_docs"):
+        assert name not in defined, name
 
-    calls: list[str] = []
+    # The strict workflow owner composes only generic typed Evidence owners.
+    from smart_search import research_workflow
 
-    async def fake_docs_discovery(request):
-        calls.append(request.query)
-        return EvidenceOperationOutcome(
-            operation="docs_discovery",
-            status=EvidenceOperationStatus.COMPLETE,
-            candidates=(
-                ExecutionCandidate(
-                    id="c-1",
-                    resource="https://docs.example.com/react/hooks",
-                    provider="exa",
-                    title="React Hooks docs",
-                    snippet="official hooks reference",
-                ),
-                ExecutionCandidate(
-                    id="c-2",
-                    resource="context7:facebook/react",
-                    provider="context7",
-                    title="React library",
-                    snippet="library resource id without HTTP URL",
-                ),
-            ),
-        )
-
-    async def fake_fetch(url, fallback="auto", preferred_order=None, providers=None):
-        return (
-            {"ok": True, "url": url, "provider": "tavily", "content": "# Fetched body"},
-            [],
-        )
-
-    async def fake_web_search(query, count=5, providers="auto", fallback="auto"):
-        return [], []
-
-    monkeypatch.setattr(research_service, "docs_discovery", fake_docs_discovery)
-    monkeypatch.setattr(research_service, "_run_web_fetch_fallback", fake_fetch)
-    monkeypatch.setattr(research_service, "_run_web_search_fallback", fake_web_search)
-    monkeypatch.setenv("SMART_SEARCH_MINIMUM_PROFILE", "off")
-    monkeypatch.setenv("SMART_SEARCH_INTENT_ROUTER", "rules")
-    monkeypatch.setenv("TAVILY_API_KEY", "tavily-test-secret")
-    monkeypatch.setenv("EXA_API_KEY", "exa-test-secret")
-
-    result = asyncio.run(
-        research_service.research(
-            "React useEffect official API docs",
-            budget="quick",
-            fallback="off",
-        )
-    )
-
-    assert calls == ["React useEffect official API docs"]
-    assert any(item.get("stage") == "docs_discovery" for item in result["stage_results"])
-    urls = {item.get("url") for item in result["discovery_sources"]}
-    assert "https://docs.example.com/react/hooks" in urls
-    assert "context7:facebook/react" in urls
-    # URL-backed docs candidates became fetched evidence through the generic
-    # fetch stage; the resource-id candidate never did.
-    evidence_urls = {item.get("url") for item in result["evidence_items"]}
-    assert "https://docs.example.com/react/hooks" in evidence_urls
-    assert not any(str(url).startswith("context7:") for url in evidence_urls)
-    # No AnySearch vertical stage may run.
-    assert not any(item.get("stage") == "vertical_discovery" for item in result["stage_results"])
+    source = (PACKAGE / "research_workflow.py").read_text(encoding="utf-8")
+    assert "evidence_operations" in source
+    for module in (
+        "provider_search_commands",
+        "provider_fetch_commands",
+        "provider_mcp_commands",
+        "provider_vertical_commands",
+    ):
+        assert module not in source
 
 
 def _retained_tool_surface() -> frozenset[str]:
-    return frozenset(service.DEEP_ALLOWED_TOOLS)
+    return frozenset(("search", "fetch", "map"))
 
 
 def test_deep_research_plan_tools_and_commands_are_retained_surface() -> None:
-    """Every deep/research plan tool and rendered command is a retained
-    canonical generic command (``search``/``fetch``/``map``), and every
-    rendered command re-parses through the current parser."""
+    """Every typed research plan operation maps to a retained canonical
+    generic command (``search``/``fetch``/``map``) and carries no shell
+    command or output path."""
+    from smart_search.research_plan import (
+        PLAN_FORBIDDEN_SERIALIZED_FIELDS,
+        serialize_research_plan,
+    )
+    from smart_search.research_plan_render import RENDERER_KIND_TO_TOOL
+    from smart_search.research_service import build_research_workflow_plan
+
     retained = _retained_tool_surface()
     assert retained == {"search", "fetch", "map"}
-    parser = build_parser(raise_on_error=True)
+    assert set(RENDERER_KIND_TO_TOOL.values()) == retained
     queries = (
         "深度搜索一下最近的比特币行情",
         "深度调研 React useEffect 最新文档",
@@ -419,19 +377,14 @@ def test_deep_research_plan_tools_and_commands_are_retained_surface() -> None:
         "OpenAI Responses API web_search 和 Chat Completions 联网搜索怎么选",
     )
     for query in queries:
-        plan = service.build_deep_research_plan(query, budget="standard")
-        assert set(plan["allowed_tools"]) == retained
-        for item in plan["capability_plan"]:
-            assert set(item["tools"]) <= retained, (query, item)
-        for step in plan["steps"]:
-            assert step["tool"] in retained, (query, step)
-            parts = shlex.split(step["command"])
-            assert parts[0] == "smart-search"
-            assert parts[1] == step["tool"]
-            # The rendered command must still parse today (no fallthrough, no
-            # removed spelling), proving the plan is executable.
-            parsed = parser.parse_args(parts[1:])
-            assert parsed.command == step["tool"]
+        plan = build_research_workflow_plan(query, budget="standard")
+        operations = serialize_research_plan(plan)["operations"]
+        assert operations
+        for item in operations:
+            assert not any(field in item for field in PLAN_FORBIDDEN_SERIALIZED_FIELDS), (query, item)
+            assert item["operation"] in {
+                "source_discovery", "docs_discovery", "content_fetch",
+            }, (query, item)
 
 
 def _removed_source_spellings() -> tuple[str, ...]:
@@ -453,7 +406,7 @@ def test_source_scans_no_longer_advertise_removed_spellings() -> None:
         "research_plan_render.py",
         "service_support.py",
         "research_service.py",
-        "operations_service.py",
+        "control_executors.py",
         "provider_search_commands.py",
         "provider_mcp_commands.py",
         "provider_vertical_commands.py",
@@ -534,10 +487,9 @@ def test_orphaned_internal_command_wrappers_are_deleted() -> None:
         "anysearch_domains",
         "anysearch_search",
     ]
-    # search_service no longer imports provider_vertical_commands: the vertical
-    # path resolves through operation_runtime's generic executor default.
-    search_source = (PACKAGE / "search_service.py").read_text(encoding="utf-8")
-    assert "provider_vertical_commands" not in search_source
+    # The v1 search_service module is deleted; the vertical path resolves
+    # through operation_runtime's generic executor default.
+    assert not (PACKAGE / "search_service.py").exists()
 
 
 def test_strict_research_workflow_uses_typed_evidence_owners() -> None:

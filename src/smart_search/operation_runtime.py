@@ -12,7 +12,6 @@ through the single legacy projection helper.
 
 from __future__ import annotations
 
-import sys
 from typing import Any
 
 from .capability_executor import CapabilityOperation, execute_capability
@@ -39,19 +38,6 @@ from .provider_vertical_commands import anysearch_search as _default_anysearch_s
 from .runtime_cache import add_fetch
 from .security import sanitize_text
 from .service_support import _normalize_source_results
-
-
-def _host_call(name: str, default):
-    """Resolve provider callables through search_service when available.
-
-    Existing v1 tests monkeypatch ``search_service.call_*`` / provider helpers.
-    Prefer those symbols when the module is loaded so runner extraction does not
-    break historical patch points. Fall back to direct provider-module defaults.
-    """
-    host = sys.modules.get("smart_search.search_service")
-    if host is not None and hasattr(host, name):
-        return getattr(host, name)
-    return default
 
 
 def _fetch_payload(
@@ -83,10 +69,10 @@ async def _execute_web_fetch(
 ) -> ExecutionOutcome:
     async def run_provider(provider: str, outcome: dict[str, Any]) -> dict[str, Any]:
         if provider == "tavily":
-            content = await _host_call("call_tavily_extract", _default_call_tavily_extract)(url)
+            content = await _default_call_tavily_extract(url)
             return _fetch_payload(content=content, url=url, provider=provider)
         if provider == "jina":
-            data = await _host_call("jina_fetch", _default_jina_fetch)(url)
+            data = await _default_jina_fetch(url)
             outcome.update(data if isinstance(data, dict) else {})
             return _fetch_payload(
                 content=data.get("content") if isinstance(data, dict) and data.get("ok") else "",
@@ -96,7 +82,7 @@ async def _execute_web_fetch(
                 error=data.get("error", "") if isinstance(data, dict) else "invalid Jina result",
             )
         if provider == "zhipu-mcp-reader":
-            data = await _host_call("zhipu_mcp_reader", _default_zhipu_mcp_reader)(url)
+            data = await _default_zhipu_mcp_reader(url)
             outcome.update(data if isinstance(data, dict) else {})
             return _fetch_payload(
                 content=data.get("content") if isinstance(data, dict) and data.get("ok") else "",
@@ -105,7 +91,7 @@ async def _execute_web_fetch(
                 error_type=data.get("error_type", "") if isinstance(data, dict) else "protocol_error",
                 error=data.get("error", "") if isinstance(data, dict) else "invalid MCP reader result",
             )
-        content = await _host_call("call_firecrawl_scrape", _default_call_firecrawl_scrape)(url)
+        content = await _default_call_firecrawl_scrape(url)
         return _fetch_payload(content=content, url=url, provider=provider)
 
     operation = CapabilityOperation(
@@ -159,16 +145,16 @@ async def _execute_web_search(
 ) -> ExecutionOutcome:
     async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
         if provider == "zhipu":
-            data = await _host_call("zhipu_search", _default_zhipu_search)(query, count=count)
+            data = await _default_zhipu_search(query, count=count)
             outcome.update(data if isinstance(data, dict) else {})
             return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
         if provider == "zhipu-mcp":
-            data = await _host_call("zhipu_mcp_search", _default_zhipu_mcp_search)(query, count=count)
+            data = await _default_zhipu_mcp_search(query, count=count)
             outcome.update(data if isinstance(data, dict) else {})
             return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
         if provider == "tavily":
-            return _normalize_source_results(await _host_call("call_tavily_search", _default_call_tavily_search)(query, count), provider)
-        return _normalize_source_results(await _host_call("call_firecrawl_search", _default_call_firecrawl_search)(query, count), provider)
+            return _normalize_source_results(await _default_call_tavily_search(query, count), provider)
+        return _normalize_source_results(await _default_call_firecrawl_search(query, count), provider)
 
     operation = CapabilityOperation(
         capability="web_search",
@@ -204,10 +190,10 @@ async def _execute_docs_search(
 ) -> ExecutionOutcome:
     async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
         if provider == "exa":
-            data = await _host_call("exa_search", _default_exa_search)(query, num_results=count, include_highlights=True)
+            data = await _default_exa_search(query, num_results=count, include_highlights=True)
             outcome.update(data if isinstance(data, dict) else {})
             return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
-        data = await _host_call("context7_library", _default_context7_library)(query, query)
+        data = await _default_context7_library(query, query)
         outcome.update(data if isinstance(data, dict) else {})
         return [
             {
@@ -252,7 +238,7 @@ async def _execute_vertical_search(
     fallback: str = "auto",
 ) -> ExecutionOutcome:
     async def run_provider(provider: str, outcome: dict[str, Any]) -> list[dict]:
-        data = await _host_call("anysearch_search", _default_anysearch_search)(query, max_results=5)
+        data = await _default_anysearch_search(query, max_results=5)
         outcome.update(data if isinstance(data, dict) else {})
         return _normalize_source_results(data.get("results"), provider) if isinstance(data, dict) and data.get("ok") else []
 
@@ -290,7 +276,7 @@ async def _execute_site_map(
     timeout: int = 150,
 ) -> ExecutionOutcome:
     async def run_provider(provider: str, outcome: dict[str, Any]) -> dict[str, Any]:
-        data = await _host_call("call_tavily_map", _default_call_tavily_map)(
+        data = await _default_call_tavily_map(
             url,
             instructions,
             max_depth,

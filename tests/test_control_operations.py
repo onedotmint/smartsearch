@@ -289,9 +289,9 @@ def test_outcome_metadata_is_required_and_validated():
 def test_control_operations_forbidden_imports():
     """The owner must not import CLI, V1/V2/V3/Workflow contracts, renderers,
     the broad service facade, service_support, provider adapters or the v3
-    adapter. The only compatibility-module dependency is the temporary
-    private-executor seam to ``operations_service`` (see
-    ``test_control_operations_calls_only_approved_operations_service_helpers``)."""
+    adapter. The only low-level dependency is the private executor module
+    ``control_executors`` (see
+    ``test_control_operations_calls_only_approved_executor_helpers``)."""
     source = OWNER_MODULE_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
     imported: list[str] = []
@@ -318,6 +318,7 @@ def test_control_operations_forbidden_imports():
         "smart_search.service_support",
         "smart_search.search_service",
         "smart_search.research_service",
+        "smart_search.operations_service",
         "smart_search.v1_contract",
         "smart_search.legacy_surface_inventory",
         "smart_search.api_v2",
@@ -338,7 +339,7 @@ def test_control_operations_forbidden_imports():
     assert "V3Status" not in source
 
 
-APPROVED_OPERATIONS_SERVICE_HELPERS = frozenset(
+APPROVED_EXECUTOR_HELPERS = frozenset(
     {
         "_model_routes_result",
         "_safe_test_main_provider_connection",
@@ -350,12 +351,10 @@ APPROVED_OPERATIONS_SERVICE_HELPERS = frozenset(
 )
 
 
-def test_control_operations_calls_only_approved_operations_service_helpers():
-    """The temporary compatibility seam calls exactly the six raw private
-    executors through module attribute access, never public legacy wrappers
-    (``smoke``, ``doctor``, ``doctor_status``, ``diagnose_openai_compatible``,
-    ``provider_probe``, ``model_*``, ``config_*``) and never the v1
-    compatibility projection (``_project_legacy_outcome``)."""
+def test_control_operations_calls_only_approved_executor_helpers():
+    """The typed owner calls exactly the six raw private executors through
+    module attribute access on the private ``control_executors`` module, never
+    through any public legacy wrapper or v1 compatibility projection."""
     source = OWNER_MODULE_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
     accessed: set[str] = set()
@@ -363,20 +362,27 @@ def test_control_operations_calls_only_approved_operations_service_helpers():
         if (
             isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name)
-            and node.value.id == "operations_service"
+            and node.value.id == "control_executors"
         ):
             accessed.add(node.attr)
-    assert accessed == APPROVED_OPERATIONS_SERVICE_HELPERS
-    # Names must never be imported directly from the module; the seam is
-    # module attribute access only (``from . import operations_service``).
+    assert accessed == APPROVED_EXECUTOR_HELPERS
+    # Names must never be imported directly from the module; executors are
+    # reached through module attribute access only.
     direct = [
         node.module
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom)
         and node.module is not None
-        and node.module.endswith("operations_service")
+        and node.module.endswith("control_executors")
     ]
-    assert not direct, f"direct operations_service name import: {direct}"
+    assert not direct, f"direct control_executors name import: {direct}"
+    # The v1 executor host module is gone.
+    assert not any(
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "operations_service"
+        for node in ast.walk(tree)
+    )
 
 
 def test_control_plane_adapters_projection_only_imports():
@@ -395,6 +401,7 @@ def test_control_plane_adapters_projection_only_imports():
         "smart_search.provider_catalog",
         "smart_search.provider_diagnostics",
         "smart_search.operations_service",
+        "smart_search.control_executors",
         "smart_search.skill_installer",
         "smart_search.cli_dispatch",
         "smart_search.service",
@@ -630,7 +637,7 @@ def _routes_ok_data(action: str) -> dict:
 
 
 def test_routes_current_and_list_read_only(monkeypatch):
-    monkeypatch.setattr(co.operations_service, "_model_routes_result", _routes_ok_data)
+    monkeypatch.setattr(co.control_executors, "_model_routes_result", _routes_ok_data)
     for operation, action in (
         ("provider.routes.current", "current"),
         ("provider.routes.list", "list"),
@@ -646,7 +653,7 @@ def test_routes_current_and_list_read_only(monkeypatch):
 
 def test_routes_read_failure_classified(monkeypatch):
     monkeypatch.setattr(
-        co.operations_service,
+        co.control_executors,
         "_model_routes_result",
         lambda action: {
             "ok": False,
@@ -665,7 +672,7 @@ def test_routes_read_failure_classified(monkeypatch):
 
 def test_routes_add_success_write_facts_and_masking(monkeypatch):
     monkeypatch.setattr(co.config, "add_model_route", lambda route: [route])
-    monkeypatch.setattr(co.operations_service, "_model_routes_result", _routes_ok_data)
+    monkeypatch.setattr(co.control_executors, "_model_routes_result", _routes_ok_data)
     result = asyncio.run(
         co.run_provider_routes_add(
             "primary",
@@ -727,7 +734,7 @@ def test_routes_add_atomic_failure_attempts_no_commit(monkeypatch):
 
 def test_routes_remove_success_and_parameter_failure(monkeypatch):
     monkeypatch.setattr(co.config, "remove_model_route", lambda route_id: [])
-    monkeypatch.setattr(co.operations_service, "_model_routes_result", _routes_ok_data)
+    monkeypatch.setattr(co.control_executors, "_model_routes_result", _routes_ok_data)
     result = asyncio.run(co.run_provider_routes_remove("primary"))
     assert result.status is ControlOperationStatus.COMPLETE
     assert result.side_effects.config.write_attempted is True
@@ -877,7 +884,7 @@ def test_probe_route_family_all_success_complete(monkeypatch):
     async def fake_connection(route):
         return {"status": "ok", "message": "ok", "response_time_ms": 1}
 
-    monkeypatch.setattr(co.operations_service, "_safe_test_main_provider_connection", fake_connection)
+    monkeypatch.setattr(co.control_executors, "_safe_test_main_provider_connection", fake_connection)
     result = asyncio.run(co.run_provider_probe("xai-responses"))
     assert result.status is ControlOperationStatus.COMPLETE
     assert result.network.attempted is True
@@ -909,7 +916,7 @@ def test_probe_route_family_partial_degraded(monkeypatch):
     async def fake_connection(route):
         return next(results)
 
-    monkeypatch.setattr(co.operations_service, "_safe_test_main_provider_connection", fake_connection)
+    monkeypatch.setattr(co.control_executors, "_safe_test_main_provider_connection", fake_connection)
     result = asyncio.run(co.run_provider_probe("xai-responses"))
     assert result.status is ControlOperationStatus.DEGRADED
     assert result.error is None
@@ -934,7 +941,7 @@ def test_probe_route_family_all_failed(monkeypatch):
     async def fake_connection(route):
         return {"status": "timeout", "message": "timeout", "response_time_ms": 5}
 
-    monkeypatch.setattr(co.operations_service, "_safe_test_main_provider_connection", fake_connection)
+    monkeypatch.setattr(co.control_executors, "_safe_test_main_provider_connection", fake_connection)
     result = asyncio.run(co.run_provider_probe("xai-responses"))
     assert result.status is ControlOperationStatus.FAILED
     assert result.error.type == "network_error"
@@ -960,7 +967,7 @@ _DOCTOR_STATUS_OK = {
 
 
 def test_doctor_status_local_only_no_network(monkeypatch, no_network_spies):
-    monkeypatch.setattr(co.operations_service, "_execute_doctor_status", lambda: _DOCTOR_STATUS_OK)
+    monkeypatch.setattr(co.control_executors, "_execute_doctor_status", lambda: _DOCTOR_STATUS_OK)
     result = asyncio.run(co.run_doctor_status())
     assert result.operation == "doctor.status"
     assert result.status is ControlOperationStatus.COMPLETE
@@ -972,7 +979,7 @@ def test_doctor_status_local_only_no_network(monkeypatch, no_network_spies):
 
 def test_doctor_status_failure_classified_no_network(monkeypatch):
     monkeypatch.setattr(
-        co.operations_service,
+        co.control_executors,
         "_execute_doctor_status",
         lambda: {"ok": False, "error_type": "config_error", "error": "config unavailable", "local_only": True},
     )
@@ -994,7 +1001,7 @@ def test_doctor_probe_complete_records_targets(monkeypatch):
             "exa_connection_test": {"status": "not_configured", "message": "missing"},
         }
 
-    monkeypatch.setattr(co.operations_service, "_execute_doctor_probe", fake_doctor)
+    monkeypatch.setattr(co.control_executors, "_execute_doctor_probe", fake_doctor)
     result = asyncio.run(co.run_doctor_probe())
     assert result.status is ControlOperationStatus.COMPLETE
     assert result.network.attempted is True
@@ -1015,7 +1022,7 @@ def test_doctor_probe_owner_degraded(monkeypatch):
             },
         }
 
-    monkeypatch.setattr(co.operations_service, "_execute_doctor_probe", fake_doctor)
+    monkeypatch.setattr(co.control_executors, "_execute_doctor_probe", fake_doctor)
     result = asyncio.run(co.run_doctor_probe())
     assert result.status is ControlOperationStatus.DEGRADED
     assert result.error is None
@@ -1037,7 +1044,7 @@ def test_doctor_probe_partial_connectivity_degraded(monkeypatch):
             },
         }
 
-    monkeypatch.setattr(co.operations_service, "_execute_doctor_probe", fake_doctor)
+    monkeypatch.setattr(co.control_executors, "_execute_doctor_probe", fake_doctor)
     result = asyncio.run(co.run_doctor_probe())
     assert result.status is ControlOperationStatus.DEGRADED
     assert result.warnings == ("aggregate doctor completed with partial connectivity",)
@@ -1057,7 +1064,7 @@ def test_doctor_probe_failed_no_usable_connectivity(monkeypatch):
             },
         }
 
-    monkeypatch.setattr(co.operations_service, "_execute_doctor_probe", fake_doctor)
+    monkeypatch.setattr(co.control_executors, "_execute_doctor_probe", fake_doctor)
     result = asyncio.run(co.run_doctor_probe())
     assert result.status is ControlOperationStatus.FAILED
     assert result.error.type == "network_error"
@@ -1239,7 +1246,7 @@ def test_diagnose_local_config_missing_fails_before_network(monkeypatch):
             "error": "missing OPENAI_COMPATIBLE_API_KEY",
         }
 
-    monkeypatch.setattr(co.operations_service, "_execute_diagnose_openai_compatible", fake_diagnose)
+    monkeypatch.setattr(co.control_executors, "_execute_diagnose_openai_compatible", fake_diagnose)
     result = asyncio.run(co.run_dev_diagnose_openai_compatible())
     assert result.status is ControlOperationStatus.FAILED
     assert result.error.type == "config_error"
@@ -1257,7 +1264,7 @@ def test_diagnose_request_success_records_target(monkeypatch):
             "error": "",
         }
 
-    monkeypatch.setattr(co.operations_service, "_execute_diagnose_openai_compatible", fake_diagnose)
+    monkeypatch.setattr(co.control_executors, "_execute_diagnose_openai_compatible", fake_diagnose)
     result = asyncio.run(co.run_dev_diagnose_openai_compatible(timeout_seconds=10))
     assert result.status is ControlOperationStatus.COMPLETE
     assert result.network.attempted is True
@@ -1274,7 +1281,7 @@ def test_diagnose_request_failure_classified(monkeypatch):
             "error": "request failed",
         }
 
-    monkeypatch.setattr(co.operations_service, "_execute_diagnose_openai_compatible", fake_diagnose)
+    monkeypatch.setattr(co.control_executors, "_execute_diagnose_openai_compatible", fake_diagnose)
     result = asyncio.run(co.run_dev_diagnose_openai_compatible())
     assert result.status is ControlOperationStatus.FAILED
     assert result.error.type == "network_error"
@@ -1292,7 +1299,7 @@ def test_smoke_mock_is_network_free(monkeypatch, no_network_spies):
             "providers_used": ["tavily", "openai-compatible"],
         }
 
-    monkeypatch.setattr(co.operations_service, "_execute_smoke", fake_smoke)
+    monkeypatch.setattr(co.control_executors, "_execute_smoke", fake_smoke)
     result = asyncio.run(co.run_dev_smoke(mode="mock"))
     assert result.status is ControlOperationStatus.COMPLETE
     assert result.network.attempted is False
@@ -1300,6 +1307,22 @@ def test_smoke_mock_is_network_free(monkeypatch, no_network_spies):
     # Mock case data is result data, never a network fact: providers_used is
     # preserved in the canonical result while network metadata stays empty.
     assert result.result_dict["providers_used"] == ["tavily", "openai-compatible"]
+
+
+def test_smoke_mock_case_table_is_all_green():
+    """The real mock smoke case table (minimum-profile gates, fallback chains,
+    deep-research plan matrix) stays green without network or configuration.
+    ``dev smoke --mock`` executes exactly this table; every other pytest path
+    fakes ``_execute_smoke``, so the real 24-case table needs this direct check."""
+    from smart_search.control_executors import _smoke_mock
+
+    result = asyncio.run(_smoke_mock(0.0))
+
+    assert result["mode"] == "mock"
+    assert result["ok"] is True
+    assert result["failed_cases"] == []
+    assert len(result["cases"]) >= 20
+    assert all("name" in case and "ok" in case for case in result["cases"])
 
 
 def test_smoke_invalid_mode_parameter_failure(monkeypatch):
@@ -1320,7 +1343,7 @@ def test_smoke_live_optional_degraded_records_targets(monkeypatch):
             "providers_used": ["tavily"],
         }
 
-    monkeypatch.setattr(co.operations_service, "_execute_smoke", fake_smoke)
+    monkeypatch.setattr(co.control_executors, "_execute_smoke", fake_smoke)
     result = asyncio.run(co.run_dev_smoke(mode="live"))
     assert result.status is ControlOperationStatus.DEGRADED
     assert result.warnings == ("live smoke completed with optional degraded cases",)
@@ -1340,7 +1363,7 @@ def test_smoke_live_failure_classified(monkeypatch):
             "providers_used": ["tavily"],
         }
 
-    monkeypatch.setattr(co.operations_service, "_execute_smoke", fake_smoke)
+    monkeypatch.setattr(co.control_executors, "_execute_smoke", fake_smoke)
     result = asyncio.run(co.run_dev_smoke(mode="live"))
     assert result.status is ControlOperationStatus.FAILED
     assert result.error.type == "network_error"
@@ -1577,9 +1600,9 @@ def no_network_spies(monkeypatch):
         raise AssertionError("network should not be called for a local-only operation")
 
     monkeypatch.setattr(co, "run_probe_adapter", boom)
-    monkeypatch.setattr(co.operations_service, "_safe_test_main_provider_connection", boom)
+    monkeypatch.setattr(co.control_executors, "_safe_test_main_provider_connection", boom)
     monkeypatch.setattr(co.capability_service, "route", boom)
     monkeypatch.setattr(co.capability_service, "route_calibrate", boom)
-    monkeypatch.setattr(co.operations_service, "_execute_diagnose_openai_compatible", boom)
-    monkeypatch.setattr(co.operations_service, "_execute_smoke", boom)
-    monkeypatch.setattr(co.operations_service, "_execute_doctor_probe", boom)
+    monkeypatch.setattr(co.control_executors, "_execute_diagnose_openai_compatible", boom)
+    monkeypatch.setattr(co.control_executors, "_execute_smoke", boom)
+    monkeypatch.setattr(co.control_executors, "_execute_doctor_probe", boom)

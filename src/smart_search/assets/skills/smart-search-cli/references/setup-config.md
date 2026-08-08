@@ -21,9 +21,9 @@
 - In sandboxed runtimes where the default config directory is not writable or must be pinned, set `SMART_SEARCH_CONFIG_DIR` to an absolute writable path. The CLI uses it for both config and relative logs and skips default-directory selection. It never falls back to a current-working-directory config path; `config path`, `config list`, `doctor`, `config set`, and `config unset` report `config_error` with this remediation when storage is unavailable.
 - Earlier Windows source defaults used `~\.config\smart-search\config.json`, while some installs were already pinned to `%LOCALAPPDATA%\smart-search` through `SMART_SEARCH_CONFIG_DIR`. If the new default file is missing but the old file exists, `doctor` reports `legacy_windows_home` as the active source so upgrades do not silently lose configuration.
 - The published `0.1.0` persisted-data upgrade contract is frozen in the repository migration guide (`docs/migration.md`): legacy main-search keys become ordered routes only on the first controlled local write, environment-owned values never land in the file, failed writes preserve the source bytes, and removed spellings fail without reinterpretation.
-- When a Windows user reports different config paths, diagnose in this order: `config_dir_source`, `config_dir_override_value`, `config_dir_override_matches_default`, then `legacy_windows_config_exists`. Do not delete either config file or the user-level override until the upgraded CLI has been verified with `config path`, `doctor`, and smoke/regression checks.
+- When a Windows user reports different config paths, troubleshoot in this order: `config_dir_source`, `config_dir_override_value`, `config_dir_override_matches_default`, then `legacy_windows_config_exists`. Do not delete either config file or the user-level override until the upgraded CLI has been verified with `config path`, `doctor`, and the mock smoke quality gate.
 - Runtime caching is disabled by default. Set `SMART_SEARCH_CACHE_ENABLED=true` to enable process-local cleaned source/content reuse; `SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS` defaults to `30`, `SMART_SEARCH_FETCH_CACHE_TTL_SECONDS` to `300`, and `SMART_SEARCH_CACHE_MAX_SIZE` to `256`. TTL values must be `1..604800`, and max size must be `1..10000`.
-- Cache configuration changes and credential rotation prevent old entries from being used. The cache never stores synthesis answers, errors, empty results, prompts, credentials, or research artifacts.
+- Cache configuration changes and credential rotation prevent old entries from being used. The cache never stores generated answers, errors, empty results, prompts, credentials, or research artifacts.
 - The research workflow records logical artifacts only and never projects output paths; `--evidence-dir` and `--output` are rejected by the workflow family before any owner work. Host agents persist evidence by saving the returned JSON.
 
 ## Doctor And Diagnostics
@@ -32,7 +32,7 @@
 - If `smart-search doctor status --format json` returns `ok: false`, follow the `error` field's guidance (`smart-search config set KEY VALUE`); do not silently fall back to native web search.
 - `doctor probe --format markdown` must render a detailed diagnostic report with overall status, active/default/legacy config paths, log path resolution, file-logging status, masked config values with sources, minimum profile, capability status, main-search provider checks, provider connectivity checks, intent router status, embedding threshold/margin metadata, model metadata, and full long error/message detail.
 - Use `smart-search dev diagnose openai-compatible --format markdown` when `doctor status` succeeds but OpenAI-compatible `search` appears to hang or returns a timeout. It is the beginner-facing one-command report for upstream/relay compatibility.
-- `diagnose openai-compatible --format markdown` must render a short copy-pasteable troubleshooting report with masked config, quick chat check, real search-shape `stream=false` and `stream=true` checks, a plain-language summary, and a next command.
+- `dev diagnose openai-compatible --format markdown` must render a short copy-pasteable troubleshooting report with masked config, quick chat check, real search-shape `stream=false` and `stream=true` checks, a plain-language summary, and a next command.
 
 ## Setup Workflow
 
@@ -53,8 +53,8 @@
 - `--skills-root PATH` is an advanced override for the user-level install root used in portable installs or tests. Normal users should omit it.
 - `smart-search dev skills status --targets codex,claude,cursor,hermes --format json` compares bundled skill files with installed user-level skill directories. Status values are `missing`, `up_to_date`, `stale`, `extra_files`, and `error`. It reports target paths, bundled file count, installed file count, hashes, hash match flags, missing files, stale files, and extra files. It must not write or delete files.
 - `smart-search dev skills update --targets codex,claude,cursor,hermes --format json` overwrites the managed bundled `smart-search-cli` files for selected targets. `smart-search dev skills update --all --format json` selects every target id.
-- This daily sync path must not change provider keys, run setup prompts, create Trellis files, create hooks, create agents, create commands, or delete leftover files. Extra installed files are only reported by `skills status`.
-- `dev skills update --targets codex` is the skill synchronization path; `setup` and its `--install-skills` flag are removed.
+- This daily sync path must not change provider keys, run setup prompts, create Trellis files, create hooks, create agents, create commands, or delete leftover files. Extra installed files are only reported by `dev skills status`.
+- `dev skills update --targets codex` is the skill synchronization path; the legacy interactive setup wizard and its `--install-skills` flag are removed.
 
 ## Provider Endpoint Setup
 

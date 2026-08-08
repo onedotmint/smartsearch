@@ -75,7 +75,7 @@ smart-search fetch "https://example.com/page"
 
 ### V3 控制面 JSON API
 
-V3 是用于稳定本地管理、显式 probe、开发诊断、文件系统操作和 regression 子进程的独立 JSON family。它不是 evidence envelope：
+V3 是用于稳定本地管理、显式 probe、开发诊断、文件系统操作和开发质量门禁子进程的独立 JSON family。它不是 evidence envelope：
 
 ```sh
 smart-search config list
@@ -102,7 +102,7 @@ V3 返回 `complete` / `degraded` / `failed`，并以独立的 `network` 与 `si
 | 联网聚合连通性 | `smart-search doctor probe` | 脱敏诊断和 provider 检查 |
 | 单 Provider 可达性 | `smart-search provider probe PROVIDER` | 只测一个 provider/family |
 
-`research plan` 只做离线规划。`research run` 是面向 Agent 的证据工作流。旧命令、别名和 `--schema-version` selector 已移除，会以替换 family 的严格错误失败。
+`research plan` 只做离线规划。`research run` 是面向 Agent 的证据工作流。旧命令、别名和 schema selector 已移除，会以替换 family 的严格错误失败。
 
 ## 核心示例
 
@@ -171,8 +171,8 @@ smart-search dev smoke --mock --format json
 ```sh
 python -m compileall -q src tests
 python -m pytest tests -q
-python -m smart_search.cli regression
-python -m smart_search.cli smoke --mock --format json
+python -m smart_search.cli dev regression
+python -m smart_search.cli dev smoke --mock --format json
 npm test
 npm pack --dry-run
 git diff --check

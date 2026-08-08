@@ -138,7 +138,7 @@ Use the Agent-facing staged executor when the host should receive admitted evide
 smart-search research run "Compare two current API designs" --budget deep --format json
 ```
 
-Bare `research`, `rs`, `deep`, and `dr` are removed spellings and fail with the workflow family's strict error; the workflow never synthesizes an answer.
+Bare `research`, `rs`, `deep`, and `dr` are removed spellings and fail with the workflow family's strict error; the workflow never writes an answer itself.
 
 The distinction is intentional. `research plan` is the offline planner, not an executor; `research run` is the evidence-first live staged workflow, and the host agent writes the final answer. See [Search vs Deep Research vs Research](concepts/search-vs-deep-vs-research.md).
 

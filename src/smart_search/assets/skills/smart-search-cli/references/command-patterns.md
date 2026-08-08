@@ -69,48 +69,19 @@ accept only `--format json|markdown|content`; V1-era options such as
 `--validation`, `--fallback`, `--providers`, `--profile`, `--response-mode`,
 `--output`, and `--force` are rejected with the V2 strict INVALID_ARGUMENT
 error before any provider work. `research plan` / `research run` accept only
-`--budget` (and `--profile` for run); `--synthesize`, `--fallback`,
+`--budget` (and `--profile` for run); answer-generation flags, `--fallback`,
 `--evidence-dir`, `--output`, and `--force` are rejected by the workflow
 family. V3 leaves accept only their declared options plus `--format`; all of
 them reject `--output`, `--force`, and prompt-file overrides.
 
 ## Removed Spellings And Aliases
 
-All aliases are removed. Every removed spelling fails with the replacement
-family's strict `INVALID_ARGUMENT` envelope that names the canonical
-replacement; nothing is silently reinterpreted as a different command.
-
-```powershell
-# Removed aliases (each fails with the family error shown)
-smart-search s "query"        # -> use search (V2)
-smart-search f "https://example.com"   # -> use fetch (V2)
-smart-search m "https://example.com"   # -> use map (V2)
-smart-search rs "query"       # -> use research run (Workflow)
-smart-search dr "query"       # -> use research plan (Workflow)
-smart-search deep "query"     # -> use research plan (Workflow)
-smart-search rt "query"       # -> use dev route-explain (V3)
-smart-search cfg ls           # -> use config list (V3)
-smart-search mdl cur          # -> use provider routes current (V3)
-smart-search d                # -> use doctor probe (V3)
-smart-search sm               # -> use dev smoke (V3)
-smart-search reg              # -> use dev regression (V3)
-
-# Removed legacy command spellings (each fails with the family error shown)
-smart-search research "query"          # -> use research run (Workflow)
-smart-search model list                # -> use provider routes list (V3)
-smart-search smoke --mock --format json  # -> use dev smoke --mock --format json (V3)
-smart-search doctor --format json      # -> use doctor probe (V3)
-smart-search route "query"             # -> use dev route-explain (V3)
-smart-search setup                     # -> use config set (V3)
-smart-search skills status             # -> use dev skills status (V3)
-```
-
-The `--schema-version` selector is removed from the CLI surface entirely.
-`--schema-version 1|2|3` (including `-schema-version`, equals syntax, and the
-bare flag) fails with the identified command's family error, or with the V2
-root parser-error sentinel when no command can be identified. Command domain
-alone decides the contract: Evidence -> V2, Control Plane -> V3, Research
-Workflow -> `research plan` / `research run`.
+All aliases are removed. Every removed spelling (including the old schema
+selector and the legacy control/workflow command spellings) fails with the
+replacement family's strict `INVALID_ARGUMENT` envelope that names the
+canonical replacement; nothing is silently reinterpreted as a different
+command. Command domain alone decides the contract: Evidence -> V2, Control
+Plane -> V3, Research Workflow -> `research plan` / `research run`.
 
 ## Timeout Retry Policy
 

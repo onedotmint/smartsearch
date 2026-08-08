@@ -167,9 +167,18 @@ def test_v3_parser_error_and_unsupported_alias_are_single_documents(capsys):
 
 def test_v3_rejects_v1_output_before_owner(monkeypatch, capsys):
     from smart_search.cli import main
-    from smart_search import operations_service
+    from smart_search import control_operations
 
-    monkeypatch.setattr(operations_service, "config_list", lambda **_: (_ for _ in ()).throw(AssertionError("owner called")))
+    # The v1 output utility is removed; the owner itself must also never run
+    # for a v3 command that carries the v1-only --output option.
+    import smart_search.control_executors as control_executors
+
+    assert not hasattr(control_executors, "write_output")
+    monkeypatch.setattr(
+        control_operations,
+        "run_config_list",
+        lambda **_: (_ for _ in ()).throw(AssertionError("owner called")),
+    )
     code = main(["config", "list", "--output", "result.json"])
     assert code == 2
     payload = json.loads(capsys.readouterr().out)

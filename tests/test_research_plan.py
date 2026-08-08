@@ -16,12 +16,6 @@ from smart_search.research_plan import (
     serialize_research_plan,
     validate_research_plan_dict,
 )
-from smart_search.research_plan_render import (
-    LEGACY_PLAN_PROJECTION_VERSION,
-    build_projection_context,
-    projection_entry,
-    render_v1_steps,
-)
 from smart_search.v2_contract import V2_META_OPERATION_CAPABILITY_STATUS
 
 
@@ -119,71 +113,22 @@ def test_raw_plan_rejects_null_required_operation_containers(field):
         validate_research_plan_dict(raw)
 
 
-def test_projection_is_one_to_one_and_renders_v1_steps():
-    discover = _op("discover-primary", input={"query": "bitcoin"})
-    fetch = ResearchPlanOperation(
-        id="fetch-selected",
-        operation="content_fetch",
-        input={"candidate_refs": ["discover-primary"]},
-        constraints={"max_items": 3},
-        depends_on=("discover-primary",),
-    )
-    plan = build_research_plan([discover, fetch])
-    projection = build_projection_context(
-        "C:/tmp/evidence",
-        [
-            projection_entry(
-                discover,
-                renderer_kind="search",
-                purpose="broad discovery",
-                subquestion_id="sq1",
-                args={"query": "bitcoin", "extra_sources": 3},
-                output_suffix="01-search.json",
-            ),
-            projection_entry(
-                fetch,
-                renderer_kind="fetch",
-                purpose="fetch selected",
-                subquestion_id="sq1",
-                args={"url": "<key-url>"},
-                output_suffix="02-fetch.md",
-            ),
-        ],
-    )
-    assert projection.version == LEGACY_PLAN_PROJECTION_VERSION
-    steps = render_v1_steps(plan, projection)
-    assert [step["id"] for step in steps] == ["s1", "s2"]
-    assert steps[0]["tool"] == "search"
-    assert steps[1]["tool"] == "fetch"
-    assert steps[0]["output_path"].endswith("01-search.json")
-    assert steps[0]["output_path"] in steps[0]["command"]
-    assert "smart-search search" in steps[0]["command"]
-    # structured plan fixture is independent of renderer
-    frozen = serialize_research_plan(plan)
-    other = copy.deepcopy(frozen)
-    assert other == frozen
-
-
-def test_orphaned_or_missing_projection_is_rejected():
-    plan = build_research_plan([_op("a")])
-    with pytest.raises(ResearchPlanError):
-        render_v1_steps(
-            plan,
-            build_projection_context(
-                "/tmp/e",
-                [
-                    projection_entry(
-                        _op("b"),
-                        renderer_kind="search",
-                        purpose="x",
-                        subquestion_id="sq1",
-                        output_suffix="01-search.json",
-                    )
-                ],
-            ),
-        )
-
-
 def test_phase3_plan_operations_exclude_synthesis_and_meta():
     assert "answer_synthesis" not in PLAN_EXECUTABLE_OPERATION_IDS
     assert V2_META_OPERATION_CAPABILITY_STATUS not in PLAN_EXECUTABLE_OPERATION_IDS
+
+
+def test_v1_plan_projection_helpers_are_removed():
+    """The v1 deep-plan shell-command projection is deleted with the legacy
+    deep step surface; the renderer module keeps only the tool mapping."""
+    import smart_search.research_plan_render as renderer
+
+    assert renderer.RENDERER_KIND_TO_TOOL == {"search": "search", "fetch": "fetch", "map": "map"}
+    for name in (
+        "build_projection_context",
+        "projection_entry",
+        "render_v1_steps",
+        "LEGACY_PLAN_PROJECTION_VERSION",
+        "LegacyPlanProjectionEntry",
+    ):
+        assert not hasattr(renderer, name), name

@@ -4,8 +4,7 @@ import contextlib
 
 import pytest
 
-from smart_search import capability_service, cli, service
-from smart_search.cli_contract import build_json_result
+from smart_search import capability_service, cli
 from smart_search.utils import PromptConfigurationError, get_prompt, prompt_overrides
 
 
@@ -17,25 +16,28 @@ def _run_main(argv):
     return code, stdout.getvalue(), stderr.getvalue()
 
 
-def test_json_contract_preserves_legacy_error_and_adds_structured_error():
-    result = build_json_result(
-        "fetch",
-        {
-            "ok": False,
-            "error_type": "network_error",
-            "error": "Bearer sk-test-secret upstream timeout",
-            "OPENAI_COMPATIBLE_API_KEY": "sk-test-secret",
-        },
-        secrets=["sk-test-secret"],
-    )
+def test_v1_json_contract_is_removed_without_replacement_shim():
+    """The v1 envelope authority (build_json_result and its duplicate
+    error_detail/error_code/error_message/data projections) is deleted; no
+    compatibility shim may recreate it."""
+    import pytest as _pytest
 
-    assert result["schema_version"] == "1"
-    assert result["command"] == "fetch"
-    assert result["error"] == "Bearer [REDACTED] upstream timeout"
-    assert result["error_code"] == "PROVIDER_UNAVAILABLE"
-    assert result["error_detail"]["code"] == "PROVIDER_UNAVAILABLE"
-    assert result["data"]["error"]["message"] == "Bearer [REDACTED] upstream timeout"
-    assert "sk-test-secret" not in json.dumps(result)
+    with _pytest.raises(ImportError):
+        import smart_search.cli_contract  # noqa: F401
+    with _pytest.raises(ImportError):
+        from smart_search.cli_contract import build_json_result  # noqa: F401
+
+    # Canonical families emit strictly one envelope each: no v1 duplicate
+    # error fields on the typed serializers.
+    from smart_search.v2_contract import serialize_result as v2_serialize
+    from smart_search.v2_contract import parser_error_result as v2_parser_error
+
+    payload = v2_serialize(v2_parser_error("fetch", "content_fetch", "boom"))
+    assert "error_detail" not in payload
+    assert "error_code" not in payload
+    assert "error_message" not in payload
+    assert "data" not in payload
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
 
 
 def test_minimum_profile_modes_keep_standard_fail_closed():
@@ -164,12 +166,10 @@ def test_research_profile_maps_to_executor_budget(monkeypatch, capsys):
         assert captured[-1] == expected
 
 
-def test_output_file_does_not_overwrite_without_force(tmp_path):
-    output = tmp_path / "result.json"
-    output.write_text("old", encoding="utf-8")
+def test_v1_output_utility_is_removed(tmp_path):
+    """The v1 write_output helper is deleted with the v1 renderer; no CLI path
+    writes rendered output files anymore."""
+    import smart_search.control_executors as control_executors
 
-    with pytest.raises(FileExistsError):
-        service.write_output(output, "new")
-
-    service.write_output(output, "new", force=True)
-    assert output.read_text(encoding="utf-8") == "new"
+    assert not hasattr(control_executors, "write_output")
+    assert not hasattr(control_executors, "OutputFileExistsError")

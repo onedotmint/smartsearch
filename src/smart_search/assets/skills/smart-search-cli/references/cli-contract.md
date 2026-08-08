@@ -9,7 +9,7 @@ This compatibility entrypoint no longer stores the full CLI contract. Read the f
 - `deep-research-mode.md`: Deep Research trigger rules, offline planner, live executor, typed plan shape (`schema_version` + `operations`), gap check, provider advantage routing, and smoke matrix.
 - `provider-routing.md`: intent routing diagnostics, provider capabilities, source provenance, same-capability fallback, Zhipu REST/MCP, Jina, AnySearch, Exa, Tavily, Firecrawl, Context7, and maintenance guardrails.
 - `setup-config.md`: config storage, setup/config commands, skill installation, endpoint setup, OpenAI-compatible diagnostics, streaming, and router configuration.
-- `regression-release.md`: regression behavior, packaged-install checks, release lanes, and release closeout lessons.
+- `release-quality-gate.md`: developer quality-gate behavior, packaged-install checks, release lanes, and release closeout lessons.
 
 ## Selection Hints
 
@@ -18,4 +18,4 @@ This compatibility entrypoint no longer stores the full CLI contract. Read the f
 - Need setup, API keys, config paths, skill update behavior, or provider endpoint flags: read `setup-config.md`.
 - Need deep search, deep research, multi-source verification, serious review, or selection/comparison research: read `deep-research-mode.md`.
 - Need timeout recovery, saved evidence files, or source-first fallback examples: read `command-patterns.md`.
-- Need release, npm/mise packaged install, or regression expectations: read `regression-release.md`.
+- Need release, npm/mise packaged install, or quality-gate expectations: read `release-quality-gate.md`.

@@ -73,7 +73,7 @@ typed plan. It carries exactly:
 ```
 
 - `operations` is an ordered executable plan. Each operation has `id` (unique within the plan), `operation` (one of the executable workflow operations such as `source_discovery`, `docs_discovery`, `content_fetch`, or `site_discovery`), `input` (the query or candidate references), `constraints` (bounded request budgets such as `max_results` or `max_items`), and `depends_on` (ids of operations that must complete first).
-- The plan never contains shell commands, output paths, provider raw payloads, `final_answer`, `content` answers, or synthesis flags. `--evidence-dir`, `--output`, `--force`, `--fallback`, and `--synthesize` are rejected by the workflow family before any owner work.
+- The plan never contains shell commands, output paths, provider raw payloads, answer fields, or answer-generation flags. `--evidence-dir`, `--output`, `--force`, `--fallback`, and answer-generation flags are rejected by the workflow family before any owner work.
 - The workflow result envelope is the same for plan and run: `schema_version`, `ok`, `status`, `command`, `operation`, `plan`, `stages`, `evidence`, `citations`, `gaps`, `attempts`, `artifacts`, `error`, and `meta`. `research plan` returns it with empty `stages`/`evidence`/`citations`/`gaps`/`attempts`/`artifacts`.
 
 ## Operation Contract
@@ -108,10 +108,11 @@ smart-search research run "question" --budget deep --format json
 
 `research run` returns the strict workflow result: plan, stages, admitted
 evidence, citations, gaps, attempts, and logical artifact records while no
-answer is synthesized. The host agent writes the final prose. `--synthesize`,
-`--output`, `--force`, `--fallback`, and `--evidence-dir` are rejected by the
-workflow family before any owner work. Bare `research`, `rs`, `deep`, and `dr`
-are removed spellings and fail with the workflow family's strict error.
+answer is authored by the tool. The host agent writes the final prose.
+Answer-generation flags, `--output`, `--force`, `--fallback`, and
+`--evidence-dir` are rejected by the workflow family before any owner work.
+Bare `research`, `rs`, `deep`, and `dr` are removed spellings and fail with
+the workflow family's strict error.
 
 Dynamic routing may reorder providers only inside the same capability. Every
 attempt must record capability, provider, status, error type, latency, and
@@ -120,8 +121,7 @@ result count.
 `research run` output has the exact workflow shape: `schema_version`, `ok`,
 `status`, `command`, `operation`, `plan`, `stages`, `evidence`, `citations`,
 `gaps`, `attempts`, `artifacts`, `error`, and `meta`. It never includes
-`final_answer`, `content` answers, synthesis fields, shell commands, or output
-paths. Citations reference admitted fetched evidence only; discovery
+answer fields, shell commands, or output paths. Citations reference admitted fetched evidence only; discovery
 candidates are never cited as proof. If providers are exhausted or evidence
 cannot close, the workflow returns structured gaps rather than inventing
 missing claims.

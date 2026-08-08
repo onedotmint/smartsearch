@@ -16,26 +16,21 @@ smart-search research plan "Compare Responses API web_search with Chat Completio
 
 `smart-search research plan` is the public offline planner command. It is not an executor and does not change default `smart-search search` behavior. Deep Research is not a fixed topic recipe system: product comparison, technical docs, news, policy, market research, claim verification, and URL-first prompts are user language, not required schema enums.
 
-The plan-only workflow result carries a typed `plan` with these stable sections:
+The plan-only workflow result carries a typed `plan` with exactly two stable
+members:
 
-- `mode`: always `deep_research`;
-- `query_mode`: always `deep`;
-- `question`: the user's research question;
-- `trigger_source`: normally `explicit_cli`;
-- `difficulty`: `standard` or `high`;
-- `intent_signals`: recency, docs/API intent, known URL, claim risk, source authority, and cross-validation need;
-- `decomposition`: subquestions for complex research;
-- `capability_plan`: selected capability needs;
-- `evidence_policy`: default `fetch_before_claim`;
-- `preflight`: `doctor` guidance;
-- `steps`: ordered CLI command steps;
-- `gap_check`: how the agent verifies missing evidence;
-- `final_answer_policy`: how to cite fetched evidence;
-- `usage_boundary`: the user-facing distinction between `search`, `research plan`, and `research run`.
+- `schema_version`: the typed plan contract version;
+- `operations`: an ordered executable list; each operation has `id` (unique
+  within the plan), `operation` (one of `source_discovery`, `docs_discovery`,
+  `content_fetch`, or `site_discovery`), `input`, `constraints`, and
+  `depends_on`.
 
-Allowed planned tools are `search`, `fetch`, and `map`. `doctor` is a `preflight` action, not a `steps[]` item. Plans must not require fixed topic recipe ids. Even `--budget quick` plans retain at least one `fetch` step when evidence policy requires it.
-
-The plan's `steps[].command` and `steps[].output_path` are one contract. Prefer PowerShell-safe quoted commands when a plan is intended for Windows. An evidence directory shown in a plan may be a platform temporary directory; explicit persistent examples are user-controlled paths, not the runtime default.
+The plan never contains shell commands, output paths, evidence directories, or
+answer fields. Allowed operations map to the canonical generic commands
+`search`, `fetch`, and `map` only. `doctor status` is a preflight action, not a
+planned operation. Plans must not require fixed topic recipe ids. Even
+`--budget quick` plans retain at least one `content_fetch` operation when
+evidence policy requires it.
 
 ## Live executor
 
@@ -58,9 +53,9 @@ The executor uses capability-based orchestration and provider advantage routing:
 - Firecrawl is favored for JS-heavy, dynamic, browser-like, OCR/PDF, or robust fallback extraction.
 - AnySearch is an experimental vertical capability with no generic Evidence owner and does not participate in the research executor.
 
-Research provider overrides can reorder or disable providers only within their declared capabilities. The workflow family rejects `--fallback`, `--synthesize`, `--evidence-dir`, `--output`, and `--force` before any owner work.
+Research provider overrides can reorder or disable providers only within their declared capabilities. The workflow family rejects `--fallback`, answer-generation flags, `--evidence-dir`, `--output`, and `--force` before any owner work.
 
-Research JSON uses the workflow envelope: `schema_version`, `ok`, `status`, `command`, `operation=research.run`, `plan`, `stages`, `evidence`, `citations`, `gaps`, `attempts`, `artifacts`, `error`, and `meta`. It contains no `final_answer`/`content`/synthesis fields; the host agent writes the final prose from admitted evidence. `research run` leaves final writing to the host. Bare `research`, `rs`, `deep`, and `dr` are removed spellings and fail with the workflow family's strict error; the executor never silently searches or fetches again.
+Research JSON uses the workflow envelope: `schema_version`, `ok`, `status`, `command`, `operation=research.run`, `plan`, `stages`, `evidence`, `citations`, `gaps`, `attempts`, `artifacts`, `error`, and `meta`. It contains no answer fields; the host agent writes the final prose from admitted evidence. `research run` leaves final writing to the host. Bare `research`, `rs`, `deep`, and `dr` are removed spellings and fail with the workflow family's strict error; the executor never silently searches or fetches again.
 
 Good smoke prompts include:
 

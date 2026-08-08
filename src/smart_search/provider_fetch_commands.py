@@ -7,15 +7,10 @@ import httpx
 
 from .capability_service import (
     _command_capability_failure,
-    _command_capability_metadata,
     _command_capability_preflight,
     _provider_availability,
-    get_capability_status,
-    validate_command_capabilities,
-    validate_minimum_profile,
 )
 from .config import config
-from .evidence import EvidenceBundle
 from .logger import log_info, logger
 from .provider_command_support import decode_provider_json
 from .providers.base import ProviderError, classify_provider_exception
@@ -28,13 +23,7 @@ from .runtime_cache import (
     request_client,
     request_timeout_kwargs,
 )
-from .service_support import (
-    _capability_plan_from_result,
-    _combined_degraded_reason,
-    _elapsed_ms,
-    _evidence_bundle_fields,
-    _fallback_used,
-)
+from .service_support import _elapsed_ms
 
 
 async def call_tavily_extract(url: str) -> str | None:
@@ -283,167 +272,6 @@ async def call_tavily_map(
 
 
 @observe_command
-async def fetch(url: str) -> dict[str, Any]:
-    """
-    /*
-     * ================================================================================
-     * 步骤2：执行 fetch capability
-     * ================================================================================
-     * 目标：只校验 web_fetch，并把 provider fallback 交给 search workflow。
-     * 数据源：capability registry、当前 minimum profile 和 fetch fallback。
-     * 操作：
-     * 1) 缺少 web_fetch 时返回稳定 config_error。
-     * 2) 成功正文进入 EvidenceBundle，候选和 provider attempts 保持可见。
-     * 3) 低层 provider command 不主动使用结果缓存。
-     * ================================================================================
-     */
-    """
-    from .operation_runtime import _run_web_fetch_fallback
-
-    start = time.time()
-    minimum = validate_minimum_profile()
-    if minimum.get("error_type") == "parameter_error":
-        return {
-            "ok": False,
-            "url": url,
-            "content": "",
-            "error_type": "parameter_error",
-            "error": minimum.get("error", "Invalid minimum profile"),
-            "elapsed_ms": _elapsed_ms(start),
-        }
-    command_capabilities = validate_command_capabilities(
-        "fetch",
-        minimum_profile=minimum.get("profile", ""),
-        capability_status=minimum.get("capability_status", {}),
-    )
-    capability_metadata = _command_capability_metadata(command_capabilities, minimum)
-    execution_plan = _capability_plan_from_result("fetch", command_capabilities, response_mode="evidence")
-    if not command_capabilities.get("ok"):
-        evidence_bundle = EvidenceBundle()
-        evidence_bundle.add_gap({"subquestion_id": "", "reason": "fetch 缺少 web_fetch 能力"})
-        return {
-            "ok": False,
-            "url": url,
-            "provider": "",
-            "content": "",
-            "error_type": command_capabilities.get("error_type", "config_error"),
-            "error": command_capabilities.get("error", "fetch 缺少 web_fetch 能力"),
-            "capability_execution_plan": execution_plan.to_dict(),
-            **_evidence_bundle_fields(evidence_bundle),
-            **capability_metadata,
-            "elapsed_ms": _elapsed_ms(start),
-        }
-
-    with observe_stage("fetch.providers"):
-        fetch_result, attempts = await _run_web_fetch_fallback(url)
-    if fetch_result:
-        evidence_bundle = EvidenceBundle()
-        evidence_bundle.add_fetched_evidence(
-            [
-                {
-                    "url": fetch_result.get("url") or url,
-                    "provider": fetch_result.get("provider") or "",
-                    "title": fetch_result.get("title") or fetch_result.get("url") or url,
-                    "content": fetch_result.get("content") or "",
-                    "source_type": "fetched_page",
-                }
-            ]
-        )
-        evidence_bundle.add_provider_attempts(attempts)
-        evidence_fields = _evidence_bundle_fields(evidence_bundle)
-        result = {
-            **fetch_result,
-            "provider_attempts": attempts,
-            "fallback_used": _fallback_used(attempts),
-            "sources": evidence_fields["evidence_bundle"]["sources"],
-            "elapsed_ms": _elapsed_ms(start),
-        }
-        result.update(evidence_fields)
-        result["capability_execution_plan"] = execution_plan.to_dict()
-        result.update(capability_metadata)
-        result["degraded"] = bool(result.get("degraded")) or evidence_bundle.degraded
-        result["degraded_reason"] = _combined_degraded_reason(evidence_bundle, capability_metadata)
-        return result
-
-    fetch_capability = get_capability_status()["web_fetch"]
-    if not fetch_capability.get("configured"):
-        disabled_reasons = [
-            str(item.get("reason"))
-            for item in fetch_capability.get("provider_status", [])
-            if item.get("configured") and not item.get("eligible")
-        ]
-        error = (
-            "web_fetch provider unavailable: " + ", ".join(disabled_reasons)
-            if disabled_reasons
-            else "TAVILY_API_KEY、JINA_API_KEY、ZHIPU_MCP_API_KEY 和 FIRECRAWL_API_KEY 均未配置"
-        )
-        error_type = "config_error"
-    else:
-        error = "所有提取服务均未能获取内容"
-        error_type = "network_error"
-    if any(attempt.get("error_type") == "budget_exhausted" for attempt in attempts):
-        error = "request budget exhausted"
-        error_type = "budget_exhausted"
-    evidence_bundle = EvidenceBundle()
-    evidence_bundle.add_provider_attempts(attempts)
-    evidence_bundle.add_gap({"subquestion_id": "", "reason": error})
-    return {
-        "ok": False,
-        "url": url,
-        "provider": "",
-        "content": "",
-        "error_type": error_type,
-        "error": error,
-        "provider_attempts": attempts,
-        "fallback_used": _fallback_used(attempts),
-        "capability_execution_plan": execution_plan.to_dict(),
-        **capability_metadata,
-        **_evidence_bundle_fields(evidence_bundle),
-        "degraded": bool(capability_metadata.get("degraded")) or evidence_bundle.degraded,
-        "degraded_reason": _combined_degraded_reason(evidence_bundle, capability_metadata),
-        "elapsed_ms": _elapsed_ms(start),
-    }
-
-
-async def map_site(
-    url: str,
-    instructions: str = "",
-    max_depth: int = 1,
-    max_breadth: int = 20,
-    limit: int = 50,
-    timeout: int = 150,
-) -> dict[str, Any]:
-    """Validate site_map and delegate to the Tavily site-map transport."""
-    start = time.time()
-    minimum = validate_minimum_profile()
-    if minimum.get("error_type") == "parameter_error":
-        return {
-            "ok": False,
-            "url": url,
-            "error_type": "parameter_error",
-            "error": minimum.get("error", "Invalid minimum profile"),
-            "elapsed_ms": _elapsed_ms(start),
-        }
-    command_capabilities = validate_command_capabilities(
-        "map",
-        minimum_profile=minimum.get("profile", ""),
-        capability_status=minimum.get("capability_status", {}),
-    )
-    capability_metadata = _command_capability_metadata(command_capabilities, minimum)
-    if not command_capabilities.get("ok"):
-        return {
-            "ok": False,
-            "url": url,
-            "error_type": command_capabilities.get("error_type", "config_error"),
-            "error": command_capabilities.get("error", "map 缺少 site_map 能力"),
-            **capability_metadata,
-            "elapsed_ms": _elapsed_ms(start),
-        }
-    result = await call_tavily_map(url, instructions, max_depth, max_breadth, limit, timeout)
-    result.setdefault("url", url)
-    result.update(capability_metadata)
-    result.setdefault("elapsed_ms", _elapsed_ms(start))
-    return result
 
 
 async def jina_fetch(url: str) -> dict[str, Any]:
@@ -456,7 +284,5 @@ __all__ = [
     "call_jina_reader",
     "call_tavily_extract",
     "call_tavily_map",
-    "fetch",
     "jina_fetch",
-    "map_site",
 ]

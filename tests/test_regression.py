@@ -215,16 +215,17 @@ def test_public_docs_document_workflow_boundaries():
         "`schema_version`",
         "provider advantage routing",
         "`intent_signals`",
-        "`decomposition`",
-        "`capability_plan`",
-        "`gap_check`",
-        "`usage_boundary`",
+        "ordered executable list",
+        "`depends_on`",
+        "`content_fetch`",
+        "`smart-search research plan` is the public offline planner command",
         "smart-search research plan",
         "smart-search dev route-explain",
         "`intent_router_mode`",
         "`required_capabilities`",
         "degraded_reason",
         "Unsupported key claims must be fetched or downgraded to unverified candidates",
+        "answer fields",
     ]
     for marker in english_markers:
         assert marker in public_docs

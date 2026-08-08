@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 
 import pytest
 
-import smart_search.service as service
+import pytest
+
 from smart_search.cli_constants import (
-    COMMAND_ALIASES,
-    CONFIG_COMMAND_ALIASES,
-    MODEL_COMMAND_ALIASES,
     NAMESPACE_COMMANDS,
+    RESERVED_LEGACY_SPELLINGS,
     SELECTOR_REPLACEMENT,
-    SKILLS_COMMAND_ALIASES,
     classify_command_domain,
 )
 from smart_search.cli_parser import build_parser
@@ -168,33 +167,48 @@ def test_schema_version_selectors_are_all_remove() -> None:
 
 
 def test_parser_alias_freeze_subset_of_inventory() -> None:
+    """Alias normalization tables are deleted; the reserved legacy spelling
+    table is the single live source of removed alias spellings."""
     alias_surfaces = inv.alias_surfaces()
     live_aliases = {
-        alias: command
-        for command, aliases in COMMAND_ALIASES.items()
-        for alias in aliases
+        " ".join(tokens): replacement
+        for tokens, (_family, replacement) in RESERVED_LEGACY_SPELLINGS.items()
+        if len(tokens) == 1 and tokens[0] in ALIAS_TO_CANONICAL
     }
-    assert live_aliases == ALIAS_TO_CANONICAL
+    assert set(live_aliases) == set(ALIAS_TO_CANONICAL)
     assert alias_surfaces == set(live_aliases)
     for alias in live_aliases:
         assert alias in alias_surfaces, f"missing alias inventory row for {alias}"
     for entry in inv.entries_with_kind("command_alias"):
         assert entry["disposition"] == "remove"
+    import smart_search.cli_constants as cli_constants
+
+    for name in ("COMMAND_ALIASES", "CONFIG_COMMAND_ALIASES", "MODEL_COMMAND_ALIASES", "SKILLS_COMMAND_ALIASES"):
+        assert not hasattr(cli_constants, name), name
 
 
 def test_service_export_freeze_subset_of_inventory() -> None:
+    """The broad facade is deleted: every inventory python_export row is a
+    historical remove record and no live module may re-export them."""
     export_names = inv.service_export_names()
     assert export_names == set(SERVICE_PUBLIC_EXPORTS)
-    assert tuple(sorted(service.__all__)) == SERVICE_PUBLIC_EXPORTS
     for name in SERVICE_PUBLIC_EXPORTS:
         assert name in export_names, f"missing export inventory row for {name}"
-    for name in service.__all__:
-        assert name in export_names, f"live export missing from inventory: {name}"
     for entry in inv.entries_with_kind("python_export"):
         assert entry["disposition"] == "remove"
+    with pytest.raises(ImportError):
+        import smart_search.service  # noqa: F401
+    import smart_search.cli as cli
+
+    for name in SERVICE_PUBLIC_EXPORTS:
+        assert not hasattr(cli, name), f"cli re-exports removed facade symbol {name}"
 
 
-def test_cli_legacy_reexports_are_frozen() -> None:
+def test_cli_legacy_reexports_are_removed() -> None:
+    """Every frozen ``smart_search.cli.*`` re-export row is deleted with the
+    v1 lazy proxy; the cli module keeps only the canonical entry point."""
+    import smart_search.cli as cli
+
     surfaces = _entries_for_kind("python_export")
     expected = {
         "smart_search.cli.service",
@@ -211,13 +225,19 @@ def test_cli_legacy_reexports_are_frozen() -> None:
         "smart_search.cli.PUBLIC_COMMANDS",
     }
     assert expected.issubset(surfaces)
+    for name in ("service", "Path", "subprocess", "argparse", "json", "build_json_result", "logger"):
+        assert not hasattr(cli, name), f"cli still re-exports {name}"
+    with pytest.raises(ImportError):
+        import smart_search.cli_support  # noqa: F401
 
 
 def test_research_compat_fields_marked_remove() -> None:
+    """The v1 research result projection is deleted; the inventory rows remain
+    as the historical remove record and no live authority produces them."""
     surfaces = {entry["surface"] for entry in inv.entries_with_kind("research_compat_field")}
-    expected = {f"research result {key}" for key in inv.research_result_keys()}
-    expected.update(inv.RESEARCH_AUXILIARY_REMOVE_SURFACES)
-    assert surfaces == expected
+    expected = set(inv.RESEARCH_AUXILIARY_REMOVE_SURFACES)
+    assert inv.research_result_keys() == set(), "no live research() result dict may remain"
+    assert expected <= surfaces
     for field in RESEARCH_COMPAT_FIELDS:
         assert f"research result {field}" in surfaces
     for entry in inv.entries_with_kind("research_compat_field"):
@@ -321,32 +341,19 @@ def test_live_parser_and_namespace_scans_reconcile_to_inventory() -> None:
         "search", "fetch", "map", "capabilities",
         "research", "config", "provider", "doctor", "dev",
     }
-    assert not any(
-        alias in commands
-        for alias in (
-            *COMMAND_ALIASES.values(),
-            *CONFIG_COMMAND_ALIASES.values(),
-            *MODEL_COMMAND_ALIASES.values(),
-            *SKILLS_COMMAND_ALIASES.values(),
-        )
-        for alias in alias
-    )
+    alias_names = set(ALIAS_TO_CANONICAL)
+    assert not any(alias in commands for alias in alias_names)
 
-    expected_nested_aliases = {
-        f"config {alias}"
-        for aliases in CONFIG_COMMAND_ALIASES.values()
-        for alias in aliases
+    nested_control_surfaces = {
+        str(entry["surface"])
+        for entry in inv.entries_with_kind("legacy_control_command")
+        if " " in str(entry["surface"])
     }
-    expected_nested_aliases.update(
-        f"model {alias}"
-        for aliases in MODEL_COMMAND_ALIASES.values()
-        for alias in aliases
-    )
-    expected_nested_aliases.update(
-        f"skills {alias}"
-        for aliases in SKILLS_COMMAND_ALIASES.values()
-        for alias in aliases
-    )
+    expected_nested_aliases = {
+        " ".join(tokens)
+        for tokens in RESERVED_LEGACY_SPELLINGS
+        if len(tokens) == 2 and " ".join(tokens) not in nested_control_surfaces
+    }
     assert set(_entries_for_kind("nested_alias")) == expected_nested_aliases
 
     namespace_paths = {item["path"] for item in NAMESPACE_COMMANDS}
@@ -392,12 +399,35 @@ def test_v1_envelope_and_field_freezes_are_each_inventory_rows() -> None:
     assert "top-level error" in surfaces
 
 
-def test_documentation_scans_match_exact_inventory_evidence() -> None:
+def test_documentation_scans_are_clean_after_removal() -> None:
+    """The four docs/Skill scan patterns no longer hit any legacy spelling.
+
+    The inventory rows keep their frozen evidence as the historical remove
+    record; the final state asserts zero legacy hits. The legacy-control
+    pattern may still match canonical ``dev``-namespace invocations, which
+    are the final contract surface, so the legacy scan excludes exactly the
+    canonical ``dev <command>`` / ``dev.<command>`` forms.
+    """
     entries = inv.entries_by_id()
+    legacy_control = re.compile(
+        r"(?<![\w.])(?:cfg|mdl)\b|"
+        r"\bmodel (?:current|list|add|remove)\b|"
+        r"(?<!dev )(?<!dev\.)\b(?:route-calibrate|diagnose|regression)\b|"
+        r"(?<!dev )\bskills (?:status|update)\b"
+    )
     for entry_id, pattern in inv.DOC_REFERENCE_PATTERNS.items():
         entry = entries[entry_id]
-        assert tuple(entry["evidence"]) == inv.documentation_hits(pattern), entry_id
         assert entry["disposition"] == "remove"
+        files = inv.documentation_files()
+        if entry_id == "docs.ref.legacy_control":
+            hits = [
+                str(path.relative_to(inv.REPO_ROOT))
+                for path in files
+                if legacy_control.search(path.read_text(encoding="utf-8"))
+            ]
+        else:
+            hits = list(inv.documentation_hits(pattern))
+        assert hits == [], (entry_id, hits)
 
 
 def test_scan_report_cross_checks_agree_with_entries() -> None:

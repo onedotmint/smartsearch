@@ -58,10 +58,10 @@ new commands:
 
 | Removed surface | Canonical replacement |
 | --- | --- |
-| The schema selector (`--schema-version` with any value, including `=` and single-dash spellings) | Omit the selector; the canonical command domain decides the contract |
-| Legacy control commands and aliases (`cfg`, `mdl`, the legacy `model` family, bare diagnostic/dev commands) | The canonical V3 control-plane spellings under `config`, `provider routes`, `doctor`, and `dev` |
+| The schema selector (any flag or value form) | Omit the selector; the canonical command domain decides the contract |
+| Legacy control commands and aliases | The canonical V3 control-plane spellings under `config`, `provider routes`, `doctor`, and `dev` |
 | Legacy provider-branded and Experimental commands | The generic V2 Evidence commands `search`, `fetch`, `map`, `capabilities` |
-| Research synthesis controls and the `final_answer` compatibility field | `research run` without synthesis controls; host agents author the final answer |
+| Research answer-generation controls and compatibility fields | `research run` without answer-generation controls; host agents author the final answer |
 | Removed public Python facade exports | The typed V2/V3/Workflow entrypoints the inventory replacement names |
 
 Old Skill instructions that still reference the removed spellings are
@@ -87,4 +87,4 @@ default file is missing; when both exist the new default wins. `config path`
 and `doctor status` report `legacy_windows_home` as the active source so
 upgrades never silently lose configuration. Do not delete either file or the
 user-level override until the upgraded CLI has been verified with
-`config path`, `doctor status`, and the smoke/regression checks.
+`config path`, `doctor status`, and the mock smoke quality gate.

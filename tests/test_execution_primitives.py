@@ -33,6 +33,7 @@ from smart_search.execution_primitives import (
 )
 
 MODULE_PATH = Path("src/smart_search/execution_primitives.py")
+ROOT = Path(__file__).resolve().parents[1]
 
 
 # ---------------------------------------------------------------------------
@@ -540,45 +541,36 @@ def _link_parents(tree: ast.AST) -> None:
 
 
 def test_research_docs_discovery_projects_typed_attempts_through_legacy_boundary():
-    """The live research docs stage must compose the typed Evidence owner and
-    project typed attempts to dicts via the single project_attempts_dict
-    boundary; raw typed tuples must never leak into legacy collections, and
-    the removed Context7/Exa/AnySearch provider-specific research callbacks
-    must not exist.
+    """The v1 live research stage is removed; the strict workflow composes the
+    typed Evidence owner directly. The removed provider-specific research
+    callbacks must not exist anywhere.
     """
     source = RESEARCH_SERVICE_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
-    _link_parents(tree)
 
-    # The legacy projection helper and the typed Evidence owner must be used.
-    assert "project_attempts_dict" in source, "research_service must import project_attempts_dict"
-    assert "docs_discovery" in source, "research_service must compose the typed docs_discovery owner"
-
-    consumers = _target_consumer_functions(tree)
-    assert len(consumers) == 1, (
-        f"expected exactly one typed docs_discovery consumer, got {len(consumers)}"
-    )
-
-    for fn in consumers:
-        # The typed owner outcome is bound and its attempts projected.
-        assert "project_attempts_dict" in ast.unparse(fn), (
-            f"{fn.name} must project typed attempts via project_attempts_dict"
-        )
-        outcome_uses = _attribute_uses(fn, "outcome", "attempts")
-        assert outcome_uses, f"no .attempts access on the typed outcome in {fn.name}"
-        for use in outcome_uses:
-            assert _is_inside_project_attempts_call(use), (
-                f"outcome.attempts must be projected via project_attempts_dict(...) "
-                f"before entering a legacy collection in {fn.name} (line {use.lineno})"
-            )
-        assert not _executor_var_names(fn), (
-            f"{fn.name} must not bind a direct execute_capability(...) executor result"
-        )
-
-    # The removed provider-specific research callbacks are gone entirely.
+    # The v1 live research path is gone: the planner module must not define
+    # the removed docs/fetch/research consumers.
+    defined = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
     for fn in (
+        "_run_research_docs_discovery",
         "_run_research_context7_docs",
         "_run_research_exa_docs",
         "_run_research_vertical_search",
+        "_run_research_fetch_batch",
+        "research",
+        "build_deep_research_plan",
     ):
-        assert fn not in source, f"removed research callback {fn!r} must not remain"
+        assert fn not in defined, f"removed research surface {fn!r} must not remain"
+    # The typed workflow module composes the typed docs owner.
+    workflow_source = (ROOT / "src" / "smart_search" / "research_workflow.py").read_text(
+        encoding="utf-8"
+    )
+    assert "docs_discovery" in workflow_source
+    assert "evidence_operations" in workflow_source
+    assert "_project_attempts" in workflow_source
+    assert "provider_search_commands" not in workflow_source
+    assert "provider_mcp_commands" not in workflow_source

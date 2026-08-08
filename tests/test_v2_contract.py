@@ -610,34 +610,49 @@ def imported_modules(path: Path) -> set[str]:
 
 
 def test_v2_contract_import_isolation_is_bidirectional():
-    # v1 dispatch/contract/service must not import v2_contract. Atomic Phase 3
-    # exposure is limited to cli.py (lazy), cli_v2, api_v2, and canonical modules.
-    for name in ("cli_dispatch.py", "cli_contract.py", "service.py", "cli_parser.py"):
+    # The v1 dispatch/contract/facade modules are removed; the stdlib-only
+    # routing layer (cli, cli_parser) must not import v2_contract. The typed
+    # v2 CLI boundary (cli_v2) is the only CLI module that may.
+    for name in ("cli.py", "cli_parser.py"):
         imports = imported_modules(ROOT / "src" / "smart_search" / name)
         assert not any("v2_contract" in item for item in imports), name
+    for name in (
+        "cli_dispatch.py",
+        "cli_contract.py",
+        "cli_render.py",
+        "cli_setup.py",
+        "cli_support.py",
+        "service.py",
+        "search_service.py",
+        "operations_service.py",
+    ):
+        assert not (ROOT / "src" / "smart_search" / name).exists(), name
     imports = imported_modules(ROOT / "src" / "smart_search" / "v2_contract.py")
     allowed_local = {".security"}
     assert {item for item in imports if item.startswith(".")} <= allowed_local
     assert not any(fragment in item for item in imports for fragment in ("cli", "service", "config", "provider"))
 
 
-def test_v1_service_facade_remains_free_of_v2_exports():
-    from smart_search import service
-    from smart_search.cli_contract import SCHEMA_VERSION
-    from smart_search.cli_parser import build_parser
+def test_v1_service_facade_is_removed_and_free_of_v2_exports():
+    import pytest as _pytest
 
-    parser = build_parser()
+    from smart_search import cli_parser
+    from smart_search.v2_contract import V2_SCHEMA_VERSION
+
+    parser = cli_parser.build_parser()
     help_text = parser.format_help()
     # The schema selector is fully removed from the parser surface.
     assert "--schema-version" not in help_text
     assert not any(
         "--schema-version" in action.option_strings for action in parser._actions
     )
-    assert SCHEMA_VERSION == "1"
     assert V2_SCHEMA_VERSION == "2"
-    for name in ("V2Envelope", "serialize_result", "parser_error_result", "v2_contract", "api_v2"):
-        assert name not in service.__all__
-        assert not hasattr(service, name)
+    # The v1 facade module is deleted; no v2 symbol may be re-exported from a
+    # legacy facade module.
+    with _pytest.raises(ImportError):
+        import smart_search.service  # noqa: F401
+    with _pytest.raises(ImportError):
+        from smart_search import cli_contract  # noqa: F401
 
 
 def test_raw_unknown_fields_and_types_are_rejected(complete_empty):

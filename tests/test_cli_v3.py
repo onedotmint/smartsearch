@@ -5,6 +5,7 @@ import json
 import pytest
 
 from smart_search.cli import main
+from smart_search import control_executors
 
 
 def _payload(capsys):
@@ -127,9 +128,8 @@ def test_v3_provider_catalog_and_probe_metadata(monkeypatch, tmp_path, capsys):
 
 
 def test_v3_doctor_status_and_partial_probe(monkeypatch, capsys):
-    from smart_search import operations_service
 
-    monkeypatch.setattr(operations_service, "_execute_doctor_status", lambda: {
+    monkeypatch.setattr(control_executors, "_execute_doctor_status", lambda: {
         "ok": True, "local_only": True, "config_storage_ok": True,
         "minimum_profile": "off", "minimum_profile_ok": True,
         "core_evidence_ready": True, "core_evidence_path": {},
@@ -151,7 +151,7 @@ def test_v3_doctor_status_and_partial_probe(monkeypatch, capsys):
             },
         }
 
-    monkeypatch.setattr(operations_service, "_execute_doctor_probe", fake_doctor)
+    monkeypatch.setattr(control_executors, "_execute_doctor_probe", fake_doctor)
     assert main(["doctor", "probe"]) == 0
     probe = _payload(capsys)
     assert probe["status"] == "degraded"
@@ -168,7 +168,7 @@ def test_v3_doctor_status_and_partial_probe(monkeypatch, capsys):
             "exa_connection_test": {"status": "not_configured", "message": "missing"},
         }
 
-    monkeypatch.setattr(operations_service, "_execute_doctor_probe", owner_degraded_doctor)
+    monkeypatch.setattr(control_executors, "_execute_doctor_probe", owner_degraded_doctor)
     assert main(["doctor", "probe"]) == 0
     owner_degraded = _payload(capsys)
     assert owner_degraded["status"] == "degraded"
@@ -214,7 +214,7 @@ def test_v3_route_diagnostics_project_degraded_and_network(monkeypatch, capsys):
 
 
 def test_v3_diagnose_smoke_regression_and_skills(monkeypatch, capsys):
-    from smart_search import control_operations, operations_service, skill_installer
+    from smart_search import control_operations, skill_installer
 
     async def fake_diagnose(timeout_seconds=30):
         return {
@@ -226,8 +226,8 @@ def test_v3_diagnose_smoke_regression_and_skills(monkeypatch, capsys):
     async def fake_smoke(mode="mock"):
         return {"ok": True, "mode": mode, "cases": [], "failed_cases": [], "degraded_cases": []}
 
-    monkeypatch.setattr(operations_service, "_execute_diagnose_openai_compatible", fake_diagnose)
-    monkeypatch.setattr(operations_service, "_execute_smoke", fake_smoke)
+    monkeypatch.setattr(control_executors, "_execute_diagnose_openai_compatible", fake_diagnose)
+    monkeypatch.setattr(control_executors, "_execute_smoke", fake_smoke)
     monkeypatch.setattr(control_operations, "_execute_regression", lambda: {
         "ok": False, "exit_code": 1, "subprocess_started": True, "fallback": "", "error_type": "subprocess_error", "error": "failed",
     })
@@ -317,11 +317,14 @@ def test_v1_and_v3_regression_use_one_shared_owner_per_invocation(monkeypatch, c
 
 
 def test_v3_rejects_root_trace_before_owner(monkeypatch, capsys):
-    from smart_search import operations_service
+    from smart_search import control_operations
 
+    # The removed v1 config wrapper is gone; the typed owner must also never
+    # be reached for a v3 command carrying the root-only --trace flag.
+    assert not hasattr(control_executors, "config_list")
     monkeypatch.setattr(
-        operations_service,
-        "config_list",
+        control_operations,
+        "run_config_list",
         lambda **_: (_ for _ in ()).throw(AssertionError("owner called")),
     )
     code = main(["--trace", "config", "list"])
@@ -333,13 +336,13 @@ def test_v3_rejects_root_trace_before_owner(monkeypatch, capsys):
 
 
 def test_v3_packaged_regression_fallback_works_inside_event_loop(monkeypatch, capsys):
-    from smart_search import control_operations, operations_service
+    from smart_search import control_operations
 
     async def fake_smoke(mode="mock"):
         return {"ok": True, "mode": mode, "failed_cases": [], "cases": []}
 
     monkeypatch.setattr(control_operations, "_regression_test_files_available", lambda _root: False)
-    monkeypatch.setattr(operations_service, "_execute_smoke", fake_smoke)
+    monkeypatch.setattr(control_executors, "_execute_smoke", fake_smoke)
     assert main(["dev", "regression"]) == 0
     payload = _payload(capsys)
     assert payload["operation"] == "dev.regression"
@@ -353,7 +356,7 @@ def test_v3_dev_regression_format_owner_once_and_strict_rejection(monkeypatch, c
     stdout document and runs the owner exactly once per invocation;
     --output, --force, and an invalid format value are strictly rejected
     with a v3 INVALID_ARGUMENT document and no owner execution."""
-    from smart_search import control_operations, operations_service
+    from smart_search import control_operations
 
     calls = []
     monkeypatch.setattr(control_operations, "_regression_test_files_available", lambda _root: False)
@@ -361,7 +364,7 @@ def test_v3_dev_regression_format_owner_once_and_strict_rejection(monkeypatch, c
     async def fake_smoke(mode="mock"):
         return {"ok": True, "mode": mode, "cases": [], "failed_cases": [], "degraded_cases": []}
 
-    monkeypatch.setattr(operations_service, "_execute_smoke", fake_smoke)
+    monkeypatch.setattr(control_executors, "_execute_smoke", fake_smoke)
 
     def fake_regression():
         calls.append("regression")
@@ -423,7 +426,6 @@ def test_v3_internal_error_does_not_claim_writes_or_leak_secrets(monkeypatch, ca
 
 
 def test_v3_config_atomic_write_failure_reports_attempt_without_commit(monkeypatch, tmp_path, capsys):
-    from smart_search import operations_service
     from smart_search.config import ConfigStorageError
 
     monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(tmp_path))
@@ -431,8 +433,8 @@ def test_v3_config_atomic_write_failure_reports_attempt_without_commit(monkeypat
     def boom(key, value):
         raise ConfigStorageError("atomic replace failed")
 
-    # operations_service.config_set catches ConfigStorageError from config.set_config_value.
-    monkeypatch.setattr(operations_service.config, "set_config_value", boom)
+    # control_executors.config_set catches ConfigStorageError from config.set_config_value.
+    monkeypatch.setattr(control_executors.config, "set_config_value", boom)
     code = main(["config", "set", "XAI_API_KEY", "raw-secret"])
     assert code == 3
     payload = _payload(capsys)

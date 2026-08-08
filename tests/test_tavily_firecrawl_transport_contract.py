@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 
-from smart_search import provider_fetch_commands, provider_search_commands, service
+from smart_search import operation_runtime, provider_fetch_commands, provider_search_commands
 from smart_search.providers.base import ProviderError
 
 
@@ -354,23 +354,16 @@ async def test_tavily_and_firecrawl_errors_feed_same_capability_attempts(monkeyp
         )
 
     # Keep jina/zhipu-mcp out of the chain by not configuring them.
-    monkeypatch.setattr(provider_fetch_commands, "call_tavily_extract", failing_tavily)
-    monkeypatch.setattr(provider_fetch_commands, "call_firecrawl_scrape", failing_firecrawl)
-    # search_service imports these names for fallback.
-    from smart_search import search_service
+    monkeypatch.setattr(operation_runtime, "_default_call_tavily_extract", failing_tavily)
+    monkeypatch.setattr(operation_runtime, "_default_call_firecrawl_scrape", failing_firecrawl)
 
-    monkeypatch.setattr(search_service, "call_tavily_extract", failing_tavily)
-    monkeypatch.setattr(search_service, "call_firecrawl_scrape", failing_firecrawl)
-
-    result = await service.fetch("https://example.com/page")
-    assert result["ok"] is False
-    assert result["error_type"] == "network_error"
-    attempts = result["provider_attempts"]
+    value, attempts = await operation_runtime._run_web_fetch_fallback("https://example.com/page")
+    assert value is None
     assert attempts
     assert all(item["capability"] == "web_fetch" for item in attempts)
     assert any(item.get("status") == "error" for item in attempts)
     # Must not look like a successful empty fetch.
-    assert not (result.get("ok") is True and not (result.get("content") or "").strip())
+    assert value is None
     error_attempts = [item for item in attempts if item.get("status") == "error"]
     assert [(item["provider"], item["error_type"]) for item in error_attempts] == [
         ("tavily", "timeout"),

@@ -3,16 +3,16 @@ import json
 import pytest
 
 from smart_search import (
-    operations_service,
+    control_executors,
     provider_diagnostics,
     provider_search_commands,
 )
 
 
-def test_operations_service_uses_provider_diagnostic_owners():
-    assert operations_service._test_exa_connection is provider_diagnostics._test_exa_connection
-    assert operations_service._test_tavily_connection is provider_diagnostics._test_tavily_connection
-    assert operations_service._test_jina_connection is provider_diagnostics._test_jina_connection
+def test_control_executors_use_provider_diagnostic_owners():
+    assert control_executors._test_exa_connection is provider_diagnostics._test_exa_connection
+    assert control_executors._test_tavily_connection is provider_diagnostics._test_tavily_connection
+    assert control_executors._test_jina_connection is provider_diagnostics._test_jina_connection
 
 
 @pytest.mark.asyncio

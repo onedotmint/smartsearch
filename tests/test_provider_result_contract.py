@@ -1,15 +1,29 @@
+"""Direct deterministic tests for the retained provider result stabilization.
+
+Migrated from the pre-cleanup ``test_provider_result_contract.py``: the
+``ProviderResult`` field contract, ``coerce_provider_result`` coercion, and
+``classify_provider_exception`` status categories all live in the retained
+``providers/base.py``. The final test expresses the historical "provider error
+is consumed and falls back within the same capability" service case on the
+current typed executor, and never imports the removed V1 facade.
+"""
+
+from __future__ import annotations
+
 import json
 
 import httpx
 import pytest
 
-from smart_search import service
-from smart_search import search_service
+from smart_search import capability_executor
+from smart_search.capability_executor import CapabilityOperation, execute_capability
+from smart_search.execution_primitives import ExecutionAttemptStatus, project_attempts_dict
 from smart_search.providers.base import (
     ProviderResult,
     classify_provider_exception,
     coerce_provider_result,
 )
+from smart_search.service_support import _fallback_used
 
 
 def test_provider_result_exposes_stable_fields_and_legacy_content_wire():
@@ -93,34 +107,52 @@ def test_provider_http_and_transport_errors_have_stable_categories():
 
 
 @pytest.mark.asyncio
-async def test_service_consumes_provider_error_without_treating_it_as_success(monkeypatch):
-    monkeypatch.setenv("SMART_SEARCH_MINIMUM_PROFILE", "off")
-    monkeypatch.setenv("XAI_API_KEY", "xai-secret")
-    monkeypatch.setenv("OPENAI_COMPATIBLE_API_URL", "https://relay.example.test/v1")
-    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "relay-secret")
+async def test_executor_consumes_structured_provider_error_and_falls_back(monkeypatch):
+    """A structured provider error (auth_error) is not treated as success: the
+    typed executor records the classified error attempt, falls back within the
+    same capability, and the legacy projection still reports fallback_used."""
+    monkeypatch.setattr(
+        capability_executor,
+        "_provider_status_for_capability",
+        lambda capability: [
+            {
+                "provider": provider,
+                "configured": True,
+                "enabled": True,
+                "eligible": True,
+                "reason": "ready",
+            }
+            for provider in ("first", "second")
+        ],
+    )
+    calls: list[str] = []
 
-    async def failed_xai(self, query, platform="", ctx=None):
-        return ProviderResult.from_error(
-            provider="xai-responses",
+    async def run(provider: str, outcome: dict[str, object]) -> list[dict[str, str]]:
+        calls.append(provider)
+        if provider == "first":
+            outcome.update({"error_type": "auth_error", "error": "invalid credentials", "retryable": False})
+            return []
+        return [{"url": "https://example.test/ok", "provider": provider}]
+
+    execution = await execute_capability(
+        CapabilityOperation(
             capability="main_search",
-            error_type="auth_error",
-            error="invalid credentials",
+            input_value="provider contract",
+            run=run,
+            result_count=len,
         )
+    )
 
-    async def successful_relay(self, query, platform="", ctx=None):
-        return ProviderResult.from_content(
-            "fallback answer",
-            provider="openai-compatible",
-            capability="main_search",
-        )
+    assert calls == ["first", "second"]
+    assert [attempt.status for attempt in execution.attempts] == [
+        ExecutionAttemptStatus.ERROR,
+        ExecutionAttemptStatus.OK,
+    ]
+    assert execution.attempts[0].error is not None
+    assert execution.attempts[0].error.type == "auth_error"
+    assert execution.provider == "second"
 
-    monkeypatch.setattr(search_service.XAIResponsesSearchProvider, "search", failed_xai)
-    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", successful_relay)
-
-    result = await service.search("provider contract", fallback="auto")
-
-    assert result["ok"] is True
-    assert result["content"] == "fallback answer"
-    assert result["fallback_used"] is True
-    assert result["provider_attempts"][0]["status"] == "error"
-    assert result["provider_attempts"][0]["error_type"] == "auth_error"
+    legacy_attempts = project_attempts_dict(execution.attempts)
+    assert legacy_attempts[0]["status"] == "error"
+    assert legacy_attempts[0]["error_type"] == "auth_error"
+    assert _fallback_used(legacy_attempts) is True

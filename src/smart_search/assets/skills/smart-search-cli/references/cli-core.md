@@ -16,7 +16,7 @@
 - This bundled skill is maintained with the `smartsearch` repository.
 - Private API keys should be saved with `smart-search config set`; environment variables remain supported for CI and advanced users.
 - Do not depend on MCP inline `env` values or committed API-key environment variables for CLI use.
-- On Windows with mise, the managed package name is `npm:@onedotmint/smart-search`; the executable remains `smart-search`. Diagnose mise managed installs with `mise ls "npm:@onedotmint/smart-search"` and `mise which smart-search`.
+- On Windows with mise, the managed package name is `npm:@onedotmint/smart-search`; the executable remains `smart-search`. Troubleshoot mise managed installs with `mise ls "npm:@onedotmint/smart-search"` and `mise which smart-search`.
 - The root `smart-search --help` lists only `search`, `fetch`, and `capabilities`. Run `smart-search --help-all` for the complete canonical inventory (V2 evidence, V3 control plane, and Research Workflow). Removed commands and aliases are never advertised and fail with the replacement family's strict error.
 
 ## Commands
@@ -26,19 +26,19 @@
 - `smart-search map URL [--format json|markdown|content]` (V2 advanced)
 - `smart-search capabilities [--format json|markdown|content]` (V2 local meta operation)
 - `smart-search research plan QUERY [--budget quick|standard|deep] [--format json|markdown|content]` is the offline plan member of the workflow family (plan-only result, operation `research.run`).
-- `smart-search research run QUERY [--budget quick|standard|deep] [--profile fast|balanced|deep] [--format json|markdown|content]` is the Agent-facing staged evidence workflow (operation `research.run`). `--synthesize` is rejected; the host agent writes the final answer.
+- `smart-search research run QUERY [--budget quick|standard|deep] [--profile fast|balanced|deep] [--format json|markdown|content]` is the Agent-facing staged evidence workflow (operation `research.run`). Answer-generation flags are rejected; the host agent writes the final answer.
 - `smart-search config path|list|set|unset ... [--format json|markdown|content]` (V3 control plane)
 - `smart-search provider list|status [--format json|markdown|content]` (V3 local metadata/eligibility, no Provider client or probe)
 - `smart-search provider probe PROVIDER [--format json|markdown|content]` (V3 explicit single-provider probe)
-- `smart-search provider routes current|list|add|remove ...` (V3 ordered model-route management; legacy `model *` spellings are removed)
+- `smart-search provider routes current|list|add|remove ...` (V3 ordered route management)
 - `smart-search doctor status [--format json|markdown|content]` (V3 local readiness only, no Provider client or probe)
 - `smart-search doctor probe [--format json|markdown|content]` (V3 explicit live aggregate diagnostic)
-- `smart-search dev route-explain|route-calibrate|diagnose openai-compatible|smoke|regression|skills status|update ...` (V3 developer diagnostics; bare `smoke`, `diagnose`, `regression`, `skills`, `route`, and `route-calibrate` are removed)
+- `smart-search dev route-explain`, `dev route-calibrate`, `dev diagnose openai-compatible`, `dev smoke`, `dev regression`, `dev skills status`, `dev skills update` (V3 developer diagnostics; the bare non-dev spellings of these commands are removed)
 - Agent default Core path: `smart-search capabilities|search|fetch` (JSON-default evidence-first envelope; JSON is the only stable machine contract).
 
 ## Aliases
 
-All aliases are removed. Old spellings (`s`, `rt`, `f`, `m`, `dr`, `rs`, `route-cal`, `rcal`, `d`, `diag`, `init`, `cfg`, `mdl`, `sm`, `reg`, and the nested aliases such as `cfg p`, `mdl list`, `skill st`) fail with the replacement family's strict `INVALID_ARGUMENT` error that names the canonical replacement.
+All aliases are removed. Every alias spelling fails with the replacement family's strict `INVALID_ARGUMENT` error that names the canonical replacement.
 
 ## Output Format Expectations
 
@@ -52,8 +52,8 @@ All aliases are removed. Old spellings (`s`, `rt`, `f`, `m`, `dr`, `rs`, `route-
 - Route calibration output includes `metric`, `primary_metric=semantic_macro_f1`, `full_route_metric_role=validation`, `models`, `model_results`, `dataset_size`, `dataset_counts`, `capabilities`, `labels`, `embedding_model`, `default_threshold`, `default_margin`, `recommended_model`, `recommended_threshold`, `recommended_margin`, and `failed_models` inside the V3 `result`.
 - Map output includes the V2 envelope with `result.total`/`result.items` ids plus site structure in `evidence.candidates`.
 - `research plan` output is the plan-only Workflow result: `schema_version`, `ok`, `status`, `command`, `operation=research.run`, `plan`, `stages`, `evidence`, `citations`, `gaps`, `attempts`, `artifacts`, `error`, and `meta`. The `plan` member carries exactly `schema_version` and an ordered `operations` list (`id`, `operation`, `input`, `constraints`, `depends_on`); it never embeds shell commands, output paths, or an evidence directory. `research plan` runs no provider calls.
-- `research run` output is the executed Workflow result with the same envelope: `plan`, `stages`, `evidence`, `citations`, `gaps`, `attempts`, and `artifacts` are populated, while no answer text exists (`final_answer`/`content`/synthesis fields are not part of the workflow contract). The host agent writes the final prose from admitted evidence. Bare `research`, `rs`, `deep`, and `dr` are removed spellings and fail with the workflow family's strict error.
-- Runtime caching is disabled by default. When enabled, only cleaned successful search/fetch results are cached in process memory; synthesis answers, errors, empty results, prompts, credentials, and research artifacts are excluded.
+- `research run` output is the executed Workflow result with the same envelope: `plan`, `stages`, `evidence`, `citations`, `gaps`, `attempts`, and `artifacts` are populated, while no answer text exists (answer fields are not part of the workflow contract). The host agent writes the final prose from admitted evidence. Bare `research`, `rs`, `deep`, and `dr` are removed spellings and fail with the workflow family's strict error.
+- Runtime caching is disabled by default. When enabled, only cleaned successful search/fetch results are cached in process memory; generated answers, errors, empty results, prompts, credentials, and research artifacts are excluded.
 - `doctor status` result includes `local_only`, `config_file`, `config_dir`, `config_dir_source`, `config_status`, `config_storage_ok`, `config_parameter_errors`, `minimum_profile`, `minimum_profile_ok`, `minimum_profile_missing`, `minimum_profile_missing_required`, `core_evidence_path`, `core_evidence_ready`, `capability_status` (per-capability `configured`, `fallback_chain`, `provider_status` with provider eligibility), and `intent_router_status`. Diagnostic output masks keys and never prints secrets. OpenAI-compatible health must be validated through `/chat/completions`; `/models` is supplementary metadata.
 - Smoke output includes `mode`, `case_count`, `cases`, `failed_cases`, `degraded_cases`, `providers_used`, and `fallback_used`. Live smoke may include `degraded_cases` when a provider fails but a same-capability fallback remains available.
 

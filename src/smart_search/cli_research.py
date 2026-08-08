@@ -8,14 +8,14 @@ one stdout document after the workflow result is validated; JSON is the only
 stable machine contract and the presentation views are pure human renderings
 of the same validated redacted payload. The route validates options and
 input before any owner/provider/config work: invalid argv fails with a strict
-workflow INVALID_ARGUMENT result and never imports the legacy research
-service, providers, or configuration.
+workflow INVALID_ARGUMENT result and never imports providers or
+configuration.
 
 The route is schema-neutral and does not participate in schema selection.
-The ``--schema-version`` selector is removed from the CLI surface entirely;
-command domain alone decides the family. Missing-query diagnostics name the
-exact canonical spelling (``research plan`` or ``research run``) and keep the
-workflow strict INVALID_ARGUMENT envelope.
+The schema selector is removed from the CLI surface entirely; command domain
+alone decides the family. Missing-query diagnostics name the exact canonical
+spelling (``research plan`` or ``research run``) and keep the workflow strict
+INVALID_ARGUMENT envelope.
 """
 
 from __future__ import annotations

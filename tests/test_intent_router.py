@@ -1,7 +1,6 @@
 import pytest
 
-from smart_search import service
-from smart_search import search_service
+from smart_search import capability_service
 from smart_search.intent_router import IntentRouter
 
 
@@ -9,7 +8,7 @@ from smart_search.intent_router import IntentRouter
 async def test_route_hybrid_degrades_to_rules_when_remote_router_unconfigured(monkeypatch):
     monkeypatch.setenv("SMART_SEARCH_INTENT_ROUTER", "hybrid")
 
-    result = await service.route("React useEffect API docs")
+    result = await capability_service.route("React useEffect API docs")
 
     assert result["ok"] is True
     assert result["intent_router_mode"] == "hybrid"
@@ -25,7 +24,7 @@ async def test_route_hybrid_degrades_to_rules_when_remote_router_unconfigured(mo
 async def test_route_outputs_multiple_capabilities_for_url_verification(monkeypatch):
     monkeypatch.setenv("SMART_SEARCH_INTENT_ROUTER", "rules")
 
-    result = await service.route("请核验这个链接里的说法 https://example.com/source", validation="strict")
+    result = await capability_service.route("请核验这个链接里的说法 https://example.com/source", validation="strict")
 
     assert result["ok"] is True
     assert set(result["required_capabilities"]) == {"web_search", "web_fetch"}
@@ -38,7 +37,7 @@ async def test_route_outputs_multiple_capabilities_for_url_verification(monkeypa
 async def test_route_keeps_zh_current_field_narrow_for_english_current_queries(monkeypatch):
     monkeypatch.setenv("SMART_SEARCH_INTENT_ROUTER", "rules")
 
-    result = await service.route("today AI news")
+    result = await capability_service.route("today AI news")
 
     assert result["zh_current_intent"] is False
     assert result["web_current_intent"] is True
@@ -46,36 +45,17 @@ async def test_route_keeps_zh_current_field_narrow_for_english_current_queries(m
 
 
 @pytest.mark.asyncio
-async def test_search_routing_decision_keeps_old_fields_and_adds_new_router_fields(monkeypatch):
-    monkeypatch.setenv("OPENAI_COMPATIBLE_API_URL", "https://relay.example.com/v1")
-    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "relay-test-secret")
-    monkeypatch.setenv("EXA_API_KEY", "exa-test-secret")
-    monkeypatch.setenv("TAVILY_API_KEY", "tavily-test-secret")
+async def test_route_docs_query_selects_docs_search_capability(monkeypatch):
+    monkeypatch.setenv("SMART_SEARCH_INTENT_ROUTER", "rules")
 
-    async def fake_search(self, query, platform="", ctx=None):
-        return "Docs answer."
-
-    async def fake_docs_search(query, providers="auto", fallback="auto"):
-        return [{"url": "context7:/facebook/react", "provider": "context7"}], [
-            {"capability": "docs_search", "provider": "context7", "status": "ok", "elapsed_ms": 1, "result_count": 1}
-        ]
-
-    monkeypatch.setattr(search_service.OpenAICompatibleSearchProvider, "search", fake_search)
-    monkeypatch.setattr(search_service, "_run_docs_search_fallback", fake_docs_search)
-
-    result = await service.search("React useEffect API docs", validation="balanced")
-    routing = result["routing_decision"]
+    result = await capability_service.route("React useEffect API docs")
 
     assert result["ok"] is True
+    routing = result["routing_decision"] if "routing_decision" in result else result
     assert routing["docs_intent"] is True
     assert routing["zh_current_intent"] is False
     assert routing["web_current_intent"] is False
-    assert routing["fetch_intent"] is False
-    assert routing["supplemental_paths"] == ["docs_search"]
     assert routing["required_capabilities"] == ["docs_search"]
-    assert routing["intent_router_mode"] == "hybrid"
-    assert "rules" in routing["router_engines_used"]
-    assert routing["degraded"] is True
 
 
 @pytest.mark.asyncio
@@ -96,7 +76,7 @@ async def test_classifier_ignores_unknown_capabilities_and_provider_names(monkey
 
     monkeypatch.setattr(IntentRouter, "_classifier_route", fake_classifier_route)
 
-    result = await service.route("今天国内 AI 新闻")
+    result = await capability_service.route("今天国内 AI 新闻")
 
     assert set(result["required_capabilities"]) == {"web_search", "docs_search"}
     assert "openai-compatible" not in result["required_capabilities"]
@@ -123,7 +103,7 @@ async def test_classifier_cannot_add_web_search_without_current_or_validation_si
 
     monkeypatch.setattr(IntentRouter, "_classifier_route", fake_classifier_route)
 
-    result = await service.route("中文解释 Python 函数")
+    result = await capability_service.route("中文解释 Python 函数")
 
     assert result["required_capabilities"] == ["docs_search"]
     assert result["web_current_intent"] is False
@@ -142,7 +122,7 @@ async def test_semantic_router_can_add_capability_without_classifier(monkeypatch
 
     monkeypatch.setattr(IntentRouter, "_semantic_route", fake_semantic_route)
 
-    result = await service.route("这个 SDK 怎么接入")
+    result = await capability_service.route("这个 SDK 怎么接入")
 
     assert "docs_search" in result["required_capabilities"]
     assert "embeddings" in result["router_engines_used"]
@@ -164,7 +144,7 @@ async def test_semantic_router_marks_ambiguous_margin_without_adding_capability(
 
     monkeypatch.setattr(IntentRouter, "_semantic_route", fake_semantic_route)
 
-    result = await service.route("普通问题")
+    result = await capability_service.route("普通问题")
 
     assert result["required_capabilities"] == []
     assert result["intent_signals"]["semantic_top_capability"] == "web_search"
@@ -194,7 +174,7 @@ async def test_classifier_can_add_capability_when_semantic_is_ambiguous(monkeypa
     monkeypatch.setattr(IntentRouter, "_semantic_route", fake_semantic_route)
     monkeypatch.setattr(IntentRouter, "_classifier_route", fake_classifier_route)
 
-    result = await service.route("普通问题")
+    result = await capability_service.route("普通问题")
 
     assert result["required_capabilities"] == ["docs_search"]
     assert any("embeddings ambiguous" in reason for reason in result["reasons"])
@@ -216,7 +196,12 @@ def test_deep_research_plan_uses_offline_rules_even_when_remote_router_configure
     monkeypatch.setattr(IntentRouter, "_semantic_route", should_not_run_remote)
     monkeypatch.setattr(IntentRouter, "_classifier_route", should_not_run_remote)
 
-    result = service.build_deep_research_plan("React useEffect API docs")
+    from smart_search.research_service import build_research_workflow_plan
+    from smart_search.research_plan import serialize_research_plan
 
-    assert result["ok"] is True
-    assert result["intent_signals"]["docs_api_intent"] is True
+    plan = build_research_workflow_plan("React useEffect API docs")
+    ops = serialize_research_plan(plan)["operations"]
+
+    assert ops
+    assert all(item["operation"] in {"source_discovery", "docs_discovery", "content_fetch"} for item in ops)
+    assert any(item["operation"] == "docs_discovery" for item in ops)

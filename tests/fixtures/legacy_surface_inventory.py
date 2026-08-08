@@ -152,14 +152,21 @@ def documentation_hits(pattern: str) -> tuple[str, ...]:
 
 
 def research_result_keys() -> set[str]:
-    """Extract every literal public result key returned by ``research()``."""
+    """Extract every literal public result key returned by ``research()``.
+
+    The v1 live research service is removed; the extraction returns an empty
+    set when no ``research()`` function exists so the inventory rows remain a
+    historical remove record.
+    """
     source = repo_path("src/smart_search/research_service.py")
     module = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-    function = next(
+    functions = [
         node for node in module.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "research"
-    )
+    ]
+    if not functions:
+        return set()
     result_keys: set[str] = set()
-    for node in ast.walk(function):
+    for node in ast.walk(functions[0]):
         value: ast.expr | None = None
         if isinstance(node, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id == "result" for target in node.targets

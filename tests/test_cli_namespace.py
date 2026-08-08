@@ -216,8 +216,6 @@ def test_provider_catalog_maps_qualifications_and_excludes_synthetic_profile(mon
             "stability": "stable",
             "replacement": "search (V2 source/docs discovery)",
             "network_behavior": "network_on_explicit_command",
-            "legacy_commands": [],
-            "legacy_aliases": [],
             "qualifications": [{"provider": "exa", "capability": "docs_discovery", "tier": "core", "stability": "stable"}],
         }
     ]

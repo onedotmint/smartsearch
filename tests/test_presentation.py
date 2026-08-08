@@ -819,8 +819,8 @@ def test_rendering_never_invokes_owners_or_business_code(monkeypatch):
     from smart_search import (
         api_v2,
         control_operations,
+        control_executors,
         evidence_operations,
-        operations_service,
         research_service,
         runtime_cache,
     )
@@ -831,8 +831,8 @@ def test_rendering_never_invokes_owners_or_business_code(monkeypatch):
     for module in (
         api_v2,
         control_operations,
+        control_executors,
         evidence_operations,
-        operations_service,
         research_service,
         runtime_cache,
     ):
@@ -948,9 +948,9 @@ def test_research_run_output_and_force_are_strictly_rejected(monkeypatch):
 
 
 def test_v3_diagnose_default_stays_json_despite_parser_default(monkeypatch, capsys):
-    """The shared v1 parser defaults diagnose to markdown; the typed family
-    must ignore that default and keep JSON unless --format is explicit."""
-    from smart_search import operations_service
+    """The typed family ignores any parser default and keeps JSON unless
+    --format is explicit."""
+    from smart_search import control_executors
 
     async def fake_diagnose(timeout_seconds=30):
         return {
@@ -959,7 +959,7 @@ def test_v3_diagnose_default_stays_json_despite_parser_default(monkeypatch, caps
             "error": "missing OPENAI_COMPATIBLE_API_KEY",
         }
 
-    monkeypatch.setattr(operations_service, "_execute_diagnose_openai_compatible", fake_diagnose)
+    monkeypatch.setattr(control_executors, "_execute_diagnose_openai_compatible", fake_diagnose)
     code, out, err = _run_main(["dev", "diagnose", "openai-compatible"])
     assert code == 3
     payload = json.loads(out)

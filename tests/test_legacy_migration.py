@@ -23,7 +23,6 @@ from pathlib import Path
 import pytest
 
 import smart_search.control_operations as co
-import smart_search.service as service
 from smart_search.cli_constants import classify_command_domain
 from smart_search.cli_parser import build_parser
 from smart_search.config import config
@@ -184,14 +183,14 @@ def test_v010_windows_legacy_fallback_upgrade_keeps_source_values(
     monkeypatch.setattr(config, "_config_snapshot", None)
 
     before = legacy_config.read_bytes()
-    result = service.model_add(
+    result = asyncio.run(co.run_provider_routes_add(
         "primary",
         "openai-compatible",
         "https://primary.example/v1",
         "route-primary-secret",
         "primary-model",
-    )
-    assert result["ok"] is True
+        ))
+    assert result.status is co.ControlOperationStatus.COMPLETE
     # The migration writes to the resolved (legacy) location; the legacy file
     # itself must never be modified in place by a second writer and the source
     # secrets remain readable there.
@@ -218,15 +217,15 @@ def test_first_model_add_upgrades_v010_with_stable_order_and_source_preservation
     config_file = _reset_config_path(monkeypatch, tmp_path)
     before = _write_v010_config(config_file)
 
-    result = service.model_add(
+    result = asyncio.run(co.run_provider_routes_add(
         "primary",
         "openai-compatible",
         "https://primary.example/v1",
         "route-primary-secret",
         "primary-model",
-    )
+        ))
 
-    assert result["ok"] is True
+    assert result.status is co.ControlOperationStatus.COMPLETE
     raw = json.loads(config_file.read_text(encoding="utf-8"))
     routes = raw["SMART_SEARCH_MODEL_ROUTES"]
     assert [route["id"] for route in routes] == [
@@ -282,20 +281,20 @@ def test_environment_owned_legacy_config_rejects_upgrade_and_preserves_bytes(
     for key, value in environment_values.items():
         monkeypatch.setenv(key, value)
 
-    result = service.model_add(
+    result = asyncio.run(co.run_provider_routes_add(
         "primary",
         "openai-compatible",
         "https://primary.example/v1",
         "route-primary-secret",
         "primary-model",
-    )
+        ))
 
-    assert result["ok"] is False
-    assert result["error_type"] == "parameter_error"
-    assert "controlled by the environment" in result["error"]
+    assert result.status is co.ControlOperationStatus.FAILED
+    assert result.error.type == "parameter_error"
+    assert "controlled by the environment" in result.error.message
     assert config_file.read_bytes() == before
     assert "SMART_SEARCH_MODEL_ROUTES" not in json.loads(before)
-    assert secret not in json.dumps(result, ensure_ascii=False)
+    assert secret not in json.dumps(result.result_dict, ensure_ascii=False)
 
 
 def test_environment_owned_model_routes_block_local_management_without_write(
@@ -319,16 +318,16 @@ def test_environment_owned_model_routes_block_local_management_without_write(
         ),
     )
 
-    result = service.model_add(
+    result = asyncio.run(co.run_provider_routes_add(
         "primary",
         "openai-compatible",
         "https://primary.example/v1",
         "route-primary-secret",
         "primary-model",
-    )
-    assert result["ok"] is False
-    assert result["error_type"] == "parameter_error"
-    assert "controlled by the environment" in result["error"]
+        ))
+    assert result.status is co.ControlOperationStatus.FAILED
+    assert result.error.type == "parameter_error"
+    assert "controlled by the environment" in result.error.message
     assert config_file.read_bytes() == before
     assert "env-only-secret" not in config_file.read_text(encoding="utf-8")
 
@@ -341,14 +340,14 @@ def test_successful_migration_never_copies_environment_credentials_to_disk(
     monkeypatch.setenv("EXA_API_KEY", "env-only-secret")
     monkeypatch.setenv("TAVILY_API_KEY", "env-tavily-secret")
 
-    result = service.model_add(
+    result = asyncio.run(co.run_provider_routes_add(
         "primary",
         "openai-compatible",
         "https://primary.example/v1",
         "route-primary-secret",
         "primary-model",
-    )
-    assert result["ok"] is True
+        ))
+    assert result.status is co.ControlOperationStatus.COMPLETE
 
     file_text = config_file.read_text(encoding="utf-8")
     assert "env-only-secret" not in file_text
@@ -359,7 +358,7 @@ def test_successful_migration_never_copies_environment_credentials_to_disk(
     assert "route-primary-secret" in file_text
     # Outputs never expose any credential.
     serialized = json.dumps(
-        {"result": result, "config": service.config_list(), "info": config.get_config_info()},
+        {"result": result.result_dict, "config": asyncio.run(co.run_config_list(show_secrets=False)).result_dict, "info": config.get_config_info()},
         ensure_ascii=False,
     )
     for secret in _all_secrets():
@@ -376,16 +375,16 @@ def test_conflicting_legacy_route_id_preserves_source_bytes(monkeypatch, tmp_pat
     _write_v010_config(config_file)
     before = config_file.read_bytes()
 
-    result = service.model_add(
+    result = asyncio.run(co.run_provider_routes_add(
         "legacy-xai-responses",
         "openai-compatible",
         "https://primary.example/v1",
         "route-primary-secret",
         "primary-model",
-    )
-    assert result["ok"] is False
-    assert result["error_type"] == "parameter_error"
-    assert "duplicate id: legacy-xai-responses" in result["error"]
+        ))
+    assert result.status is co.ControlOperationStatus.FAILED
+    assert result.error.type == "parameter_error"
+    assert "duplicate id: legacy-xai-responses" in result.error.message
     assert config_file.read_bytes() == before
 
 
@@ -406,13 +405,10 @@ def test_invalid_saved_routes_are_config_failures_with_byte_preservation(
     )
     before = config_file.read_bytes()
 
-    listed = service.model_list()
-    assert listed["ok"] is False
-    assert listed["error_type"] == "config_error"
-    listed2 = asyncio.run(co.run_provider_routes_list())
-    assert listed2.status is co.ControlOperationStatus.FAILED
-    assert listed2.error.type == "config_error"
-    assert listed2.side_effects.config.write_attempted is False
+    listed = asyncio.run(co.run_provider_routes_list())
+    assert listed.status is co.ControlOperationStatus.FAILED
+    assert listed.error.type == "config_error"
+    assert listed.side_effects.config.write_attempted is False
     assert config_file.read_bytes() == before
 
 
@@ -432,15 +428,15 @@ def test_atomic_write_failure_preserves_source_bytes_and_reports_uncommitted(
 
     monkeypatch.setattr("smart_search.config.os.replace", failing_replace)
 
-    result = service.model_add(
+    result = asyncio.run(co.run_provider_routes_add(
         "primary",
         "openai-compatible",
         "https://primary.example/v1",
         "route-primary-secret",
         "primary-model",
-    )
-    assert result["ok"] is False
-    assert result["error_type"] == "config_error"
+        ))
+    assert result.status is co.ControlOperationStatus.FAILED
+    assert result.error.type == "config_error"
     assert config_file.read_bytes() == before
     assert not list(config_file.parent.glob("*.tmp"))
 
@@ -502,8 +498,9 @@ def test_recursive_redaction_masks_nested_and_url_embedded_credentials(
     ):
         assert credential not in text
 
-    listed = service.model_list()
-    assert "route-primary-secret" not in json.dumps(listed, ensure_ascii=False)
+    listed = asyncio.run(co.run_provider_routes_list())
+    assert listed.status is co.ControlOperationStatus.COMPLETE
+    assert "route-primary-secret" not in json.dumps(listed.result_dict, ensure_ascii=False)
     # The persisted file keeps the raw request URL and key for the provider.
     raw = json.loads(config_file.read_text(encoding="utf-8"))
     assert raw["SMART_SEARCH_MODEL_ROUTES"][0]["api_url"] == routes["SMART_SEARCH_MODEL_ROUTES"][0]["api_url"]
@@ -643,14 +640,14 @@ def test_rollback_read_without_v1_output_restoration(monkeypatch, tmp_path) -> N
     config_file = _reset_config_path(monkeypatch, tmp_path)
     before_data = json.loads(_write_v010_config(config_file))
 
-    migrated = service.model_add(
+    migrated = asyncio.run(co.run_provider_routes_add(
         "primary",
         "openai-compatible",
         "https://primary.example/v1",
         "route-primary-secret",
         "primary-model",
-    )
-    assert migrated["ok"] is True
+        ))
+    assert migrated.status is co.ControlOperationStatus.COMPLETE
 
     # (a) The documented recovery reader (the inventory source-revision reader,
     # which is byte-identical to the current reader) still reads the source.

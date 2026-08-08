@@ -16,43 +16,6 @@ EXIT_CONFIG_ERROR = 3
 EXIT_NETWORK_ERROR = 4
 EXIT_RUNTIME_ERROR = 5
 
-COMMAND_ALIASES = {
-    "search": ["s"],
-    "route": ["rt"],
-    "fetch": ["f"],
-    "map": ["m"],
-    "deep": ["dr"],
-    "research": ["rs"],
-    "route-calibrate": ["route-cal", "rcal"],
-    "smoke": ["sm"],
-    "doctor": ["d"],
-    "diagnose": ["diag"],
-    "model": ["mdl"],
-    "setup": ["init"],
-    "skills": ["skill"],
-    "config": ["cfg"],
-    "regression": ["reg"],
-}
-
-CONFIG_COMMAND_ALIASES = {
-    "path": ["p"],
-    "list": ["ls", "l"],
-    "set": ["s"],
-    "unset": ["rm", "u"],
-}
-
-MODEL_COMMAND_ALIASES = {
-    "current": ["cur", "c"],
-    "list": ["ls", "l"],
-    "add": ["a"],
-    "remove": ["rm", "r"],
-}
-
-SKILLS_COMMAND_ALIASES = {
-    "status": ["st"],
-    "update": ["up"],
-}
-
 TAVILY_DEFAULT_API_URL = "https://api.tavily.com"
 FIRECRAWL_DEFAULT_API_URL = "https://api.firecrawl.dev/v2"
 ZHIPU_DEFAULT_API_URL = "https://open.bigmodel.cn/api"
@@ -188,7 +151,7 @@ def _normalize_namespace_invocation(
         return args, None, attrs
     index = 0
     while index < len(args) and args[index].startswith("-") and args[index] != "--":
-        index += 2 if args[index] in {"--schema-version", "-schema-version"} else 1
+        index += 1
     if index >= len(args):
         return args, None, attrs
     if args[index] == "doctor":
@@ -575,26 +538,8 @@ class SmartSearchArgumentParser(argparse.ArgumentParser):
         super().error(message)
 
 
-def prescan_schema_version(argv: list[str] | None) -> dict[str, object]:  # pragma: no cover - legacy compat
-    """Deprecated selector pre-scan kept only for import compatibility.
-
-    The schema selector is removed from the CLI surface; callers must use
-    ``classify_command_domain`` instead.
-    """
-    return {
-        "schema_version": "1",
-        "explicit": False,
-        "command": None,
-        "operation": None,
-        "v2": False,
-        "v3": False,
-    }
-
-
 __all__ = [
     "CLIParseError",
-    "COMMAND_ALIASES",
-    "CONFIG_COMMAND_ALIASES",
     "DEFAULT_SKILL_TARGET_IDS",
     "EXIT_CONFIG_ERROR",
     "EXIT_NETWORK_ERROR",
@@ -602,10 +547,8 @@ __all__ = [
     "EXIT_PARAMETER_ERROR",
     "EXIT_RUNTIME_ERROR",
     "FIRECRAWL_DEFAULT_API_URL",
-    "MODEL_COMMAND_ALIASES",
     "NAMESPACE_COMMANDS",
     "PUBLIC_COMMANDS",
-    "SKILLS_COMMAND_ALIASES",
     "SmartSearchArgumentParser",
     "TAVILY_DEFAULT_API_URL",
     "V2_SUPPORTED_COMMANDS",
@@ -614,12 +557,10 @@ __all__ = [
     "_get_version",
     "RESERVED_LEGACY_SPELLINGS",
     "SELECTOR_REPLACEMENT",
-    "V2_SUPPORTED_COMMANDS",
     "classify_command_domain",
     "classify_namespace_argv",
     "help_all_text",
     "namespace_operation_for_argv",
     "normalize_namespace_argv",
-    "prescan_schema_version",
     "removed_spelling_message",
 ]

@@ -1,6 +1,6 @@
 # Command reference
 
-The CLI accepts a command followed by a query, URL, or command-specific arguments. Routing is canonical command-domain based: evidence commands use the V2 envelope, retained control-plane commands use the V3 envelope, and `research plan` / `research run` use the Research Workflow envelope. The `--schema-version` selector, legacy aliases, and removed commands fail with the replacement family's strict `INVALID_ARGUMENT` error and are never reinterpreted.
+The CLI accepts a command followed by a query, URL, or command-specific arguments. Routing is canonical command-domain based: evidence commands use the V2 envelope, retained control-plane commands use the V3 envelope, and `research plan` / `research run` use the Research Workflow envelope. The schema selector, legacy aliases, and removed commands fail with the replacement family's strict `INVALID_ARGUMENT` error and are never reinterpreted.
 
 ## Common output options
 
@@ -46,11 +46,11 @@ smart-search map URL
 Rules:
 
 - V2 output defaults to JSON, the only stable machine contract. `--format markdown|content` selects one non-stable human presentation document of the same validated envelope.
-- V2 `search` has no `response_mode`; any `--response-mode` fails before network I/O.
+- V2 `search` has no answer-mode field; any `--response-mode` fails before network I/O.
 - V2 `search` is evidence-first discovery (candidates + routing/attempts). It never routes through legacy `main_search`.
 - V2 `capabilities` uses envelope operation `capability_status` with empty evidence/attempts/routing capability arrays and no Provider calls.
 - V2 rejects v1 command options (`--output`, `--force`, `--platform`, `--model`, `--extra-sources`, `--profile`, `--response-mode`, `--validation`, `--fallback`, `--providers`, `--stream`/`--no-stream`, `--timeout`, and prompt-file overrides) before configuration or Provider work.
-- The `--schema-version` selector is removed; the command domain alone decides the contract.
+- The schema selector is removed; the command domain alone decides the contract.
 
 ## Control-plane V3 JSON API
 
@@ -85,7 +85,7 @@ side_effects, error, meta
 - V3 output defaults to JSON, the only stable machine contract. `--format markdown|content` selects one non-stable human presentation document of the same validated envelope. V3 rejects `--output`, `--force`, prompt overrides, `--trace`, aliases, evidence commands, exact Provider direct commands, and all `experimental` leaves before an owner runs.
 - Values, error details, URLs, and route credentials are recursively redacted. V3 does not expose v2 `evidence`, `routing`, capability-attempt fields, or trace types.
 
-Removed legacy control spellings (`model *`, bare `smoke`, `doctor`, `diagnose`, `regression`, `skills *`, `route`, `route-calibrate`, `setup`, and aliases such as `cfg`, `mdl`, `sm`, `d`, `diag`, `reg`, `skill`) fail with the V3 family's strict `INVALID_ARGUMENT` envelope and name the canonical replacement.
+Removed legacy control spellings fail with the V3 family's strict `INVALID_ARGUMENT` envelope and name the canonical replacement.
 
 ## Research Workflow
 
@@ -103,7 +103,7 @@ schema_version, ok, status, command, operation, plan, stages,
 evidence, citations, gaps, attempts, artifacts, error, meta
 ```
 
-The workflow family forbids `content`, `final_answer`, synthesis controls, shell commands, output paths, and raw Provider payloads. Bare `research`, `rs`, `deep`, and `dr` are removed spellings that fail with the workflow family's strict `INVALID_ARGUMENT` envelope.
+The workflow family forbids answer fields, answer-generation controls, shell commands, output paths, and raw Provider payloads. Bare `research`, `rs`, `deep`, and `dr` are removed spellings that fail with the workflow family's strict `INVALID_ARGUMENT` envelope.
 
 ## Command discovery
 
@@ -133,7 +133,7 @@ smart-search search "query" --format markdown
 smart-search search "query" --format content
 ```
 
-`search` is the fast live entrypoint and accepts only `--format json|markdown|content` (plus the root `--trace` / `--fail-on-degraded` flags). V1-era options (`--validation`, `--fallback`, `--stream`, `--no-stream`, `--timeout`, `--extra-sources`, `--platform`, `--model`, `--providers`, `--profile`, `--response-mode`, `--output`, `--force`) are rejected before network I/O with the V2 strict `INVALID_ARGUMENT` error. V2 search returns discovery candidates and never synthesizes an answer.
+`search` is the fast live entrypoint and accepts only `--format json|markdown|content` (plus the root `--trace` / `--fail-on-degraded` flags). V1-era options (`--validation`, `--fallback`, `--stream`, `--no-stream`, `--timeout`, `--extra-sources`, `--platform`, `--model`, `--providers`, `--profile`, `--response-mode`, `--output`, `--force`) are rejected before network I/O with the V2 strict `INVALID_ARGUMENT` error. V2 search returns discovery candidates and never writes an answer itself.
 
 ### Fetch and map
 
@@ -194,7 +194,7 @@ smart-search dev skills status --targets codex --format json
 smart-search dev skills update --targets codex --format json
 ```
 
-`doctor status` reports local configuration and evidence-path readiness (`local_only=true`). `doctor probe` is the live aggregate diagnostic. Bare `doctor` and `smoke` are removed spellings; use `doctor probe` and `dev smoke`.
+`doctor status` reports local configuration and evidence-path readiness (`local_only=true`). `doctor probe` is the live aggregate diagnostic. Bare non-dev spellings of these commands are removed; use `doctor probe` and `dev smoke`.
 
 ## Ordered model routes
 
@@ -223,4 +223,4 @@ smart-search dev smoke --mock --format json
 smart-search dev regression
 ```
 
-Use `doctor status` as preflight. It does not prove that every possible provider path will succeed. Use mock smoke and regression for deterministic checks; live smoke requires intentional credentials and network access.
+Use `doctor status` as preflight. It does not prove that every possible provider path will succeed. Use mock smoke and the developer quality gate for deterministic checks; live smoke requires intentional credentials and network access.

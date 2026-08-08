@@ -11,7 +11,6 @@ from typing import Any
 
 from .capability_service import get_capability_status, provider_profiles
 from .capability_taxonomy import list_provider_qualifications, map_v1_to_v2_capability
-from .cli_constants import COMMAND_ALIASES, MODEL_COMMAND_ALIASES
 
 _REPLACEMENTS = {
     "exa": "search (V2 source/docs discovery)",
@@ -27,25 +26,6 @@ _REPLACEMENTS = {
     "jina": "fetch",
     "zhipu-mcp-reader": "fetch",
 }
-
-_LEGACY_COMMANDS: dict[str, list[str]] = {}
-
-
-def _legacy_aliases(provider: str) -> list[str]:
-    commands = list(_LEGACY_COMMANDS.get(provider, []))
-    if provider in {"xai-responses", "openai-compatible"}:
-        return [
-            *COMMAND_ALIASES["model"],
-            *MODEL_COMMAND_ALIASES["current"],
-            *MODEL_COMMAND_ALIASES["list"],
-            *MODEL_COMMAND_ALIASES["add"],
-            *MODEL_COMMAND_ALIASES["remove"],
-        ]
-    aliases: list[str] = []
-    for command in commands:
-        aliases.extend(COMMAND_ALIASES.get(command, []))
-    return aliases
-
 
 def _qualification_metadata(provider: str) -> tuple[str, str, list[dict[str, Any]]]:
     qualifications = list_provider_qualifications(provider=provider)
@@ -90,8 +70,6 @@ def provider_catalog(*, include_status: bool) -> dict[str, Any]:
             "stability": stability,
             "replacement": _REPLACEMENTS.get(provider, "provider status"),
             "network_behavior": "network_on_explicit_command",
-            "legacy_commands": list(_LEGACY_COMMANDS.get(provider, [])),
-            "legacy_aliases": _legacy_aliases(provider),
             "qualifications": qualifications,
         }
         if include_status:

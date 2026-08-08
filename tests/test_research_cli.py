@@ -503,7 +503,11 @@ def test_legacy_bare_research_unchanged(monkeypatch, capsys):
         raise AssertionError("bare research must not enter the workflow route")
 
     monkeypatch.setattr(cli_research, "dispatch", boom)
-    monkeypatch.setattr(cli.service, "research", fake_research)
+    import smart_search.research_service as research_service
+
+    # The v1 live research service entry point is removed entirely.
+    assert not hasattr(research_service, "research")
+    assert not hasattr(research_service, "build_deep_research_plan")
 
     # Bare ``research QUERY`` is a removed legacy workflow spelling: it fails
     # with the workflow family's strict INVALID_ARGUMENT before any owner or
@@ -543,9 +547,9 @@ def test_research_plan_enters_workflow_family(monkeypatch, capsys):
             ]
         )
 
-    monkeypatch.setattr(cli.service, "build_deep_research_plan", boom)
     from smart_search import research_service
 
+    assert not hasattr(research_service, "build_deep_research_plan")
     monkeypatch.setattr(research_service, "build_research_workflow_plan", fake_plan)
 
     assert cli.main(["research", "plan", "topic", "--budget", "quick"]) == cli.EXIT_OK

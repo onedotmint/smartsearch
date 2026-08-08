@@ -102,11 +102,11 @@ gaps, a systematic comparison is required, or a complete report is requested.
 
 `smart-search research plan "<question>" --format json` creates an offline plan.
 Prefer `smart-search research run "<question>" --format json` for live staged work.
-It returns admitted evidence, citations, gaps, and attempts, and does **not**
-synthesize a final answer; the host agent writes the answer from fetched
-evidence. `--synthesize` is rejected; the workflow family never synthesizes.
-Bare `research QUERY` is a removed spelling and fails with the workflow family's
-strict error.
+It returns admitted evidence, citations, gaps, and attempts, and never
+authors the final prose itself; the host agent writes the answer from fetched
+evidence. Answer-generation flags are rejected; the workflow family never
+writes answers. Bare `research QUERY` is a removed spelling and fails with the
+workflow family's strict error.
 
 A simple fact lookup should remain V2 `search` plus `fetch` and must not
 be promoted to Deep Research merely because the word "latest" appears.
@@ -154,15 +154,11 @@ smart-search dev smoke --mock --format json
 
 ### Removed legacy surface
 
-The `--schema-version` selector, legacy aliases (`s`, `f`, `m`, `rs`, `dr`,
-`cfg`, `mdl`, ...), and removed commands (`model`, `setup`, `smoke`, `deep`,
-bare `research`, `doctor`, `diagnose`, `regression`, `route`,
-`route-calibrate`, `skills`, ...) fail with the replacement family's strict
-`INVALID_ARGUMENT` JSON error that names the canonical replacement. Never
-reinterpret an old spelling as a different command. Use the canonical
-replacements: `provider routes ...` for `model ...`, `dev smoke` for `smoke`,
-`dev regression` for `regression`, `dev skills ...` for `skills ...`,
-`research plan` for `deep`, and `research run` for bare `research`.
+Removed spellings (the schema selector, legacy aliases, and removed commands)
+fail with the replacement family's strict `INVALID_ARGUMENT` JSON error that
+names the canonical replacement. Never reinterpret an old spelling as a
+different command. The canonical replacements are the `provider routes ...`
+namespace, the `dev` developer namespace, and `research plan` / `research run`.
 
 When writing an output file, the strict families reject `--output` and
 `--force` before any owner work; JSON remains the only stable machine
