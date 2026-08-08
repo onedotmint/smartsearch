@@ -36,11 +36,11 @@ user intent, permissions, and citations.
 
 ## Default Workflow
 
-1. Use `smart-search --schema-version 2 capabilities` when provider readiness is unknown.
-2. For a normal question, run `smart-search --schema-version 2 search "<query>"`.
+1. Use `smart-search capabilities` when provider readiness is unknown.
+2. For a normal question, run `smart-search search "<query>"`.
 3. Review `evidence.candidates`, titles, URLs, snippets, routing, attempts, and degradation.
 4. Select the most relevant one to three resources and run
-   `smart-search --schema-version 2 fetch "<url>"`.
+   `smart-search fetch "<url>"`.
 5. Answer from `evidence.items` (fetched/read content). Keep discovery candidates separate
    from claim-level evidence. The host agent writes the final prose and citations.
 
@@ -100,26 +100,27 @@ Use staged research only when the user asks for deep research, the question has
 several independent subquestions, a normal search and fetch pass leaves important
 gaps, a systematic comparison is required, or a complete report is requested.
 
-`deep` / `research plan` create an offline plan. Prefer
-`smart-search research run "<question>" --format json` for live staged work.
-It returns admitted evidence, citations, gaps, and attempts. By default it does
-**not** synthesize a final answer; the host agent writes the answer from fetched
-evidence. Use `--synthesize` only when you explicitly want SmartSearch's
-evidence-only synthesizer. Bare `research QUERY` remains a compatibility path that
-still synthesizes by default.
+`smart-search research plan "<question>" --format json` creates an offline plan.
+Prefer `smart-search research run "<question>" --format json` for live staged work.
+It returns admitted evidence, citations, gaps, and attempts, and does **not**
+synthesize a final answer; the host agent writes the answer from fetched
+evidence. `--synthesize` is rejected; the workflow family never synthesizes.
+Bare `research QUERY` is a removed spelling and fails with the workflow family's
+strict error.
 
-A simple fact lookup should remain schema-v2 `search` plus `fetch` and must not
+A simple fact lookup should remain V2 `search` plus `fetch` and must not
 be promoted to Deep Research merely because the word "latest" appears.
 
 ## Stable CLI Contract
 
-### Agent default: schema v2
+### Agent default: V2 evidence
 
-Use root-global `--schema-version 2` for the evidence-first Core path. Output
-defaults to JSON, the only stable machine contract. `--format markdown|content`
-selects one non-stable human presentation document of the same validated
-envelope; those views have no field-level machine compatibility promise.
-stdout contains exactly one document.
+Evidence commands (`search`, `fetch`, `map`, `capabilities`) use the V2
+envelope. Output defaults to JSON, the only stable machine contract.
+`--format markdown|content` selects one non-stable human presentation document
+of the same validated envelope; those views have no field-level machine
+compatibility promise. stdout contains exactly one document. No selector flag
+exists: the canonical command domain decides the contract family.
 
 The top-level v2 envelope order is:
 
@@ -135,44 +136,43 @@ routing, attempts, degradation, error, meta
   `--fail-on-degraded` is set. Non-zero means failure.
 
 Do not pass v1-only flags such as `--profile`, `--response-mode`, `--validation`,
-`--fallback`, `--providers`, `--stream`, or `--timeout` to schema-v2 commands.
+`--fallback`, `--providers`, `--stream`, or `--timeout` to V2 commands; they
+fail with the V2 strict error before any owner work.
 
 Common Agent commands:
 
 ```text
-smart-search --schema-version 2 capabilities
-smart-search --schema-version 2 search "<query>"
-smart-search --schema-version 2 fetch "<url>"
+smart-search capabilities
+smart-search search "<query>"
+smart-search fetch "<url>"
 smart-search research run "<question>" --format json
+smart-search research plan "<question>" --format json
 smart-search doctor status --format json
+smart-search config list --format json
+smart-search dev smoke --mock --format json
 ```
 
-### Compatibility schema v1
+### Removed legacy surface
 
-Legacy v1 commands still use `--format json` with top-level
-`schema_version: "1"`, `ok`, `command`, `data`, and `meta`. Successful results
-also retain legacy flat fields during migration. Failed results retain the legacy
-top-level `error` string and expose structured `data.error` / `error_detail`.
+The `--schema-version` selector, legacy aliases (`s`, `f`, `m`, `rs`, `dr`,
+`cfg`, `mdl`, ...), and removed commands (`model`, `setup`, `smoke`, `deep`,
+bare `research`, `doctor`, `diagnose`, `regression`, `route`,
+`route-calibrate`, `skills`, ...) fail with the replacement family's strict
+`INVALID_ARGUMENT` JSON error that names the canonical replacement. Never
+reinterpret an old spelling as a different command. Use the canonical
+replacements: `provider routes ...` for `model ...`, `dev smoke` for `smoke`,
+`dev regression` for `regression`, `dev skills ...` for `skills ...`,
+`research plan` for `deep`, and `research run` for bare `research`.
 
-Common compatibility commands:
-
-```text
-smart-search search "<query>" --profile balanced --response-mode evidence --format json
-smart-search fetch "<url>" --format json
-smart-search research "<query>" --profile deep --format json
-smart-search doctor --format json
-smart-search capabilities --format json
-```
-
-When writing an output file, the CLI does not overwrite an existing file by
-default. Use `--force` only when replacement is intended. Prefer a temporary or
-task-specific path for evidence artifacts.
+When writing an output file, the strict families reject `--output` and
+`--force` before any owner work; JSON remains the only stable machine
+contract.
 
 ## Configuration and Diagnostics
 
 Provider credentials remain local configuration. Prefer
 `smart-search doctor status --format json` for local readiness. Use
-`doctor` / `doctor probe` only for explicit live aggregate connectivity checks,
+`smart-search doctor probe` for explicit live aggregate connectivity checks,
 and `provider probe PROVIDER` for one named provider. Never treat configured or
 eligible as proof of reachability. Never print credentials.
 

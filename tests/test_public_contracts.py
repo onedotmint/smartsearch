@@ -1,10 +1,20 @@
 import json
+import io
+import contextlib
 
 import pytest
 
 from smart_search import capability_service, cli, service
 from smart_search.cli_contract import build_json_result
 from smart_search.utils import PromptConfigurationError, get_prompt, prompt_overrides
+
+
+def _run_main(argv):
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        code = cli.main(argv)
+    return code, stdout.getvalue(), stderr.getvalue()
 
 
 def test_json_contract_preserves_legacy_error_and_adds_structured_error():
@@ -82,15 +92,75 @@ def test_prompt_override_loads_local_utf8_file_and_rejects_remote(tmp_path):
 def test_research_profile_maps_to_executor_budget(monkeypatch, capsys):
     captured: list[str] = []
 
-    async def fake_research(query, budget="deep", evidence_dir="", fallback="auto"):
+    def fake_plan(query, budget="deep", evidence_dir=""):
         captured.append(budget)
-        return {"ok": True, "query": query, "budget": budget}
+        from smart_search.research_plan import ResearchPlanOperation, build_research_plan
 
-    monkeypatch.setattr(cli.service, "research", fake_research)
+        return build_research_plan(
+            [
+                ResearchPlanOperation(
+                    id="fetch-1", operation="content_fetch",
+                    input={"resource": "https://example.com/page"},
+                    constraints={}, depends_on=(),
+                )
+            ]
+        )
+
+    import smart_search.research_service
+    import smart_search.evidence_operations as evidence_operations
+    from smart_search.evidence_operations import (
+        EvidenceOperationOutcome,
+        EvidenceOperationStatus,
+        EvidenceRouting,
+    )
+    from smart_search.execution_primitives import (
+        ExecutionAttempt,
+        ExecutionAttemptStatus,
+        ExecutionEvidenceItem,
+        ExecutionMetadata,
+    )
+
+    async def fake_fetch(request):
+        return EvidenceOperationOutcome(
+            operation="content_fetch",
+            status=EvidenceOperationStatus.COMPLETE,
+            evidence_items=(
+                ExecutionEvidenceItem(
+                    id="evidence-1", resource=request.resource, provider="jina",
+                    title="page", content="body",
+                ),
+            ),
+            attempts=(
+                ExecutionAttempt(
+                    capability="content_fetch", provider="jina",
+                    status=ExecutionAttemptStatus.OK, elapsed_ms=1.0, result_count=1,
+                ),
+            ),
+            routing=EvidenceRouting(("content_fetch",), ("content_fetch",), "v2", ("test",)),
+            metadata=ExecutionMetadata("req-test", 1),
+        )
+
+    async def fake_source(request):
+        return EvidenceOperationOutcome(
+            operation="source_discovery",
+            status=EvidenceOperationStatus.COMPLETE,
+            candidates=(), attempts=(),
+            routing=EvidenceRouting(("source_discovery",), (), "v2", ("test",)),
+            metadata=ExecutionMetadata("req-test", 1),
+        )
+
+    monkeypatch.setattr(evidence_operations, "content_fetch", fake_fetch)
+    monkeypatch.setattr(evidence_operations, "source_discovery", fake_source)
+    monkeypatch.setattr(evidence_operations, "docs_discovery", fake_source)
+    monkeypatch.setattr(evidence_operations, "site_discovery", fake_source)
+    monkeypatch.setattr(smart_search.research_service, "build_research_workflow_plan", fake_plan)
 
     for profile, expected in (("fast", "quick"), ("balanced", "standard"), ("deep", "deep")):
-        assert cli.main(["research", "query", "--profile", profile, "--format", "json"]) == cli.EXIT_OK
-        json.loads(capsys.readouterr().out)
+        # ``research run`` is the canonical workflow command; profile maps to
+        # the workflow plan budget exactly like the offline planner.
+        code, out, err = _run_main(["research", "run", "query", "--profile", profile, "--format", "json"])
+        assert code == cli.EXIT_OK, (code, out, err)
+        json.loads(out)
         assert captured[-1] == expected
 
 

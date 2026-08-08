@@ -67,9 +67,10 @@ def emit_parser_error(
     command: str | None,
     operation: str | None,
     message: str,
+    details: dict[str, str] | None = None,
 ) -> int:
     cmd = command or "unknown"
-    envelope = parser_error_result(cmd, operation, message)
+    envelope = parser_error_result(cmd, operation, message, details)
     payload = serialize_result(envelope)
     _json_stdout(payload)
     return exit_code_for(payload)
@@ -114,7 +115,7 @@ def _argv_option_names(argv: list[str] | None) -> set[str]:
 def _reject_v1_only(args: Any, *, argv: list[str] | None = None) -> str | None:
     command = getattr(args, "command", None)
     if command not in _V2_SUPPORTED:
-        return f"command {command!r} is not supported under --schema-version 2"
+        return f"command {command!r} is not an evidence v2 command"
     fmt = getattr(args, "format", "json")
     if fmt not in ("json", "markdown", "content"):
         return f"v2 supports only --format json|markdown|content; got --format {fmt}"

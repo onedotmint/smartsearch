@@ -6,7 +6,7 @@ This compatibility entrypoint no longer stores the full CLI contract. Read the f
 
 - `cli-core.md`: entrypoints, command signatures, aliases, JSON/Markdown/content output expectations, exit codes, and tool policy.
 - `command-patterns.md`: source-directed examples, evidence files, timeout retry policy, and everyday guardrails.
-- `deep-research-mode.md`: Deep Research trigger rules, offline planner, live executor, `research_plan` shape, allowed tools, gap check, provider advantage routing, and smoke matrix.
+- `deep-research-mode.md`: Deep Research trigger rules, offline planner, live executor, typed plan shape (`schema_version` + `operations`), gap check, provider advantage routing, and smoke matrix.
 - `provider-routing.md`: intent routing diagnostics, provider capabilities, source provenance, same-capability fallback, Zhipu REST/MCP, Jina, AnySearch, Exa, Tavily, Firecrawl, Context7, and maintenance guardrails.
 - `setup-config.md`: config storage, setup/config commands, skill installation, endpoint setup, OpenAI-compatible diagnostics, streaming, and router configuration.
 - `regression-release.md`: regression behavior, packaged-install checks, release lanes, and release closeout lessons.

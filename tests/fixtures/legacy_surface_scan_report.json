@@ -1,389 +1,389 @@
 {
-  "schema_version": 1,
-  "source_revision": "773e77d2add7898a2e8a9c49b24ea17c94b1eda5",
-  "reconciliation_algorithm": "tests/fixtures/legacy_surface_inventory.py derives live parser aliases/leaves, service exports, research result keys, documentation hits, and config anchors before comparing them to this report.",
-  "totals": {
-    "entries": 184,
-    "by_kind": {
-      "command_alias": 16,
-      "docs_skill_ref": 4,
-      "legacy_control_command": 16,
-      "legacy_workflow_command": 2,
-      "nested_alias": 15,
-      "persisted_data_reader": 5,
-      "python_export": 43,
-      "research_compat_field": 36,
-      "schema_selector": 11,
-      "v1_field": 36
+ "schema_version": 1,
+ "source_revision": "773e77d2add7898a2e8a9c49b24ea17c94b1eda5",
+ "reconciliation_algorithm": "tests/fixtures/legacy_surface_inventory.py derives live parser aliases/leaves, service exports, research result keys, documentation hits, and config anchors before comparing them to this report.",
+ "totals": {
+  "entries": 184,
+  "by_kind": {
+   "command_alias": 16,
+   "docs_skill_ref": 4,
+   "legacy_control_command": 16,
+   "legacy_workflow_command": 2,
+   "nested_alias": 15,
+   "persisted_data_reader": 5,
+   "python_export": 43,
+   "research_compat_field": 36,
+   "schema_selector": 11,
+   "v1_field": 36
+  },
+  "by_disposition": {
+   "data-upgrade-only": 5,
+   "remove": 179
+  }
+ },
+ "scan_sources": {
+  "command_aliases": {
+   "count": 16,
+   "entry_ids": [
+    "alias.top.cfg",
+    "alias.top.d",
+    "alias.top.diag",
+    "alias.top.dr",
+    "alias.top.f",
+    "alias.top.init",
+    "alias.top.m",
+    "alias.top.mdl",
+    "alias.top.rcal",
+    "alias.top.reg",
+    "alias.top.route-cal",
+    "alias.top.rs",
+    "alias.top.rt",
+    "alias.top.s",
+    "alias.top.skill",
+    "alias.top.sm"
+   ]
+  },
+  "docs_skill_refs": {
+   "count": 4,
+   "entry_ids": [
+    "docs.ref.final_answer",
+    "docs.ref.legacy_control",
+    "docs.ref.schema-version",
+    "docs.ref.synthesize"
+   ]
+  },
+  "exact_provider_commands": {
+   "count": 0,
+   "entry_ids": []
+  },
+  "legacy_control_commands": {
+   "count": 16,
+   "entry_ids": [
+    "command.legacy_control.config",
+    "command.legacy_control.diagnose",
+    "command.legacy_control.doctor",
+    "command.legacy_control.model",
+    "command.legacy_control.regression",
+    "command.legacy_control.route",
+    "command.legacy_control.route-calibrate",
+    "command.legacy_control.setup",
+    "command.legacy_control.skills",
+    "command.legacy_control.smoke",
+    "command.nested_legacy.model.add",
+    "command.nested_legacy.model.current",
+    "command.nested_legacy.model.list",
+    "command.nested_legacy.model.remove",
+    "command.nested_legacy.skills.status",
+    "command.nested_legacy.skills.update"
+   ]
+  },
+  "legacy_workflow_commands": {
+   "count": 2,
+   "entry_ids": [
+    "command.legacy_workflow.deep",
+    "command.legacy_workflow.research"
+   ]
+  },
+  "namespace_remove": {
+   "count": 0,
+   "entry_ids": []
+  },
+  "namespace_retained": {
+   "count": 18,
+   "retained_target_paths": [
+    {
+     "path": "dev diagnose openai-compatible",
+     "target_contract": "v3",
+     "target": "dev.diagnose.openai-compatible"
     },
-    "by_disposition": {
-      "data-upgrade-only": 5,
-      "remove": 179
+    {
+     "path": "dev regression",
+     "target_contract": "v3",
+     "target": "dev.regression"
+    },
+    {
+     "path": "dev route-calibrate",
+     "target_contract": "v3",
+     "target": "dev.route.calibrate"
+    },
+    {
+     "path": "dev route-explain",
+     "target_contract": "v3",
+     "target": "dev.route.explain"
+    },
+    {
+     "path": "dev skills status",
+     "target_contract": "v3",
+     "target": "dev.skills.status"
+    },
+    {
+     "path": "dev skills update",
+     "target_contract": "v3",
+     "target": "dev.skills.update"
+    },
+    {
+     "path": "dev smoke",
+     "target_contract": "v3",
+     "target": "dev.smoke"
+    },
+    {
+     "path": "doctor probe",
+     "target_contract": "v3",
+     "target": "doctor.probe"
+    },
+    {
+     "path": "doctor status",
+     "target_contract": "v3",
+     "target": "doctor.status"
+    },
+    {
+     "path": "provider list",
+     "target_contract": "v3",
+     "target": "provider.catalog.list"
+    },
+    {
+     "path": "provider probe PROVIDER",
+     "target_contract": "v3",
+     "target": "provider.probe"
+    },
+    {
+     "path": "provider routes add",
+     "target_contract": "v3",
+     "target": "provider.routes.add"
+    },
+    {
+     "path": "provider routes current",
+     "target_contract": "v3",
+     "target": "provider.routes.current"
+    },
+    {
+     "path": "provider routes list",
+     "target_contract": "v3",
+     "target": "provider.routes.list"
+    },
+    {
+     "path": "provider routes remove",
+     "target_contract": "v3",
+     "target": "provider.routes.remove"
+    },
+    {
+     "path": "provider status",
+     "target_contract": "v3",
+     "target": "provider.catalog.status"
+    },
+    {
+     "path": "research plan",
+     "target_contract": "workflow",
+     "target": "research plan"
+    },
+    {
+     "path": "research run",
+     "target_contract": "workflow",
+     "target": "research run"
     }
+   ]
   },
-  "scan_sources": {
-    "command_aliases": {
-      "count": 16,
-      "entry_ids": [
-        "alias.top.cfg",
-        "alias.top.d",
-        "alias.top.diag",
-        "alias.top.dr",
-        "alias.top.f",
-        "alias.top.init",
-        "alias.top.m",
-        "alias.top.mdl",
-        "alias.top.rcal",
-        "alias.top.reg",
-        "alias.top.route-cal",
-        "alias.top.rs",
-        "alias.top.rt",
-        "alias.top.s",
-        "alias.top.skill",
-        "alias.top.sm"
-      ]
-    },
-    "docs_skill_refs": {
-      "count": 4,
-      "entry_ids": [
-        "docs.ref.final_answer",
-        "docs.ref.legacy_control",
-        "docs.ref.schema-version",
-        "docs.ref.synthesize"
-      ]
-    },
-    "exact_provider_commands": {
-      "count": 0,
-      "entry_ids": []
-    },
-    "legacy_control_commands": {
-      "count": 16,
-      "entry_ids": [
-        "command.legacy_control.config",
-        "command.legacy_control.diagnose",
-        "command.legacy_control.doctor",
-        "command.legacy_control.model",
-        "command.legacy_control.regression",
-        "command.legacy_control.route",
-        "command.legacy_control.route-calibrate",
-        "command.legacy_control.setup",
-        "command.legacy_control.skills",
-        "command.legacy_control.smoke",
-        "command.nested_legacy.model.add",
-        "command.nested_legacy.model.current",
-        "command.nested_legacy.model.list",
-        "command.nested_legacy.model.remove",
-        "command.nested_legacy.skills.status",
-        "command.nested_legacy.skills.update"
-      ]
-    },
-    "legacy_workflow_commands": {
-      "count": 2,
-      "entry_ids": [
-        "command.legacy_workflow.deep",
-        "command.legacy_workflow.research"
-      ]
-    },
-    "namespace_remove": {
-      "count": 0,
-      "entry_ids": []
-    },
-    "namespace_retained": {
-      "count": 18,
-      "retained_target_paths": [
-        {
-          "path": "dev diagnose openai-compatible",
-          "target_contract": "v3",
-          "target": "dev.diagnose.openai-compatible"
-        },
-        {
-          "path": "dev regression",
-          "target_contract": "v3",
-          "target": "dev.regression"
-        },
-        {
-          "path": "dev route-calibrate",
-          "target_contract": "v3",
-          "target": "dev.route.calibrate"
-        },
-        {
-          "path": "dev route-explain",
-          "target_contract": "v3",
-          "target": "dev.route.explain"
-        },
-        {
-          "path": "dev skills status",
-          "target_contract": "v3",
-          "target": "dev.skills.status"
-        },
-        {
-          "path": "dev skills update",
-          "target_contract": "v3",
-          "target": "dev.skills.update"
-        },
-        {
-          "path": "dev smoke",
-          "target_contract": "v3",
-          "target": "dev.smoke"
-        },
-        {
-          "path": "doctor probe",
-          "target_contract": "v3",
-          "target": "doctor.probe"
-        },
-        {
-          "path": "doctor status",
-          "target_contract": "v3",
-          "target": "doctor.status"
-        },
-        {
-          "path": "provider list",
-          "target_contract": "v3",
-          "target": "provider.catalog.list"
-        },
-        {
-          "path": "provider probe PROVIDER",
-          "target_contract": "v3",
-          "target": "provider.probe"
-        },
-        {
-          "path": "provider routes add",
-          "target_contract": "v3",
-          "target": "provider.routes.add"
-        },
-        {
-          "path": "provider routes current",
-          "target_contract": "v3",
-          "target": "provider.routes.current"
-        },
-        {
-          "path": "provider routes list",
-          "target_contract": "v3",
-          "target": "provider.routes.list"
-        },
-        {
-          "path": "provider routes remove",
-          "target_contract": "v3",
-          "target": "provider.routes.remove"
-        },
-        {
-          "path": "provider status",
-          "target_contract": "v3",
-          "target": "provider.catalog.status"
-        },
-        {
-          "path": "research plan",
-          "target_contract": "workflow",
-          "target": "research plan"
-        },
-        {
-          "path": "research run",
-          "target_contract": "workflow",
-          "target": "research run"
-        }
-      ]
-    },
-    "nested_aliases": {
-      "count": 15,
-      "entry_ids": [
-        "alias.nested.config.l",
-        "alias.nested.config.ls",
-        "alias.nested.config.p",
-        "alias.nested.config.rm",
-        "alias.nested.config.s",
-        "alias.nested.config.u",
-        "alias.nested.model.a",
-        "alias.nested.model.c",
-        "alias.nested.model.cur",
-        "alias.nested.model.l",
-        "alias.nested.model.ls",
-        "alias.nested.model.r",
-        "alias.nested.model.rm",
-        "alias.nested.skills.st",
-        "alias.nested.skills.up"
-      ]
-    },
-    "persisted_data": {
-      "count": 5,
-      "entry_ids": [
-        "data.legacy_xai_openai_keys",
-        "data.model_routes_env_precedence",
-        "data.model_routes_key",
-        "data.saved_config_snapshot_readers",
-        "data.windows_legacy_config_dir"
-      ]
-    },
-    "python_exports": {
-      "count": 43,
-      "entry_ids": [
-        "export.cli.PUBLIC_COMMANDS",
-        "export.cli.Path",
-        "export.cli.PromptConfigurationError",
-        "export.cli.SmartSearchArgumentParser",
-        "export.cli.argparse",
-        "export.cli.build_json_result",
-        "export.cli.build_parser",
-        "export.cli.configure_cli_logging",
-        "export.cli.json",
-        "export.cli.logger",
-        "export.cli.service",
-        "export.cli.subprocess",
-        "export.service.DEEP_ALLOWED_TOOLS",
-        "export.service.RESEARCH_ROUTE_POLICY_VERSION",
-        "export.service.build_deep_research_plan",
-        "export.service.capabilities",
-        "export.service.config",
-        "export.service.config_list",
-        "export.service.config_path",
-        "export.service.config_set",
-        "export.service.config_unset",
-        "export.service.current_model",
-        "export.service.diagnose_openai_compatible",
-        "export.service.doctor",
-        "export.service.extra_results_to_sources",
-        "export.service.fetch",
-        "export.service.fetch_available_models",
-        "export.service.get_available_models_cached",
-        "export.service.get_capability_status",
-        "export.service.intent_router_status",
-        "export.service.map_site",
-        "export.service.model_add",
-        "export.service.model_list",
-        "export.service.model_remove",
-        "export.service.provider_profiles",
-        "export.service.research",
-        "export.service.route",
-        "export.service.route_calibrate",
-        "export.service.search",
-        "export.service.smoke",
-        "export.service.validate_command_capabilities",
-        "export.service.validate_minimum_profile",
-        "export.service.write_output"
-      ]
-    },
-    "research_fields": {
-      "count": 36,
-      "entry_ids": [
-        "field.deep.step.command",
-        "field.deep.step.output_path",
-        "field.research.--synthesize",
-        "field.research.artifacts_persisted",
-        "field.research.budget",
-        "field.research.capability_execution_plan",
-        "field.research.citations",
-        "field.research.content",
-        "field.research.degraded",
-        "field.research.degraded_reason",
-        "field.research.discovery_candidates",
-        "field.research.discovery_sources",
-        "field.research.elapsed_ms",
-        "field.research.error",
-        "field.research.error_type",
-        "field.research.evidence_bundle",
-        "field.research.evidence_dir",
-        "field.research.evidence_items",
-        "field.research.fallback_used",
-        "field.research.fetched_evidence",
-        "field.research.final_answer",
-        "field.research.gap_check",
-        "field.research.gaps",
-        "field.research.mode",
-        "field.research.ok",
-        "field.research.provider_attempts",
-        "field.research.providers_used",
-        "field.research.query_mode",
-        "field.research.question",
-        "field.research.research_plan",
-        "field.research.response_mode",
-        "field.research.route_policy_version",
-        "field.research.routing_decision",
-        "field.research.stage_results",
-        "field.research.synthesis_enabled",
-        "field.research.synthesis_error"
-      ]
-    },
-    "schema_selector": {
-      "count": 11,
-      "entry_ids": [
-        "selector.schema-version.1",
-        "selector.schema-version.2",
-        "selector.schema-version.3",
-        "selector.schema-version.equals.1",
-        "selector.schema-version.equals.2",
-        "selector.schema-version.equals.3",
-        "selector.schema-version.flag",
-        "selector.schema-version.single-dash.1",
-        "selector.schema-version.single-dash.2",
-        "selector.schema-version.single-dash.3",
-        "selector.schema-version.single-dash.flag"
-      ]
-    },
-    "v1_fields": {
-      "count": 36,
-      "entry_ids": [
-        "field.v1.core.active_minimum_profile",
-        "field.v1.core.capabilities",
-        "field.v1.core.command_capabilities",
-        "field.v1.core.commands",
-        "field.v1.core.content",
-        "field.v1.core.error_type",
-        "field.v1.core.extra_sources",
-        "field.v1.core.fallback_used",
-        "field.v1.core.minimum_profiles",
-        "field.v1.core.ok",
-        "field.v1.core.output_formats",
-        "field.v1.core.primary_sources",
-        "field.v1.core.profiles",
-        "field.v1.core.provider",
-        "field.v1.core.provider_attempts",
-        "field.v1.core.providers_used",
-        "field.v1.core.query",
-        "field.v1.core.routing_decision",
-        "field.v1.core.sources",
-        "field.v1.core.url",
-        "field.v1.envelope.command",
-        "field.v1.envelope.data",
-        "field.v1.envelope.meta",
-        "field.v1.envelope.request_id",
-        "field.v1.envelope.schema_version",
-        "field.v1.error.data_error",
-        "field.v1.error.error",
-        "field.v1.error.error_code",
-        "field.v1.error.error_detail",
-        "field.v1.error.error_message",
-        "field.v1.error.error_type",
-        "field.v1.flat.dual_projection",
-        "field.v1.meta.attempted_providers",
-        "field.v1.meta.duration_ms",
-        "field.v1.meta.provider",
-        "field.v1.meta.warnings"
-      ]
-    },
-    "package_assets": {
-      "retained_package_paths": [
-        "src/smart_search/assets/skills/smart-search-cli/**"
-      ],
-      "excluded_root_paths": [
-        "skills/"
-      ]
-    }
+  "nested_aliases": {
+   "count": 15,
+   "entry_ids": [
+    "alias.nested.config.l",
+    "alias.nested.config.ls",
+    "alias.nested.config.p",
+    "alias.nested.config.rm",
+    "alias.nested.config.s",
+    "alias.nested.config.u",
+    "alias.nested.model.a",
+    "alias.nested.model.c",
+    "alias.nested.model.cur",
+    "alias.nested.model.l",
+    "alias.nested.model.ls",
+    "alias.nested.model.r",
+    "alias.nested.model.rm",
+    "alias.nested.skills.st",
+    "alias.nested.skills.up"
+   ]
   },
-  "cross_checks": {
-    "alias_freeze_count": 16,
-    "alias_inventory_count": 16,
-    "service_export_freeze_count": 43,
-    "service_export_inventory_count": 43,
-    "schema_selector_remove_count": 11,
-    "persisted_data_upgrade_only_count": 5,
-    "v3_retained_operation_count": 20,
-    "namespace_retained_count": 18,
-    "namespace_remove_count": 0
+  "persisted_data": {
+   "count": 5,
+   "entry_ids": [
+    "data.legacy_xai_openai_keys",
+    "data.model_routes_env_precedence",
+    "data.model_routes_key",
+    "data.saved_config_snapshot_readers",
+    "data.windows_legacy_config_dir"
+   ]
   },
-  "unmatched_scan_hits": [],
-  "unmatched_inventory_rows": [],
-  "notes": [
-    "Retained V2/V3/Workflow canonical surfaces are targets, not remove rows.",
-    "namespace_retained.retain_target_paths is intentionally not an inventory entry-id list.",
-    "The test fixture recomputes source-derived scans and fails if either unmatched list is no longer empty."
-  ]
+  "python_exports": {
+   "count": 43,
+   "entry_ids": [
+    "export.cli.PUBLIC_COMMANDS",
+    "export.cli.Path",
+    "export.cli.PromptConfigurationError",
+    "export.cli.SmartSearchArgumentParser",
+    "export.cli.argparse",
+    "export.cli.build_json_result",
+    "export.cli.build_parser",
+    "export.cli.configure_cli_logging",
+    "export.cli.json",
+    "export.cli.logger",
+    "export.cli.service",
+    "export.cli.subprocess",
+    "export.service.DEEP_ALLOWED_TOOLS",
+    "export.service.RESEARCH_ROUTE_POLICY_VERSION",
+    "export.service.build_deep_research_plan",
+    "export.service.capabilities",
+    "export.service.config",
+    "export.service.config_list",
+    "export.service.config_path",
+    "export.service.config_set",
+    "export.service.config_unset",
+    "export.service.current_model",
+    "export.service.diagnose_openai_compatible",
+    "export.service.doctor",
+    "export.service.extra_results_to_sources",
+    "export.service.fetch",
+    "export.service.fetch_available_models",
+    "export.service.get_available_models_cached",
+    "export.service.get_capability_status",
+    "export.service.intent_router_status",
+    "export.service.map_site",
+    "export.service.model_add",
+    "export.service.model_list",
+    "export.service.model_remove",
+    "export.service.provider_profiles",
+    "export.service.research",
+    "export.service.route",
+    "export.service.route_calibrate",
+    "export.service.search",
+    "export.service.smoke",
+    "export.service.validate_command_capabilities",
+    "export.service.validate_minimum_profile",
+    "export.service.write_output"
+   ]
+  },
+  "research_fields": {
+   "count": 36,
+   "entry_ids": [
+    "field.deep.step.command",
+    "field.deep.step.output_path",
+    "field.research.--synthesize",
+    "field.research.artifacts_persisted",
+    "field.research.budget",
+    "field.research.capability_execution_plan",
+    "field.research.citations",
+    "field.research.content",
+    "field.research.degraded",
+    "field.research.degraded_reason",
+    "field.research.discovery_candidates",
+    "field.research.discovery_sources",
+    "field.research.elapsed_ms",
+    "field.research.error",
+    "field.research.error_type",
+    "field.research.evidence_bundle",
+    "field.research.evidence_dir",
+    "field.research.evidence_items",
+    "field.research.fallback_used",
+    "field.research.fetched_evidence",
+    "field.research.final_answer",
+    "field.research.gap_check",
+    "field.research.gaps",
+    "field.research.mode",
+    "field.research.ok",
+    "field.research.provider_attempts",
+    "field.research.providers_used",
+    "field.research.query_mode",
+    "field.research.question",
+    "field.research.research_plan",
+    "field.research.response_mode",
+    "field.research.route_policy_version",
+    "field.research.routing_decision",
+    "field.research.stage_results",
+    "field.research.synthesis_enabled",
+    "field.research.synthesis_error"
+   ]
+  },
+  "schema_selector": {
+   "count": 11,
+   "entry_ids": [
+    "selector.schema-version.1",
+    "selector.schema-version.2",
+    "selector.schema-version.3",
+    "selector.schema-version.equals.1",
+    "selector.schema-version.equals.2",
+    "selector.schema-version.equals.3",
+    "selector.schema-version.flag",
+    "selector.schema-version.single-dash.1",
+    "selector.schema-version.single-dash.2",
+    "selector.schema-version.single-dash.3",
+    "selector.schema-version.single-dash.flag"
+   ]
+  },
+  "v1_fields": {
+   "count": 36,
+   "entry_ids": [
+    "field.v1.core.active_minimum_profile",
+    "field.v1.core.capabilities",
+    "field.v1.core.command_capabilities",
+    "field.v1.core.commands",
+    "field.v1.core.content",
+    "field.v1.core.error_type",
+    "field.v1.core.extra_sources",
+    "field.v1.core.fallback_used",
+    "field.v1.core.minimum_profiles",
+    "field.v1.core.ok",
+    "field.v1.core.output_formats",
+    "field.v1.core.primary_sources",
+    "field.v1.core.profiles",
+    "field.v1.core.provider",
+    "field.v1.core.provider_attempts",
+    "field.v1.core.providers_used",
+    "field.v1.core.query",
+    "field.v1.core.routing_decision",
+    "field.v1.core.sources",
+    "field.v1.core.url",
+    "field.v1.envelope.command",
+    "field.v1.envelope.data",
+    "field.v1.envelope.meta",
+    "field.v1.envelope.request_id",
+    "field.v1.envelope.schema_version",
+    "field.v1.error.data_error",
+    "field.v1.error.error",
+    "field.v1.error.error_code",
+    "field.v1.error.error_detail",
+    "field.v1.error.error_message",
+    "field.v1.error.error_type",
+    "field.v1.flat.dual_projection",
+    "field.v1.meta.attempted_providers",
+    "field.v1.meta.duration_ms",
+    "field.v1.meta.provider",
+    "field.v1.meta.warnings"
+   ]
+  },
+  "package_assets": {
+   "retained_package_paths": [
+    "src/smart_search/assets/skills/smart-search-cli/**"
+   ],
+   "excluded_root_paths": [
+    "skills/"
+   ]
+  }
+ },
+ "cross_checks": {
+  "alias_freeze_count": 16,
+  "alias_inventory_count": 16,
+  "service_export_freeze_count": 43,
+  "service_export_inventory_count": 43,
+  "schema_selector_remove_count": 11,
+  "persisted_data_upgrade_only_count": 5,
+  "v3_retained_operation_count": 20,
+  "namespace_retained_count": 18,
+  "namespace_remove_count": 0
+ },
+ "unmatched_scan_hits": [],
+ "unmatched_inventory_rows": [],
+ "notes": [
+  "Retained V2/V3/Workflow canonical surfaces are targets, not remove rows.",
+  "namespace_retained.retain_target_paths is intentionally not an inventory entry-id list.",
+  "The test fixture recomputes source-derived scans and fails if either unmatched list is no longer empty."
+ ]
 }

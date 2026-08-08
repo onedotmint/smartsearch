@@ -13,8 +13,9 @@ from smart_search.cli_constants import (
     CONFIG_COMMAND_ALIASES,
     MODEL_COMMAND_ALIASES,
     NAMESPACE_COMMANDS,
+    SELECTOR_REPLACEMENT,
     SKILLS_COMMAND_ALIASES,
-    prescan_schema_version,
+    classify_command_domain,
 )
 from smart_search.cli_parser import build_parser
 
@@ -75,6 +76,8 @@ def _top_level_canonical_commands() -> set[str]:
         name
         for name, subparser in command_action.choices.items()
         if subparser.get_default("command") == name
+        or subparser.get_default("namespace_operation") is not None
+        or name in {"config", "provider", "doctor", "dev"}
     }
 
 
@@ -136,34 +139,32 @@ def test_schema_version_selectors_are_all_remove() -> None:
     selector_entries = inv.entries_with_kind("schema_selector")
     surfaces = {entry["surface"] for entry in selector_entries}
     parser = build_parser()
-    selector_action = next(
-        action for action in parser._actions if "--schema-version" in action.option_strings
+    # The parser no longer registers any schema-selector option.
+    assert not any(
+        "--schema-version" in action.option_strings for action in parser._actions
     )
-    assert selector_action.option_strings == ["--schema-version"]
-    assert selector_action.choices == ["1", "2", "3"]
 
-    expected = {"--schema-version", "-schema-version"}
-    for value in selector_action.choices:
-        expected.update(
-            {
-                f"--schema-version {value}",
-                f"--schema-version={value}",
-                f"-schema-version {value}",
-            }
-        )
-        for flag in ("--schema-version", "-schema-version"):
-            prescan = prescan_schema_version([flag, value, "search", "query"])
-            assert prescan["explicit"] is True
-            assert prescan["schema_version"] == value
-        equals_prescan = prescan_schema_version([f"--schema-version={value}", "search", "query"])
-        assert equals_prescan["explicit"] is True
-        assert equals_prescan["schema_version"] == value
-
-    assert surfaces == expected == set(inv.SCHEMA_SELECTOR_SURFACES)
+    expected = set(inv.SCHEMA_SELECTOR_SURFACES)
+    assert surfaces == expected == {
+        "--schema-version", "-schema-version",
+        "--schema-version 1", "--schema-version 2", "--schema-version 3",
+        "--schema-version=1", "--schema-version=2", "--schema-version=3",
+        "-schema-version 1", "-schema-version 2", "-schema-version 3",
+    }
     for entry in selector_entries:
         assert entry["disposition"] == "remove"
         assert "omit selector" in entry["replacement"]
         assert "canonical family" in entry.get("notes", "")
+    # Every frozen spelling is detected as removed with the selector
+    # replacement by the canonical domain classifier.
+    for spelling in expected:
+        flag, sep, value = spelling.partition("=")
+        if not sep:
+            flag, _, value = spelling.partition(" ")
+        argv = [flag] + ([value] if value else ["1"]) + ["search", "query"]
+        classification = classify_command_domain(argv)
+        assert classification["family"] == "removed"
+        assert classification["replacement"] == SELECTOR_REPLACEMENT
 
 
 def test_parser_alias_freeze_subset_of_inventory() -> None:
@@ -311,16 +312,25 @@ def test_live_parser_and_namespace_scans_reconcile_to_inventory() -> None:
     exact = _exact_provider_commands(commands)
     assert set(_entries_for_kind("exact_provider_command")) == exact
 
-    retained_v2 = {"search", "fetch", "map", "capabilities"}
-    workflows = {"deep", "research"}
-    control_top_level = commands - exact - retained_v2 - workflows
-    control_rows = _entries_for_kind("legacy_control_command")
-    assert {surface for surface in control_rows if " " not in surface} == control_top_level
-    assert {
-        surface for surface in control_rows if " " in surface
-    } == {
-        "model add", "model current", "model list", "model remove", "skills status", "skills update"
+    # The parser registers only the final canonical tree: V2 evidence leaves,
+    # the research workflow namespace, and the V3 control-plane namespaces.
+    # Legacy control commands are removed spellings handled by the domain
+    # classifier, not by argparse.
+    assert exact == set()
+    assert commands == {
+        "search", "fetch", "map", "capabilities",
+        "research", "config", "provider", "doctor", "dev",
     }
+    assert not any(
+        alias in commands
+        for alias in (
+            *COMMAND_ALIASES.values(),
+            *CONFIG_COMMAND_ALIASES.values(),
+            *MODEL_COMMAND_ALIASES.values(),
+            *SKILLS_COMMAND_ALIASES.values(),
+        )
+        for alias in alias
+    )
 
     expected_nested_aliases = {
         f"config {alias}"

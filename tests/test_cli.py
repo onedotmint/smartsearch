@@ -1,3 +1,14 @@
+"""Canonical CLI routing, rendering, and module-level helper tests.
+
+The CLI dispatches by canonical command domain: evidence commands use the V2
+envelope, retained control-plane leaves use V3, and ``research plan`` /
+``research run`` use the Research Workflow family. Removed selectors, aliases,
+and legacy spellings fail with the replacement family's strict
+INVALID_ARGUMENT envelope before any owner/config/provider import. The legacy
+service facade and V1 render helpers remain importable for the later cleanup
+task; module-level helper tests below exercise them directly.
+"""
+
 import json
 import asyncio
 from pathlib import Path
@@ -22,6 +33,17 @@ class GbkStdout:
         return "".join(self.parts)
 
 
+def _run_main(argv, monkeypatch=None, env_updates=None):
+    import io
+    import contextlib
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        code = cli.main(argv)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
 def test_help_contains_commands(capsys):
     try:
         cli.main(["--help"])
@@ -32,27 +54,37 @@ def test_help_contains_commands(capsys):
     assert "search" in out
     assert "fetch" in out
     assert "capabilities" in out
-    assert "setup" in out
     assert "doctor" not in out
+    assert "setup" not in out
+    assert "model" not in out
     assert "regression" not in out
-    assert "exa-search" not in out
-    assert "route-calibrate" not in out
 
 
 def test_hidden_commands_remain_parseable():
     parser = cli.build_parser()
 
     hidden_commands = [
-        ["route-calibrate"],
+        ["research", "plan", "topic"],
+        ["research", "run", "topic"],
         ["capabilities"],
-        ["diagnose", "openai-compatible"],
-        ["model", "current"],
-        ["smoke"],
-        ["regression"],
+        ["config", "path"],
+        ["config", "list"],
+        ["config", "set", "K", "V"],
+        ["config", "unset", "K"],
+        ["provider", "list"],
+        ["provider", "status"],
+        ["provider", "probe", "tavily"],
+        ["provider", "routes", "current"],
+        ["dev", "smoke"],
+        ["dev", "route-explain", "q"],
+        ["dev", "skills", "status"],
+        ["doctor", "status"],
+        ["doctor", "probe"],
+        ["map", "https://example.com"],
     ]
 
     for argv in hidden_commands:
-        assert parser.parse_args(argv).command == argv[0]
+        assert parser.parse_args(argv).command, argv
 
 
 def test_version_flags_exit_successfully(monkeypatch, capsys):
@@ -70,88 +102,100 @@ def test_version_flags_exit_successfully(monkeypatch, capsys):
 def test_each_subcommand_help_exits_successfully(capsys):
     commands = [
         ["search", "--help"],
-        ["route", "--help"],
         ["fetch", "--help"],
         ["map", "--help"],
-        ["deep", "--help"],
-        ["route-calibrate", "--help"],
-        ["smoke", "--help"],
-        ["doctor", "--help"],
-        ["diagnose", "--help"],
-        ["diagnose", "openai-compatible", "--help"],
-        ["skills", "--help"],
-        ["skills", "status", "--help"],
-        ["skills", "update", "--help"],
-        ["setup", "--help"],
+        ["capabilities", "--help"],
+        ["research", "--help"],
+        ["research", "plan", "--help"],
+        ["research", "run", "--help"],
         ["config", "--help"],
         ["config", "path", "--help"],
         ["config", "list", "--help"],
         ["config", "set", "--help"],
         ["config", "unset", "--help"],
-        ["model", "--help"],
-        ["model", "current", "--help"],
-        ["regression", "--help"],
+        ["provider", "--help"],
+        ["provider", "list", "--help"],
+        ["provider", "routes", "add", "--help"],
+        ["doctor", "--help"],
+        ["doctor", "status", "--help"],
+        ["doctor", "probe", "--help"],
+        ["dev", "--help"],
+        ["dev", "smoke", "--help"],
     ]
 
     for command in commands:
+        capsys.readouterr()  # clear any previous output
         try:
-            cli.main(command)
+            code = cli.main(command)
         except SystemExit as exc:
-            assert exc.code == 0
+            assert exc.code == 0, command
+        else:
+            assert code == 0, command
+        out = capsys.readouterr().out
+        assert out.startswith("usage: smart-search"), (command, out)
+        assert command[0] in out, (command, out)
+        assert '"schema_version"' not in out, (command, out)
 
-    out = capsys.readouterr().out
-    assert "usage: smart-search search" in out
-    assert "usage: smart-search regression" in out
+
+def test_removed_commands_fail_with_family_errors(capsys):
+    """Legacy commands and aliases fail with the replacement family's strict
+    INVALID_ARGUMENT envelope instead of parsing or dispatching."""
+    cases = (
+        (["model", "list"], "3", "provider.routes.list"),
+        (["smoke"], "3", "dev smoke"),
+        (["setup", "--non-interactive"], "3", "config set"),
+        (["skills", "status"], "3", "dev.skills.status"),
+        (["deep", "query"], "research-workflow-1", "research plan"),
+        (["route", "query"], "3", "dev route-explain"),
+        (["route-calibrate"], "3", "dev route-calibrate"),
+        (["diagnose", "openai-compatible"], "3", "dev diagnose openai-compatible"),
+        (["regression"], "3", "dev regression"),
+        (["s", "query"], "2", "search"),
+        (["f", "https://example.com"], "2", "fetch"),
+        (["dr", "query"], "research-workflow-1", "research plan"),
+        (["rs", "query"], "research-workflow-1", "research run"),
+        (["cfg", "ls"], "3", "config"),
+        (["mdl", "list"], "3", "provider routes"),
+    )
+    for argv, schema, replacement in cases:
+        code, out, err = _run_main(argv)
+        assert code == 2, (argv, out, err)
+        payload = json.loads(out)
+        assert payload["schema_version"] == schema, argv
+        assert payload["ok"] is False
+        assert payload["status"] == "failed"
+        assert payload["error"]["code"] == "INVALID_ARGUMENT"
+        assert payload["error"]["details"]["replacement"] == replacement, argv
+        # exactly one JSON document: the embedded plan schema_version is a
+        # distinct nested key, so count the top-level identity once via json.
+        assert json.loads(out)["schema_version"] == schema
 
 
-def test_command_aliases_parse_to_canonical_commands():
-    parser = cli.build_parser()
+def test_removed_schema_selector_fails_with_command_family(capsys):
+    """A removed selector before a canonical command fails with that command
+    family's strict envelope and bounded legacy_spelling/replacement."""
+    cases = (
+        (["--schema-version", "2", "search", "q"], "2", "search"),
+        (["--schema-version", "3", "config", "list"], "3", "config"),
+        (["--schema-version=2", "research", "run", "q"], "research-workflow-1", "research"),
+    )
+    for argv, schema, _command in cases:
+        code, out, err = _run_main(argv)
+        assert code == 2, (argv, out, err)
+        payload = json.loads(out)
+        assert payload["schema_version"] == schema, argv
+        assert payload["error"]["code"] == "INVALID_ARGUMENT"
+        assert payload["error"]["details"]["replacement"] == "omit selector; route by canonical command domain"
 
-    command_cases = [
-        (["s", "query"], "search"),
-        (["rt", "query"], "route"),
-        (["f", "https://example.com"], "fetch"),
-        (["m", "https://example.com"], "map"),
-        (["dr", "query"], "deep"),
-        (["route-cal"], "route-calibrate"),
-        (["rcal"], "route-calibrate"),
-        (["sm"], "smoke"),
-        (["d"], "doctor"),
-        (["diag", "openai-compatible"], "diagnose"),
-        (["skill", "status"], "skills"),
-        (["init", "--non-interactive"], "setup"),
-        (["cfg", "ls"], "config"),
-        (["mdl", "cur"], "model"),
-        (["reg"], "regression"),
-    ]
 
-    for argv, command in command_cases:
-        assert parser.parse_args(argv).command == command
-
-    config_cases = [
-        (["cfg", "p"], "path"),
-        (["cfg", "ls"], "list"),
-        (["cfg", "l"], "list"),
-        (["cfg", "s", "XAI_MODEL", "grok"], "set"),
-        (["cfg", "rm", "XAI_MODEL"], "unset"),
-        (["cfg", "u", "XAI_MODEL"], "unset"),
-    ]
-    for argv, config_command in config_cases:
-        assert parser.parse_args(argv).config_command == config_command
-
-    model_cases = [
-        (["mdl", "cur"], "current"),
-        (["mdl", "c"], "current"),
-    ]
-    for argv, model_command in model_cases:
-        assert parser.parse_args(argv).model_command == model_command
-
-    skills_cases = [
-        (["skills", "st"], "status"),
-        (["skills", "up"], "update"),
-    ]
-    for argv, skills_command in skills_cases:
-        assert parser.parse_args(argv).skills_command == skills_command
+def test_selector_only_uses_v2_root_sentinel(capsys):
+    code, out, err = _run_main(["--schema-version", "2"])
+    assert code == 2
+    payload = json.loads(out)
+    assert payload["schema_version"] == "2"
+    assert payload["command"] == "unknown"
+    assert payload["operation"] is None
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
 
 
 def test_search_help_exposes_timeout(capsys):
@@ -167,458 +211,180 @@ def test_search_help_exposes_timeout(capsys):
 
 
 def test_diagnose_openai_compatible_defaults_to_markdown(monkeypatch, capsys):
+    """dev diagnose openai-compatible keeps its markdown default through the
+    typed v3 route when the owner reports a network failure."""
+    from smart_search import control_operations
+    from smart_search.control_operations import (
+        ControlNetworkFacts,
+        ControlOperationOutcome,
+        ControlOperationStatus,
+    )
+    from smart_search.execution_primitives import ExecutionError, ExecutionMetadata
+
     async def fake_diagnose(timeout_seconds=30.0):
-        return {
-            "ok": False,
-            "provider": "openai-compatible",
-            "summary": "小请求能通，但真实 search 形态超时。",
-            "recommendation": "建议换模型/中转，或把本诊断报告贴给维护者。",
-            "api_url": "https://relay.example.com/v1",
-            "api_key": "sk-T********cret",
-            "model": "relay-model",
-            "configured_stream": True,
-            "timeout_seconds": timeout_seconds,
-            "config_file": "C:/tmp/config.json",
-            "config_dir_source": "environment",
-            "checks": [
-                {"name": "轻量 chat 请求", "status": "ok", "response_time_ms": 10.0, "has_content": True, "message": "chat ok"},
-                {
-                    "name": "真实 search 请求 (stream=false)",
-                    "status": "timeout",
-                    "response_time_ms": 30000.0,
-                    "has_content": False,
-                    "message": "请求超时",
-                },
-            ],
-            "next_command": "smart-search diagnose openai-compatible --format markdown",
-            "error_type": "network_error",
-            "error": "小请求能通，但真实 search 形态超时。",
-        }
+        return ControlOperationOutcome(
+            operation="dev.diagnose.openai-compatible",
+            status=ControlOperationStatus.FAILED,
+            result={
+                "provider": "openai-compatible",
+                "summary": "小请求能通，但真实 search 形态超时。",
+                "recommendation": "建议换模型/中转，或把本诊断报告贴给维护者。",
+                "checks": [
+                    {"name": "轻量 chat 请求", "status": "ok", "response_time_ms": 10.0, "has_content": True, "message": "chat ok"},
+                    {"name": "真实 search 请求 (stream=false)", "status": "timeout", "response_time_ms": 30000.0, "has_content": False, "message": "请求超时"},
+                ],
+            },
+            error=ExecutionError("timeout", "小请求能通，但真实 search 形态超时。", False),
+            network=ControlNetworkFacts(attempted=True, targets=("openai-compatible",)),
+            metadata=ExecutionMetadata("dev.diagnose.openai-compatible", 0),
+        )
 
-    monkeypatch.setattr(cli.service, "diagnose_openai_compatible", fake_diagnose)
+    monkeypatch.setattr(control_operations, "run_dev_diagnose_openai_compatible", fake_diagnose)
 
-    code = cli.main(["diagnose", "openai-compatible"])
-
+    # JSON is the v3 contract default: one strict envelope document.
+    code = cli.main(["dev", "diagnose", "openai-compatible"])
     out = capsys.readouterr().out
     assert code == cli.EXIT_NETWORK_ERROR
-    assert out.startswith("# Smart Search Diagnose")
-    assert "小请求能通" in out
-    assert "真实 search 请求" in out
-    assert "smart-search diagnose openai-compatible --format markdown" in out
+    payload = json.loads(out)
+    assert payload["schema_version"] == "3"
+    assert payload["operation"] == "dev.diagnose.openai-compatible"
+    assert payload["error"]["code"] == "UPSTREAM_TIMEOUT"
+    assert out.count('"schema_version"') == 1
 
-
-def test_diagnose_openai_compatible_json(monkeypatch, capsys):
-    async def fake_diagnose(timeout_seconds=30.0):
-        return {"ok": True, "provider": "openai-compatible", "summary": "ok", "timeout_seconds": timeout_seconds}
-
-    monkeypatch.setattr(cli.service, "diagnose_openai_compatible", fake_diagnose)
-
-    code = cli.main(["diagnose", "openai-compatible", "--timeout", "5", "--format", "json"])
-
-    data = json.loads(capsys.readouterr().out)
-    assert code == cli.EXIT_OK
-    assert data["provider"] == "openai-compatible"
-    assert data["timeout_seconds"] == 5
-
-
-def test_search_outputs_json_and_file(monkeypatch, capsys):
-    async def fake_search(query, platform="", model="", extra_sources=0, validation="", fallback="", providers="auto"):
-        return {
-            "ok": True,
-            "query": query,
-            "content": "Answer",
-            "sources": [{"url": "https://example.com", "title": "Example"}],
-            "sources_count": 1,
-        }
-
-    monkeypatch.setattr(cli.service, "search", fake_search)
-    written = {}
-
-    def fake_write_output(path, content):
-        written["path"] = path
-        written["content"] = content
-
-    monkeypatch.setattr(cli.service, "write_output", fake_write_output)
-    output = "C:/tmp/smart-search-cli-test-result.json"
-
-    code = cli.main(["search", "query", "--output", output])
-
-    assert code == cli.EXIT_OK
-    stdout_data = json.loads(capsys.readouterr().out)
-    file_data = json.loads(written["content"])
-    assert written["path"] == output
-    assert stdout_data["sources_count"] == 1
-    assert file_data["content"] == "Answer"
-
-
-def test_search_stream_flags_override_only_when_present(monkeypatch, capsys):
-    captured = []
-
-    async def fake_search(query, **kwargs):
-        captured.append(kwargs)
-        return {"ok": True, "content": "Answer", "sources": [], "sources_count": 0}
-
-    monkeypatch.setattr(cli.service, "search", fake_search)
-
-    assert cli.main(["search", "query"]) == cli.EXIT_OK
-    json.loads(capsys.readouterr().out)
-    assert cli.main(["search", "query", "--stream"]) == cli.EXIT_OK
-    json.loads(capsys.readouterr().out)
-    assert cli.main(["search", "query", "--no-stream"]) == cli.EXIT_OK
-    json.loads(capsys.readouterr().out)
-
-    assert "stream" not in captured[0]
-    assert captured[1]["stream"] is True
-    assert captured[2]["stream"] is False
-
-
-def test_search_json_outputs_readable_chinese(monkeypatch, capsys):
-    async def fake_search(query, platform="", model="", extra_sources=0, validation="", fallback="", providers="auto"):
-        return {"ok": True, "content": "中文NBA战报", "sources": [], "sources_count": 0}
-
-    monkeypatch.setattr(cli.service, "search", fake_search)
-
-    code = cli.main(["search", "nba战报", "--format", "json"])
-
-    assert code == cli.EXIT_OK
+    # Explicit --format markdown renders the human view of the same payload.
+    code = cli.main(["dev", "diagnose", "openai-compatible", "--format", "markdown"])
     out = capsys.readouterr().out
-    assert "中文NBA战报" in out
-    assert "\\u4e2d\\u6587" not in out
-    assert json.loads(out)["content"] == "中文NBA战报"
+    assert code == cli.EXIT_NETWORK_ERROR
+    assert out.startswith("# V3 Diagnose OpenAI-Compatible")
+    assert "小请求能通" in out
+    assert "UPSTREAM_TIMEOUT" in out
+
+
+def test_search_outputs_v2_json(monkeypatch, capsys):
+    """search is a canonical V2 evidence leaf; it never touches the legacy
+    service facade and JSON is the single machine contract."""
+    from smart_search import api_v2
+    from smart_search.v2_contract import (
+        V2Candidate,
+        V2Envelope,
+        V2Evidence,
+        V2Meta,
+        V2Routing,
+        V2Status,
+        validate_result,
+    )
+
+    async def fake_composite(query, max_results=5):
+        return validate_result(
+            V2Envelope(
+                V2Status.COMPLETE,
+                "search",
+                "source_discovery",
+                {"total": 1, "items": [{"id": "c1"}]},
+                V2Evidence(candidates=(V2Candidate("c1", "https://example.com", "tavily", "T", "s"),)),
+                V2Routing(("source_discovery",), ("source_discovery",), "v2", ("source_discovery",)),
+                (),
+                (),
+                None,
+                V2Meta("cli-test", 1),
+            )
+        )
+
+    monkeypatch.setattr(api_v2, "_composite_search", fake_composite)
+    code, out, err = _run_main(["search", "query"])
+    assert code == cli.EXIT_OK
+    payload = json.loads(out)
+    assert payload["schema_version"] == "2"
+    assert payload["operation"] == "source_discovery"
+    assert payload["evidence"]["candidates"][0]["resource"] == "https://example.com"
 
 
 def test_search_content_format_outputs_content_only(monkeypatch, capsys):
-    async def fake_search(query, platform="", model="", extra_sources=0, validation="", fallback="", providers="auto"):
-        return {"ok": True, "content": "中文NBA战报", "sources": [{"url": "https://example.com"}], "sources_count": 1}
+    from smart_search import api_v2
+    from smart_search.v2_contract import (
+        V2Candidate,
+        V2Envelope,
+        V2Evidence,
+        V2Meta,
+        V2Routing,
+        V2Status,
+        validate_result,
+    )
 
-    monkeypatch.setattr(cli.service, "search", fake_search)
+    async def fake_composite(query, max_results=5):
+        return validate_result(
+            V2Envelope(
+                V2Status.COMPLETE,
+                "search",
+                "source_discovery",
+                {"total": 1, "items": [{"id": "c1"}]},
+                V2Evidence(candidates=(V2Candidate("c1", "https://example.com", "tavily", "T", "s"),)),
+                V2Routing(("source_discovery",), ("source_discovery",), "v2", ("source_discovery",)),
+                (),
+                (),
+                None,
+                V2Meta("content-test", 1),
+            )
+        )
 
-    code = cli.main(["search", "nba战报", "--format", "content"])
+    monkeypatch.setattr(api_v2, "_composite_search", fake_composite)
 
+    code, out, err = _run_main(["search", "query", "--format", "content"])
     assert code == cli.EXIT_OK
-    assert capsys.readouterr().out == "中文NBA战报\n"
+    assert out.strip() == "s"
 
 
 def test_fetch_content_format_matches_markdown_body(monkeypatch, capsys):
-    async def fake_fetch(url):
-        return {"ok": True, "url": url, "content": "# 中文页面"}
+    from smart_search import evidence_operations
+    from smart_search.evidence_operations import (
+        EvidenceOperationOutcome,
+        EvidenceOperationStatus,
+        EvidenceRouting,
+    )
+    from smart_search.execution_primitives import ExecutionEvidenceItem, ExecutionMetadata
 
-    monkeypatch.setattr(cli.service, "fetch", fake_fetch)
+    async def fake_fetch(request):
+        return EvidenceOperationOutcome(
+            operation="content_fetch",
+            status=EvidenceOperationStatus.COMPLETE,
+            evidence_items=(
+                ExecutionEvidenceItem(
+                    id="evidence-1",
+                    resource=request.resource,
+                    provider="jina",
+                    title="页面",
+                    content="# 中文页面",
+                ),
+            ),
+            attempts=(),
+            routing=EvidenceRouting(("content_fetch",), ("content_fetch",), "v2", ("test",)),
+            metadata=ExecutionMetadata("fetch-test", 1),
+        )
 
-    content_code = cli.main(["fetch", "https://example.com", "--format", "content"])
-    content_out = capsys.readouterr().out
-    markdown_code = cli.main(["fetch", "https://example.com", "--format", "markdown"])
-    markdown_out = capsys.readouterr().out
+    monkeypatch.setattr(evidence_operations, "content_fetch", fake_fetch)
+
+    content_code, content_out, _ = _run_main(["fetch", "https://example.com", "--format", "content"])
+    markdown_code, markdown_out, _ = _run_main(["fetch", "https://example.com", "--format", "markdown"])
 
     assert content_code == cli.EXIT_OK
     assert markdown_code == cli.EXIT_OK
-    assert content_out == "# 中文页面\n"
-    assert markdown_out == content_out
+    assert "# 中文页面" in content_out
+    assert "# 中文页面" in markdown_out
+    assert not markdown_out.lstrip().startswith("{")
 
 
-def test_doctor_markdown_outputs_human_health_report(monkeypatch, capsys):
-    long_message = "provider detail " + ("x" * 220)
-
-    async def fake_doctor():
-        return {
-            "ok": True,
-            "config_file": "C:/tmp/config.json",
-            "config_dir": "C:/tmp",
-            "config_dir_source": "environment",
-            "default_config_file": "C:/Users/example/AppData/Local/smart-search/config.json",
-            "legacy_windows_config_file": "C:/Users/example/.config/smart-search/config.json",
-            "legacy_windows_config_exists": True,
-            "config_dir_override_value": "C:/Users/example/AppData/Local/smart-search",
-            "config_dir_override_matches_default": True,
-            "log_dir_config_value": "logs",
-            "resolved_log_dir": "C:/tmp/logs",
-            "file_logging_enabled": False,
-            "config_status": "ok: complete",
-            "XAI_API_KEY": "未配置",
-            "SMART_SEARCH_LOG_DIR": "logs",
-            "config_sources": {
-                "XAI_API_KEY": "default",
-                "SMART_SEARCH_LOG_DIR": "default",
-            },
-            "minimum_profile_ok": True,
-            "minimum_profile_missing": [],
-            "capability_status": {
-                "main_search": {"ok": True, "configured": ["openai-compatible"], "fallback_chain": ["xai-responses", "openai-compatible"]},
-                "docs_search": {"ok": True, "configured": ["context7"], "fallback_chain": ["context7", "exa"]},
-                "web_fetch": {"ok": True, "configured": ["tavily", "jina"], "fallback_chain": ["tavily", "jina", "zhipu-mcp-reader", "firecrawl"]},
-            },
-            "main_search_connection_tests": {
-                "openai-compatible": {
-                    "status": "ok",
-                    "message": long_message,
-                    "response_time_ms": 123.45,
-                    "available_models": ["relay-model"],
-                    "chat_completion_test": {"status": "ok", "message": "chat ok", "response_time_ms": 100.0},
-                    "models_endpoint_test": {"status": "ok", "message": "models ok", "response_time_ms": 23.45},
-                }
-            },
-            "exa_connection_test": {"status": "ok", "message": "Exa ok", "response_time_ms": 11.1},
-            "tavily_connection_test": {"status": "ok", "message": "Tavily ok", "response_time_ms": 22.2},
-            "jina_connection_test": {"status": "ok", "message": "Jina ok", "response_time_ms": 10.0},
-            "firecrawl_connection_test": {"status": "configured", "message": "key configured"},
-            "zhipu_connection_test": {"status": "warning", "message": "HTTP 429"},
-            "zhipu_mcp_connection_test": {"status": "not_configured", "message": "missing"},
-            "context7_connection_test": {"status": "not_configured", "message": "missing"},
-            "intent_router_status": {
-                "mode": "hybrid",
-                "ok": True,
-                "embeddings_configured": False,
-                "classifier_configured": True,
-                "embedding_model": "Qwen/Qwen3-Embedding-8B",
-                "embedding_threshold": 0.74,
-                "embedding_margin": 0.05,
-                "embedding_threshold_source": "default",
-                "embedding_margin_source": "default",
-                "embedding_preset_id": "qwen3-embedding-8b",
-                "embedding_preset_threshold": "0.475",
-                "embedding_preset_margin": "0.053",
-                "embedding_preset_recommended": True,
-                "embedding_preset_recommendation": "Qwen/Qwen3-Embedding-8B works best with calibrated threshold and margin.",
-                "embedding_preset_commands": [
-                    "smart-search config set INTENT_EMBEDDING_THRESHOLD 0.475",
-                    "smart-search config set INTENT_EMBEDDING_MARGIN 0.053",
-                ],
-                "classifier_model": "intent-mini",
-                "timeout_seconds": 8.0,
-                "degrades_to_rules": True,
-            },
-        }
-
-    monkeypatch.setattr(cli.service, "doctor", fake_doctor)
-
-    code = cli.main(["doctor", "--format", "markdown"])
-
-    out = capsys.readouterr().out
-    assert code == cli.EXIT_OK
-    assert not out.lstrip().startswith("{")
-    assert "# Smart Search Doctor" in out
-    assert "Overall: OK" in out
-    assert "Config dir source: `environment`" in out
-    assert "Default config file: `C:/Users/example/AppData/Local/smart-search/config.json`" in out
-    assert "Legacy Windows config file: `C:/Users/example/.config/smart-search/config.json`" in out
-    assert "Legacy Windows config exists: OK" in out
-    assert "SMART_SEARCH_CONFIG_DIR: `C:/Users/example/AppData/Local/smart-search`" in out
-    assert "Override matches default: YES" in out
-    assert "override matches the current Windows default path" in out
-    assert "Log dir config value: `logs`" in out
-    assert "Resolved log dir: `C:/tmp/logs`" in out
-    assert "File logging enabled: NO" in out
-    assert "## Configuration Values" in out
-    assert "| XAI_API_KEY | default | 未配置 |" in out
-    assert "## Capabilities" in out
-    assert "## Main Search Providers" in out
-    assert "openai-compatible" in out
-    assert "## Provider Details" in out
-    assert long_message in out
-    assert "relay-model" in out
-    assert "Tavily ok" in out
-    assert "## Intent Router" in out
-    assert "| classifier_configured | YES |" in out
-    assert "| embedding_preset | qwen3-embedding-8b |" in out
-    assert "Embedding Preset Recommendation" in out
-    assert "smart-search config set INTENT_EMBEDDING_THRESHOLD 0.475" in out
-    assert "intent-mini" in out
-
-
-def test_doctor_content_outputs_non_empty_summary(monkeypatch, capsys):
-    async def fake_doctor():
-        return {
-            "ok": False,
-            "config_status": "missing config",
-            "minimum_profile_ok": False,
-            "capability_status": {
-                "main_search": {"ok": False, "configured": [], "fallback_chain": ["xai-responses", "openai-compatible"]}
-            },
-            "intent_router_status": {
-                "embedding_preset_recommendation": "Qwen/Qwen3-Embedding-8B works best with calibrated threshold and margin.",
-                "embedding_preset_threshold": "0.475",
-                "embedding_preset_margin": "0.053",
-            },
-            "error": "Missing required capability: main_search",
-            "error_type": "config_error",
-        }
-
-    monkeypatch.setattr(cli.service, "doctor", fake_doctor)
-
-    code = cli.main(["doctor", "--format", "content"])
-
-    out = capsys.readouterr().out
-    assert code == cli.EXIT_CONFIG_ERROR
-    assert out.strip()
-    assert "Doctor FAIL" in out
-    assert "Minimum profile: FAIL" in out
-    assert "Embedding preset recommendation: threshold=0.475 margin=0.053" in out
-    assert "Missing required capability" in out
-
-
-def test_search_alias_uses_canonical_command(monkeypatch, capsys):
-    captured = {}
-
-    async def fake_search(query, platform="", model="", extra_sources=0, validation="", fallback="", providers="auto"):
-        captured["query"] = query
-        return {"ok": True, "content": "Answer", "sources": [], "sources_count": 0}
-
-    monkeypatch.setattr(cli.service, "search", fake_search)
-
-    code = cli.main(["s", "alias query"])
-
-    assert code == cli.EXIT_OK
-    assert captured["query"] == "alias query"
-    assert json.loads(capsys.readouterr().out)["content"] == "Answer"
-
-
-def test_fetch_alias_uses_canonical_command(monkeypatch, capsys):
-    async def fake_fetch(url):
-        return {"ok": True, "url": url, "content": "Page"}
-
-    monkeypatch.setattr(cli.service, "fetch", fake_fetch)
-
-    code = cli.main(["f", "https://example.com"])
-
-    assert code == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["url"] == "https://example.com"
-
-
-def test_deep_outputs_offline_plan(monkeypatch, capsys):
-    captured = {}
-
-    def fake_plan(query, budget="standard", evidence_dir=""):
-        captured["query"] = query
-        captured["budget"] = budget
-        captured["evidence_dir"] = evidence_dir
-        return {
-            "ok": True,
-            "mode": "deep_research",
-            "query_mode": "deep",
-            "question": query,
-            "trigger_source": "explicit_cli",
-            "difficulty": "standard",
-            "intent_signals": {},
-            "decomposition": [],
-            "capability_plan": [],
-            "evidence_policy": "fetch_before_claim",
-            "preflight": {"executed_by_deep_command": False},
-            "steps": [],
-            "gap_check": {"required": True},
-            "final_answer_policy": "cite fetched evidence",
-            "usage_boundary": {"deep": "offline planner"},
-        }
-
-    async def should_not_run_provider(*args, **kwargs):
-        raise AssertionError("deep planner must not call providers")
-
-    monkeypatch.setattr(cli.service, "build_deep_research_plan", fake_plan)
-    monkeypatch.setattr(cli.service, "search", should_not_run_provider)
-    monkeypatch.setattr(cli.service, "doctor", should_not_run_provider)
-
-    code = cli.main([
-        "deep",
-        "深度搜索一下最近的比特币行情",
-        "--budget",
-        "deep",
-        "--evidence-dir",
-        "C:/tmp/custom-evidence",
-        "--format",
-        "json",
-    ])
-
-    data = json.loads(capsys.readouterr().out)
-    assert code == cli.EXIT_OK
-    assert captured == {
-        "query": "深度搜索一下最近的比特币行情",
-        "budget": "deep",
-        "evidence_dir": "C:/tmp/custom-evidence",
-    }
-    assert data["mode"] == "deep_research"
-    assert data["preflight"]["executed_by_deep_command"] is False
-
-
-def test_deep_alias_and_markdown_output(monkeypatch, capsys):
-    def fake_plan(query, budget="standard", evidence_dir=""):
-        return {
-            "ok": True,
-            "mode": "deep_research",
-            "question": query,
-            "difficulty": "standard",
-            "evidence_policy": "fetch_before_claim",
-            "usage_boundary": {"search": "fast", "deep": "planner", "execution": "execute steps"},
-            "decomposition": [{"id": "sq1", "question": "Subquestion"}],
-            "steps": [
-                {
-                    "id": "s1",
-                    "subquestion_id": "sq1",
-                    "tool": "fetch",
-                    "purpose": "fetch evidence",
-                    "command": "smart-search fetch \"https://example.com\" --format markdown",
-                }
-            ],
-            "gap_check": {"rule": "fetch missing evidence"},
-        }
-
-    monkeypatch.setattr(cli.service, "build_deep_research_plan", fake_plan)
-
-    code = cli.main(["dr", "React useEffect 最新文档", "--format", "markdown"])
-
-    out = capsys.readouterr().out
-    assert code == cli.EXIT_OK
-    assert "# Deep Research Plan" in out
-    assert "React useEffect 最新文档" in out
-    assert "smart-search fetch" in out
-
-
-def test_research_command_uses_service_and_outputs_json(monkeypatch, capsys, tmp_path):
-    captured = {}
-
-    async def fake_research(query, budget="deep", evidence_dir="", fallback="auto"):
-        captured.update({"query": query, "budget": budget, "evidence_dir": evidence_dir, "fallback": fallback})
-        return {
-            "ok": True,
-            "mode": "deep_research_execution",
-            "query_mode": "research",
-            "question": query,
-            "final_answer": "Evidence answer",
-            "content": "Evidence answer",
-            "citations": [{"url": "https://example.com", "title": "Example", "provider": "jina"}],
-            "evidence_items": [{"url": "https://example.com", "provider": "jina", "content": "Evidence"}],
-            "gap_check": {"status": "closed", "gaps": []},
-            "provider_attempts": [],
-            "fallback_used": False,
-            "degraded": False,
-            "route_policy_version": "research-router-v1",
-            "evidence_dir": evidence_dir,
-        }
-
-    monkeypatch.setattr(cli.service, "research", fake_research)
-
-    code = cli.main([
-        "research",
-        "React docs",
-        "--budget",
-        "standard",
-        "--evidence-dir",
-        str(tmp_path),
-        "--fallback",
-        "off",
-        "--format",
-        "json",
-    ])
-
-    assert code == cli.EXIT_OK
-    data = json.loads(capsys.readouterr().out)
-    assert captured == {"query": "React docs", "budget": "standard", "evidence_dir": str(tmp_path), "fallback": "off"}
-    assert data["query_mode"] == "research"
-    assert data["final_answer"] == "Evidence answer"
-    assert data["command"] == "research"
+def test_deep_spelling_fails_with_workflow_family(capsys):
+    """The legacy ``deep`` command is removed; its replacement is the
+    canonical ``research plan`` workflow command."""
+    code, out, err = _run_main(["deep", "query", "--format", "json"])
+    assert code == 2
+    payload = json.loads(out)
+    assert payload["schema_version"] == "research-workflow-1"
+    assert payload["error"]["details"]["legacy_spelling"] == "deep query"
+    assert payload["error"]["details"]["replacement"] == "research plan"
 
 
 def test_research_run_uses_strict_workflow_not_legacy_service(monkeypatch, capsys):
-    """Canonical ``research run`` emits the strict workflow JSON contract and
-    never calls the legacy ``service.research`` synthesis path."""
     from smart_search import evidence_operations
     from smart_search.evidence_operations import (
         EvidenceOperationOutcome,
@@ -705,9 +471,9 @@ def test_research_run_uses_strict_workflow_not_legacy_service(monkeypatch, capsy
     monkeypatch.setattr(evidence_operations, "docs_discovery", fake_docs)
     monkeypatch.setattr(evidence_operations, "site_discovery", fake_site)
 
-    code = cli.main(["research", "run", "React docs", "--format", "json"])
+    code, out, _ = _run_main(["research", "run", "React docs", "--format", "json"])
     assert code == cli.EXIT_OK
-    data = json.loads(capsys.readouterr().out)
+    data = json.loads(out)
     assert sorted(data) == sorted(WORKFLOW_TOP_LEVEL_FIELDS)
     assert data["command"] == "research"
     assert data["operation"] == "research.run"
@@ -717,9 +483,9 @@ def test_research_run_uses_strict_workflow_not_legacy_service(monkeypatch, capsy
 
     # --synthesize is a forbidden stable-path flag: strict INVALID_ARGUMENT
     # result, still no legacy service call.
-    code = cli.main(["research", "run", "React docs", "--synthesize", "--format", "json"])
+    code, out, _ = _run_main(["research", "run", "React docs", "--synthesize", "--format", "json"])
     assert code == cli.EXIT_PARAMETER_ERROR
-    data = json.loads(capsys.readouterr().out)
+    data = json.loads(out)
     assert data["operation"] == "research.run"
     assert data["status"] == "failed"
     assert data["error"]["code"] == "INVALID_ARGUMENT"
@@ -739,13 +505,12 @@ def test_doctor_status_is_local_only(monkeypatch, capsys):
     monkeypatch.setattr(operations_service, "_test_context7_connection", boom)
     monkeypatch.setattr(operations_service, "_safe_test_main_provider_connection", boom)
 
-    code = cli.main(["doctor", "status", "--format", "json"])
-    payload = json.loads(capsys.readouterr().out)
+    code, out, _ = _run_main(["doctor", "status", "--format", "json"])
     assert code in {cli.EXIT_OK, cli.EXIT_CONFIG_ERROR, cli.EXIT_PARAMETER_ERROR}
-    assert payload["command"] == "doctor-status"
-    assert payload["data"]["local_only"] is True
-    assert payload["data"]["network_behavior"] == "no_provider_requests_or_probes"
-    assert "core_evidence_path" in payload["data"]
+    payload = json.loads(out)
+    assert payload["schema_version"] == "3"
+    assert payload["operation"] == "doctor.status"
+    assert payload["network"]["attempted"] is False
 
 
 def test_doctor_status_uses_the_minimum_profile_capability_snapshot(monkeypatch):
@@ -780,12 +545,12 @@ def test_provider_probe_unknown_is_parameter_error(monkeypatch, capsys):
         raise AssertionError("unknown provider must not probe")
 
     monkeypatch.setattr(operations_service, "run_probe_adapter", boom)
-    code = cli.main(["provider", "probe", "not-a-provider", "--format", "json"])
-    payload = json.loads(capsys.readouterr().out)
+    code, out, _ = _run_main(["provider", "probe", "not-a-provider", "--format", "json"])
     assert code == cli.EXIT_PARAMETER_ERROR
-    assert payload["command"] == "provider-probe"
-    assert payload["data"]["error_type"] == "parameter_error"
-    assert payload["data"]["network_attempted"] is False
+    payload = json.loads(out)
+    assert payload["schema_version"] == "3"
+    assert payload["operation"] == "provider.probe"
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
 
 
 def test_provider_probe_ineligible_provider_is_local_failure(monkeypatch, capsys):
@@ -807,12 +572,12 @@ def test_provider_probe_ineligible_provider_is_local_failure(monkeypatch, capsys
 
     monkeypatch.setattr(provider_diagnostics, "_provider_availability", unavailable)
     monkeypatch.setattr(operations_service, "run_probe_adapter", boom)
-    code = cli.main(["provider", "probe", "exa", "--format", "json"])
-    payload = json.loads(capsys.readouterr().out)
+    code, out, _ = _run_main(["provider", "probe", "exa", "--format", "json"])
     assert code == cli.EXIT_CONFIG_ERROR
-    assert payload["data"]["status"] == "config_error"
-    assert payload["data"]["network_attempted"] is False
-    assert payload["data"]["response_time_ms"] == 0
+    payload = json.loads(out)
+    assert payload["schema_version"] == "3"
+    assert payload["error"]["code"] == "CONFIGURATION_ERROR"
+    assert payload["network"]["attempted"] is False
 
 
 def test_provider_probe_registry_covers_each_real_provider():
@@ -824,166 +589,43 @@ def test_provider_probe_registry_covers_each_real_provider():
     assert real_providers == set(known_probe_providers())
 
 
-def test_research_markdown_and_content_output(monkeypatch, capsys):
-    async def fake_research(query, budget="deep", evidence_dir="", fallback="auto"):
-        return {
-            "ok": True,
-            "question": query,
-            "final_answer": "Evidence answer",
-            "content": "Evidence answer",
-            "citations": [{"url": "https://example.com", "title": "Example", "provider": "jina"}],
-            "gap_check": {"gaps": []},
-            "fallback_used": True,
-            "degraded": False,
-            "route_policy_version": "research-router-v1",
-            "evidence_dir": "C:/tmp/evidence",
-        }
-
-    monkeypatch.setattr(cli.service, "research", fake_research)
-
-    assert cli.main(["rs", "React docs", "--format", "markdown"]) == cli.EXIT_OK
-    markdown = capsys.readouterr().out
-    assert "# Research Report" in markdown
-    assert "Evidence answer" in markdown
-    assert "https://example.com" in markdown
-
-    assert cli.main(["research", "React docs", "--format", "content"]) == cli.EXIT_OK
-    assert capsys.readouterr().out == "Evidence answer\n"
-
-
-def test_doctor_alias_uses_canonical_command(monkeypatch, capsys):
-    async def fake_doctor():
-        return {"ok": True, "config_status": "ok"}
-
-    monkeypatch.setattr(cli.service, "doctor", fake_doctor)
-
-    code = cli.main(["d"])
-
-    assert code == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["config_status"] == "ok"
-
-
-def test_search_timeout_respects_requested_format_and_exit_4(monkeypatch, capsys):
-    monkeypatch.setenv("OPENAI_COMPATIBLE_MODEL", "relay-timeout-model")
-    monkeypatch.setenv("OPENAI_COMPATIBLE_STREAM", "true")
-
-    async def slow_search(query, **kwargs):
-        await asyncio.sleep(1)
-        return {
-            "ok": True,
-            "query": query,
-            "content": "late answer",
-            "sources": [{"url": "https://example.com"}],
-            "sources_count": 1,
-        }
-
-    monkeypatch.setattr(cli.service, "search", slow_search)
-
-    code = cli.main(["search", "slow query", "--timeout", "0.01", "--format", "markdown"])
-
-    assert code == cli.EXIT_NETWORK_ERROR
-    out = capsys.readouterr()
-    assert out.err == ""
-    assert out.out.startswith("\n## Errors") or "## Errors" in out.out
-    assert "network_error" in out.out
-    assert "0.01" in out.out
-    assert "seconds" in out.out
-    assert "relay-timeout-model" in out.out
-    assert "Stream: YES" in out.out
-    assert "smart-search diagnose openai-compatible --format markdown" in out.out
-
-    code = cli.main(["search", "slow query", "--timeout", "0.01", "--format", "content"])
-    assert code == cli.EXIT_NETWORK_ERROR
-    content_out = capsys.readouterr().out
-    assert "network_error" in content_out
-    assert "Search timed out after 0.01 seconds" in content_out
-
-    code = cli.main(["search", "slow query", "--timeout", "0.01", "--format", "json"])
-    assert code == cli.EXIT_NETWORK_ERROR
-    data = json.loads(capsys.readouterr().out)
-    assert data["sources_count"] == 0
-    assert data["primary_sources"] == []
-    assert data["primary_sources_count"] == 0
-    assert data["extra_sources"] == []
-    assert data["extra_sources_count"] == 0
-    assert data["source_warning"] == ""
-    assert data["diagnose_command"] == "smart-search diagnose openai-compatible --format markdown"
-    assert data["model"] == "relay-timeout-model"
-    assert data["stream"] is True
-    assert data["recommendation"]
-
-
-def test_markdown_search_includes_sources(monkeypatch, capsys):
-    async def fake_search(query, platform="", model="", extra_sources=0, validation="", fallback="", providers="auto"):
-        return {
-            "ok": True,
-            "content": "Answer",
-            "sources": [{"url": "https://example.com", "title": "Example"}],
-            "sources_count": 1,
-        }
-
-    monkeypatch.setattr(cli.service, "search", fake_search)
-
-    code = cli.main(["search", "query", "--format", "markdown"])
-
-    assert code == cli.EXIT_OK
-    out = capsys.readouterr().out
-    assert "Answer" in out
-    assert "[Example](https://example.com)" in out
-
-
-def test_markdown_search_labels_primary_and_extra_sources(monkeypatch, capsys):
-    async def fake_search(query, platform="", model="", extra_sources=0, validation="", fallback="", providers="auto"):
-        return {
-            "ok": True,
-            "content": "Answer",
-            "primary_sources": [{"url": "https://primary.example.com", "title": "Primary"}],
-            "primary_sources_count": 1,
-            "extra_sources": [{"url": "https://extra.example.com", "title": "Extra"}],
-            "extra_sources_count": 1,
-            "sources": [
-                {"url": "https://primary.example.com", "title": "Primary"},
-                {"url": "https://extra.example.com", "title": "Extra"},
-            ],
-            "sources_count": 2,
-            "source_warning": "extra_sources are retrieved in parallel",
-        }
-
-    monkeypatch.setattr(cli.service, "search", fake_search)
-
-    code = cli.main(["search", "query", "--format", "markdown"])
-
-    assert code == cli.EXIT_OK
-    out = capsys.readouterr().out
-    assert "## Primary Sources" in out
-    assert "[Primary](https://primary.example.com)" in out
-    assert "## Extra Sources" in out
-    assert "[Extra](https://extra.example.com)" in out
-    assert "extra_sources are retrieved in parallel" in out
-
-
 def test_config_error_exit_code(monkeypatch, capsys):
-    async def fake_doctor():
-        return {"ok": False, "error_type": "config_error", "XAI_API_KEY": "未配置"}
-
-    monkeypatch.setattr(cli.service, "doctor", fake_doctor)
-
-    code = cli.main(["doctor"])
-
-    assert code == cli.EXIT_CONFIG_ERROR
-    assert json.loads(capsys.readouterr().out)["XAI_API_KEY"] == "未配置"
+    code, out, _ = _run_main(["config", "set", "SMART_SEARCH_API_KEY", "sk-test-secret"])
+    assert code == cli.EXIT_PARAMETER_ERROR
+    payload = json.loads(out)
+    assert payload["schema_version"] == "3"
+    assert payload["operation"] == "config.set"
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
 
 
 def test_network_error_exit_code(monkeypatch, capsys):
-    async def fake_fetch(url):
-        return {"ok": False, "error_type": "network_error", "error": "upstream timeout", "url": url}
+    """v2 content_fetch failures keep the classified exit and one JSON doc."""
+    from smart_search import evidence_operations
+    from smart_search.evidence_operations import (
+        EvidenceOperationOutcome,
+        EvidenceOperationStatus,
+        EvidenceRouting,
+    )
+    from smart_search.execution_primitives import ExecutionError, ExecutionMetadata
 
-    monkeypatch.setattr(cli.service, "fetch", fake_fetch)
+    async def fake_fetch(request):
+        return EvidenceOperationOutcome(
+            operation="content_fetch",
+            status=EvidenceOperationStatus.FAILED,
+            evidence_items=(),
+            attempts=(),
+            error=ExecutionError("network_error", "upstream timeout", False),
+            routing=EvidenceRouting(("content_fetch",), (), "v2", ("test",)),
+            metadata=ExecutionMetadata("fetch-test", 1),
+        )
 
-    code = cli.main(["fetch", "https://example.com"])
-
+    monkeypatch.setattr(evidence_operations, "content_fetch", fake_fetch)
+    code, out, _ = _run_main(["fetch", "https://example.com"])
     assert code == cli.EXIT_NETWORK_ERROR
-    assert json.loads(capsys.readouterr().out)["error"] == "upstream timeout"
+    payload = json.loads(out)
+    assert payload["schema_version"] == "2"
+    assert payload["ok"] is False
+    assert payload["error"]["message"] == "upstream timeout"
 
 
 def test_stdout_falls_back_for_gbk_unencodable_unicode(monkeypatch):
@@ -1012,888 +654,160 @@ def test_gbk_stdout_keeps_json_parseable_with_chinese_and_unencodable_unicode(mo
     assert json.loads(out)["content"] == "中文A\u2060B📅"
 
 
-def test_real_doctor_ignores_legacy_primary_env_and_returns_config_exit(monkeypatch, capsys):
-    secret = "placeholder-test-secret"
-    monkeypatch.setenv("SMART_SEARCH_API_URL", "https://api.example.com/v1")
-    monkeypatch.setenv("SMART_SEARCH_API_KEY", secret)
-    monkeypatch.delenv("XAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_COMPATIBLE_API_URL", raising=False)
-    monkeypatch.delenv("OPENAI_COMPATIBLE_API_KEY", raising=False)
-    monkeypatch.delenv("EXA_API_KEY", raising=False)
-    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
-
-    code = cli.main(["doctor"])
-
-    out = capsys.readouterr().out
-    data = json.loads(out)
-    assert code == cli.EXIT_CONFIG_ERROR
-    assert data["ok"] is False
-    assert data["error_type"] == "config_error"
-    assert "SMART_SEARCH_API_URL" not in data
-    assert "SMART_SEARCH_API_KEY" not in data
-    assert data["capability_status"]["main_search"]["configured"] == []
-    assert secret not in out
-
-
-def test_model_aliases_use_current_command(monkeypatch, capsys):
-    def fake_current_model():
-        return {"ok": True, "current_model": "grok-4-fast"}
-
-    monkeypatch.setattr(cli.service, "current_model", fake_current_model)
-
-    assert cli.main(["mdl", "cur"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["current_model"] == "grok-4-fast"
-
-
 def test_config_set_masks_value(monkeypatch, capsys):
-    def fake_config_set(key, value):
-        return {"ok": True, "key": key, "value": "xai-********cret", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-
-    code = cli.main(["config", "set", "XAI_API_KEY", "xai-test-secret"])
-
-    out = capsys.readouterr().out
+    code, out, _ = _run_main(["config", "set", "XAI_API_KEY", "xai-test-secret"])
     assert code == cli.EXIT_OK
-    assert "xai-test-secret" not in out
-    assert json.loads(out)["value"] == "xai-********cret"
+    rendered = out
+    assert "xai-test-secret" not in rendered
+    payload = json.loads(rendered)
+    assert payload["schema_version"] == "3"
+    assert payload["operation"] == "config.set"
+    assert payload["result"]["value"] != "xai-test-secret"
 
 
 def test_config_list_does_not_request_secrets(monkeypatch, capsys):
-    captured = {}
-
-    def fake_config_list(show_secrets=False):
-        captured["show_secrets"] = show_secrets
-        return {"ok": True, "values": {"XAI_API_KEY": "xai-********cret"}}
-
-    monkeypatch.setattr(cli.service, "config_list", fake_config_list)
-
-    code = cli.main(["config", "list"])
-
+    code, out, _ = _run_main(["config", "list"])
     assert code == cli.EXIT_OK
-    assert captured["show_secrets"] is False
-    assert json.loads(capsys.readouterr().out)["values"]["XAI_API_KEY"].endswith("cret")
+    payload = json.loads(out)
+    assert payload["schema_version"] == "3"
+    assert payload["operation"] == "config.list"
+    assert "values" in payload["result"]
 
-
-def test_config_aliases_use_canonical_commands(monkeypatch, capsys):
-    captured = {}
-
-    def fake_config_list(show_secrets=False):
-        captured["show_secrets"] = show_secrets
-        return {"ok": True, "values": {"XAI_MODEL": "grok"}}
-
-    def fake_config_set(key, value):
-        captured["set"] = (key, value)
-        return {"ok": True, "key": key, "value": value}
-
-    def fake_config_unset(key):
-        captured["unset"] = key
-        return {"ok": True, "key": key}
-
-    monkeypatch.setattr(cli.service, "config_list", fake_config_list)
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_unset", fake_config_unset)
-
-    assert cli.main(["cfg", "ls"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["values"]["XAI_MODEL"] == "grok"
-    assert captured["show_secrets"] is False
-
-    assert cli.main(["cfg", "s", "XAI_MODEL", "grok-4-fast"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["value"] == "grok-4-fast"
-    assert captured["set"] == ("XAI_MODEL", "grok-4-fast")
-
-    assert cli.main(["cfg", "rm", "XAI_MODEL"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["key"] == "XAI_MODEL"
-    assert captured["unset"] == "XAI_MODEL"
-
-
-def test_config_set_legacy_main_search_key_returns_parameter_error(monkeypatch, capsys):
-    def fake_config_set(key, value):
-        return {
-            "ok": False,
-            "error_type": "parameter_error",
-            "error": f"Unsupported config key: {key}",
-        }
-
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-
-    code = cli.main(["config", "set", "SMART_SEARCH_API_KEY", "sk-test-secret"])
-    data = json.loads(capsys.readouterr().out)
-
-    assert code == cli.EXIT_PARAMETER_ERROR
-    assert data["error_type"] == "parameter_error"
-    assert "Unsupported config key: SMART_SEARCH_API_KEY" in data["error"]
-
-
-def test_smoke_markdown_and_content_are_human_readable(monkeypatch, capsys):
-    async def fake_smoke(mode="mock"):
-        return {
-            "ok": True,
-            "mode": mode,
-            "failed_cases": [],
-            "degraded_cases": ["zhipu search"],
-            "cases": [
-                {"name": "doctor minimum profile", "ok": True},
-                {"name": "zhipu search", "ok": False, "severity": "degraded", "error": "HTTP 429"},
-            ],
-        }
-
-    monkeypatch.setattr(cli.service, "smoke", fake_smoke)
-
-    markdown_code = cli.main(["smoke", "--mock", "--format", "markdown"])
-    markdown_out = capsys.readouterr().out
-    content_code = cli.main(["smoke", "--mock", "--format", "content"])
-    content_out = capsys.readouterr().out
-
-    assert markdown_code == cli.EXIT_OK
-    assert "# Smart Search Smoke" in markdown_out
-    assert "zhipu search" in markdown_out
-    assert not markdown_out.lstrip().startswith("{")
-    assert content_code == cli.EXIT_OK
-    assert "Smoke mock OK" in content_out
-    assert "2 cases" in content_out
-
-
-def test_config_markdown_and_content_are_masked_and_non_json(monkeypatch, capsys):
-    def fake_config_path():
-        return {
-            "ok": True,
-            "config_file": "C:/tmp/config.json",
-            "config_dir": "C:/tmp",
-            "config_dir_source": "environment",
-            "default_config_file": "C:/Users/example/AppData/Local/smart-search/config.json",
-            "legacy_windows_config_file": "C:/Users/example/.config/smart-search/config.json",
-            "legacy_windows_config_exists": False,
-            "config_dir_override_value": "C:/tmp",
-            "config_dir_override_matches_default": False,
-            "exists": True,
-        }
-
-    def fake_config_list(show_secrets=False):
-        return {"ok": True, "config_file": "C:/tmp/config.json", "values": {"XAI_API_KEY": "xai-********cret", "XAI_MODEL": "grok"}}
-
-    def fake_config_set(key, value):
-        return {"ok": True, "config_file": "C:/tmp/config.json", "key": key, "value": "xai-********cret"}
-
-    def fake_config_unset(key):
-        return {"ok": True, "config_file": "C:/tmp/config.json", "key": key}
-
-    monkeypatch.setattr(cli.service, "config_path", fake_config_path)
-    monkeypatch.setattr(cli.service, "config_list", fake_config_list)
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_unset", fake_config_unset)
-
-    assert cli.main(["config", "path", "--format", "markdown"]) == cli.EXIT_OK
-    path_out = capsys.readouterr().out
-    assert "# Smart Search Config" in path_out
-    assert "C:/tmp/config.json" in path_out
-    assert "Config dir source: `environment`" in path_out
-    assert "SMART_SEARCH_CONFIG_DIR: `C:/tmp`" in path_out
-
-    assert cli.main(["config", "list", "--format", "markdown"]) == cli.EXIT_OK
-    list_out = capsys.readouterr().out
-    assert "xai-test-secret" not in list_out
-    assert "xai-********cret" in list_out
-    assert not list_out.lstrip().startswith("{")
-
-    assert cli.main(["config", "set", "XAI_API_KEY", "xai-test-secret", "--format", "markdown"]) == cli.EXIT_OK
-    set_out = capsys.readouterr().out
-    assert "xai-test-secret" not in set_out
-    assert "XAI_API_KEY" in set_out
-
-    assert cli.main(["config", "unset", "XAI_API_KEY", "--format", "content"]) == cli.EXIT_OK
-    unset_out = capsys.readouterr().out
-    assert "Config OK" in unset_out
-    assert "key=XAI_API_KEY" in unset_out
-
-
-def test_model_markdown_is_human_readable(monkeypatch, capsys):
-    def fake_current_model():
-        return {
-            "ok": True,
-            "xai_model": "grok-4-fast",
-            "openai_compatible_model": "relay-model",
-            "config_file": "C:/tmp/config.json",
-        }
-
-    monkeypatch.setattr(cli.service, "current_model", fake_current_model)
-
-    assert cli.main(["model", "current", "--format", "markdown"]) == cli.EXIT_OK
-    markdown_out = capsys.readouterr().out
-    assert "# Smart Search Model" in markdown_out
-    assert "grok-4-fast" in markdown_out
-    assert "relay-model" in markdown_out
 
 def test_map_markdown_outputs_result_lists(monkeypatch, capsys):
-    async def fake_map_site(*args, **kwargs):
-        return {"ok": True, "url": "https://docs.example.com", "base_url": "https://docs.example.com", "results": ["https://docs.example.com/api"]}
+    from smart_search import evidence_operations
+    from smart_search.evidence_operations import (
+        EvidenceOperationOutcome,
+        EvidenceOperationStatus,
+        EvidenceRouting,
+    )
+    from smart_search.execution_primitives import ExecutionCandidate, ExecutionMetadata
 
-    monkeypatch.setattr(cli.service, "map_site", fake_map_site)
+    async def fake_site(request):
+        return EvidenceOperationOutcome(
+            operation="site_discovery",
+            status=EvidenceOperationStatus.COMPLETE,
+            candidates=(
+                ExecutionCandidate(
+                    id="c1",
+                    resource="https://docs.example.com/api",
+                    provider="jina",
+                    title="API reference",
+                    snippet="reference",
+                ),
+            ),
+            attempts=(),
+            routing=EvidenceRouting(("site_discovery",), ("site_discovery",), "v2", ("test",)),
+            metadata=ExecutionMetadata("map-test", 1),
+        )
 
-    cases = [
-        (["map", "https://docs.example.com", "--format", "markdown"], "https://docs.example.com/api", "Site Map"),
-    ]
-    for argv, first, second in cases:
-        assert cli.main(argv) == cli.EXIT_OK
-        out = capsys.readouterr().out
-        assert not out.lstrip().startswith("{")
-        assert first in out
-        assert second in out
+    monkeypatch.setattr(evidence_operations, "site_discovery", fake_site)
+    code, out, _ = _run_main(["map", "https://docs.example.com", "--format", "markdown"])
+    assert code == cli.EXIT_OK
+    assert not out.lstrip().startswith("{")
+    assert "https://docs.example.com/api" in out
+    assert "Site Map" in out
 
 
 def test_map_content_outputs_plain_result_list(monkeypatch, capsys):
-    async def fake_map_site(*args, **kwargs):
-        return {"ok": True, "results": [{"title": "Example", "url": "https://example.com", "text": "body"}]}
+    from smart_search import evidence_operations
+    from smart_search.evidence_operations import (
+        EvidenceOperationOutcome,
+        EvidenceOperationStatus,
+        EvidenceRouting,
+    )
+    from smart_search.execution_primitives import ExecutionCandidate, ExecutionMetadata
 
-    monkeypatch.setattr(cli.service, "map_site", fake_map_site)
+    async def fake_site(request):
+        return EvidenceOperationOutcome(
+            operation="site_discovery",
+            status=EvidenceOperationStatus.COMPLETE,
+            candidates=(
+                ExecutionCandidate(
+                    id="c1",
+                    resource="https://example.com",
+                    provider="jina",
+                    title="Example",
+                    snippet="body",
+                ),
+            ),
+            attempts=(),
+            routing=EvidenceRouting(("site_discovery",), ("site_discovery",), "v2", ("test",)),
+            metadata=ExecutionMetadata("map-test", 1),
+        )
 
-    code = cli.main(["map", "https://example.com", "--format", "content"])
-
-    out = capsys.readouterr().out
+    monkeypatch.setattr(evidence_operations, "site_discovery", fake_site)
+    code, out, _ = _run_main(["map", "https://example.com", "--format", "content"])
     assert code == cli.EXIT_OK
-    assert out.startswith("1. Example - https://example.com")
+    assert out.strip() == "https://example.com"
     assert not out.lstrip().startswith("{")
 
 
 def test_map_markdown_empty_results_are_clear(monkeypatch, capsys):
-    async def fake_map_site(*args, **kwargs):
-        return {"ok": True, "results": []}
+    from smart_search import evidence_operations
+    from smart_search.evidence_operations import (
+        EvidenceOperationOutcome,
+        EvidenceOperationStatus,
+        EvidenceRouting,
+    )
+    from smart_search.execution_primitives import ExecutionMetadata
 
-    monkeypatch.setattr(cli.service, "map_site", fake_map_site)
+    async def fake_site(request):
+        return EvidenceOperationOutcome(
+            operation="site_discovery",
+            status=EvidenceOperationStatus.COMPLETE,
+            candidates=(),
+            attempts=(),
+            routing=EvidenceRouting(("site_discovery",), (), "v2", ("test",)),
+            metadata=ExecutionMetadata("map-test", 1),
+        )
 
-    code = cli.main(["map", "https://example.com", "--format", "markdown"])
-
-    out = capsys.readouterr().out
+    monkeypatch.setattr(evidence_operations, "site_discovery", fake_site)
+    code, out, _ = _run_main(["map", "https://example.com", "--format", "markdown"])
     assert code == cli.EXIT_OK
-    assert "No results." in out
-
-
-def test_all_formatted_commands_have_non_json_markdown(monkeypatch):
-    async def fake_search(*args, **kwargs):
-        return {"ok": True, "content": "Answer", "sources": []}
-
-    async def fake_fetch(*args, **kwargs):
-        return {"ok": True, "content": "Page"}
-
-    async def fake_map(*args, **kwargs):
-        return {"ok": True, "results": ["https://example.com/api"]}
-
-    async def fake_doctor():
-        return {"ok": True, "config_status": "ok", "minimum_profile_ok": True}
-
-    async def fake_smoke(mode="mock"):
-        return {"ok": True, "mode": mode, "failed_cases": [], "cases": [{"name": "case", "ok": True}]}
-
-    async def fake_research(query, budget="deep", evidence_dir="", fallback="auto"):
-        return {"ok": True, "question": query, "content": "Research", "final_answer": "Research", "citations": [], "gap_check": {"gaps": []}}
-
-    async def fake_route_calibrate(models=""):
-        return {"ok": True, "primary_metric": "semantic_macro_f1", "dataset_size": 100, "model_results": [], "recommended_model": ""}
-
-    def fake_plan(*args, **kwargs):
-        return {"ok": True, "mode": "deep_research", "question": "q", "difficulty": "standard", "evidence_policy": "fetch_before_claim"}
-
-    def fake_config_path():
-        return {"ok": True, "config_file": "C:/tmp/config.json"}
-
-    def fake_config_list(show_secrets=False):
-        return {"ok": True, "values": {"XAI_MODEL": "grok"}}
-
-    def fake_config_set(key, value):
-        return {"ok": True, "key": key, "value": "***"}
-
-    def fake_config_unset(key):
-        return {"ok": True, "key": key}
-
-    def fake_current_model():
-        return {"ok": True, "xai_model": "grok"}
-
-    monkeypatch.setattr(cli.service, "search", fake_search)
-    monkeypatch.setattr(cli.service, "fetch", fake_fetch)
-    monkeypatch.setattr(cli.service, "map_site", fake_map)
-    monkeypatch.setattr(cli.service, "doctor", fake_doctor)
-    monkeypatch.setattr(cli.service, "smoke", fake_smoke)
-    monkeypatch.setattr(cli.service, "research", fake_research)
-    monkeypatch.setattr(cli.service, "route_calibrate", fake_route_calibrate)
-    monkeypatch.setattr(cli.service, "build_deep_research_plan", fake_plan)
-    monkeypatch.setattr(cli.service, "config_path", fake_config_path)
-    monkeypatch.setattr(cli.service, "config_list", fake_config_list)
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_unset", fake_config_unset)
-    monkeypatch.setattr(cli.service, "current_model", fake_current_model)
-
-    command_cases = [
-        ("search", ["search", "query", "--format", "markdown"]),
-        ("fetch", ["fetch", "https://example.com", "--format", "markdown"]),
-        ("map", ["map", "https://example.com", "--format", "markdown"]),
-        ("deep", ["deep", "query", "--format", "markdown"]),
-        ("route-calibrate", ["route-calibrate", "--format", "markdown"]),
-        ("research", ["research", "query", "--format", "markdown"]),
-        ("smoke", ["smoke", "--format", "markdown"]),
-        ("doctor", ["doctor", "--format", "markdown"]),
-        ("diagnose", ["diagnose", "openai-compatible", "--format", "markdown"]),
-        ("skills-status", ["skills", "status", "--targets", "codex", "--format", "markdown"]),
-        ("config-path", ["config", "path", "--format", "markdown"]),
-        ("config-list", ["config", "list", "--format", "markdown"]),
-        ("config-set", ["config", "set", "XAI_MODEL", "grok", "--format", "markdown"]),
-        ("config-unset", ["config", "unset", "XAI_MODEL", "--format", "markdown"]),
-        ("model-current", ["model", "current", "--format", "markdown"]),
-    ]
-
-    for name, argv in command_cases:
-        command = cli.build_parser().parse_args(argv).command
-        data = {
-            "search": {"ok": True, "content": "Answer", "sources": []},
-            "fetch": {"ok": True, "content": "Page"},
-            "map": {"ok": True, "results": ["https://example.com/api"]},
-            "deep": {"ok": True, "mode": "deep_research", "question": "q", "difficulty": "standard", "evidence_policy": "fetch_before_claim"},
-            "route-calibrate": {"ok": True, "primary_metric": "semantic_macro_f1", "dataset_size": 100, "model_results": [], "recommended_model": ""},
-            "research": {"ok": True, "question": "q", "content": "Research", "final_answer": "Research", "citations": [], "gap_check": {"gaps": []}},
-            "smoke": {"ok": True, "mode": "mock", "failed_cases": [], "cases": [{"name": "case", "ok": True}]},
-            "doctor": {"ok": True, "config_status": "ok", "minimum_profile_ok": True},
-            "diagnose": {"ok": True, "provider": "openai-compatible", "summary": "ok", "recommendation": "none"},
-            "skills": {"ok": True, "targets": [{"target": "codex", "status": "up_to_date"}], "status_counts": {"up_to_date": 1}},
-            "config": {"ok": True, "config_file": "C:/tmp/config.json", "values": {"XAI_MODEL": "grok"}},
-            "model": {"ok": True, "xai_model": "grok"},
-        }[command]
-        rendered = cli._render(command, data, "markdown")
-        assert rendered.strip(), name
-        assert not rendered.lstrip().startswith("{"), name
-
-
-def test_non_content_commands_have_non_empty_content_fallback():
-    cases = {
-        "doctor": {"ok": True, "config_status": "ok", "minimum_profile_ok": True},
-        "diagnose": {"ok": True, "provider": "openai-compatible", "summary": "ok", "recommendation": "none"},
-        "smoke": {"ok": True, "mode": "mock", "cases": [], "failed_cases": []},
-        "config": {"ok": True, "config_file": "C:/tmp/config.json"},
-        "model": {"ok": True, "xai_model": "grok"},
-        "skills": {"ok": True, "targets": [{"target": "codex", "status": "up_to_date"}], "status_counts": {"up_to_date": 1}},
-        "route-calibrate": {"ok": True, "primary_metric": "semantic_macro_f1", "dataset_size": 100, "model_results": [], "recommended_model": ""},
-    }
-    for command, data in cases.items():
-        rendered = cli._render(command, data, "content")
-        assert rendered.strip(), command
-        assert not rendered.lstrip().startswith("{"), command
+    assert "Results: 0" in out
 
 
 def test_skills_status_reports_missing_and_update_writes_target(tmp_path, capsys):
-    status_code = cli.main(["skills", "status", "--targets", "codex", "--skills-root", str(tmp_path), "--format", "json"])
-    status = json.loads(capsys.readouterr().out)
-
+    status_code, status_out, _ = _run_main(["dev", "skills", "status", "--targets", "codex", "--skills-root", str(tmp_path), "--format", "json"])
+    status = json.loads(status_out)
     assert status_code == cli.EXIT_OK
-    assert status["selected"] == ["codex"]
-    assert status["targets"][0]["status"] == "missing"
-    assert status["targets"][0]["hash_match"] is False
+    assert status["schema_version"] == "3"
+    assert status["operation"] == "dev.skills.status"
+    assert status["result"]["targets"][0]["status"] == "missing"
 
-    update_code = cli.main(["skills", "update", "--targets", "codex", "--skills-root", str(tmp_path), "--format", "json"])
-    update = json.loads(capsys.readouterr().out)
-
+    update_code, update_out, _ = _run_main(["dev", "skills", "update", "--targets", "codex", "--skills-root", str(tmp_path), "--format", "json"])
+    update = json.loads(update_out)
     assert update_code == cli.EXIT_OK
-    assert update["installed_count"] == 1
+    assert update["operation"] == "dev.skills.update"
+    assert update["result"]["installed_count"] == 1
     assert (tmp_path / ".codex" / "skills" / "smart-search-cli" / "SKILL.md").is_file()
 
-    status_code = cli.main(["skills", "status", "--targets", "codex", "--skills-root", str(tmp_path), "--format", "json"])
-    status = json.loads(capsys.readouterr().out)
-
+    status_code, status_out, _ = _run_main(["dev", "skills", "status", "--targets", "codex", "--skills-root", str(tmp_path), "--format", "json"])
+    status = json.loads(status_out)
     assert status_code == cli.EXIT_OK
-    assert status["targets"][0]["status"] == "up_to_date"
-    assert status["targets"][0]["hash_match"] is True
-
-
-def test_skills_update_all_selects_every_target(tmp_path, capsys):
-    code = cli.main(["skills", "update", "--all", "--skills-root", str(tmp_path), "--format", "json"])
-    data = json.loads(capsys.readouterr().out)
-
-    assert code == cli.EXIT_OK
-    assert data["installed_count"] == len(skill_installer.SKILL_TARGETS)
-    assert set(data["selected"]) == {target.target_id for target in skill_installer.SKILL_TARGETS}
+    assert status["result"]["targets"][0]["status"] == "up_to_date"
 
 
 def test_skills_unknown_target_returns_parameter_error(tmp_path, capsys):
-    code = cli.main(["skills", "status", "--targets", "unknown", "--skills-root", str(tmp_path), "--format", "json"])
-    data = json.loads(capsys.readouterr().out)
-
+    code, out, _ = _run_main(["dev", "skills", "status", "--targets", "unknown", "--skills-root", str(tmp_path), "--format", "json"])
+    payload = json.loads(out)
     assert code == cli.EXIT_PARAMETER_ERROR
-    assert data["error_type"] == "parameter_error"
-    assert "Unknown skill target" in data["error"]
+    assert payload["schema_version"] == "3"
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
     assert not (tmp_path / ".codex" / "skills" / "smart-search-cli").exists()
 
 
 def test_setup_non_interactive_saves_values(monkeypatch, capsys):
-    saved = {}
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-
-    code = cli.main([
-        "setup",
-        "--non-interactive",
-        "--xai-api-key",
-        "xai-test-secret",
-        "--xai-model",
-        "xai-model",
-        "--xai-tools-explicit",
-        "web_search",
-        "--openai-compatible-api-url",
-        "https://relay.example.com/v1",
-        "--openai-compatible-api-key",
-        "relay-test-secret",
-        "--openai-compatible-model",
-        "relay-model",
-        "--openai-compatible-fallback-models",
-        "fallback-a,fallback-b",
-        "--openai-compatible-stream",
-        "true",
-        "--validation-level",
-        "balanced",
-        "--fallback-mode",
-        "auto",
-        "--minimum-profile",
-        "standard",
-        "--intent-router",
-        "hybrid",
-        "--intent-embedding-api-url",
-        "api.example.com/v1/embeddings",
-        "--intent-embedding-api-key",
-        "embed-test-secret",
-        "--intent-embedding-model",
-        "embed-model",
-        "--intent-classifier-api-url",
-        "classifier.example.com/v1/chat/completions",
-        "--intent-classifier-api-key",
-        "classifier-test-secret",
-        "--intent-classifier-model",
-        "intent-mini",
-        "--intent-router-timeout",
-        "4.5",
-        "--zhipu-key",
-        "zhipu-secret",
-        "--zhipu-api-url",
-        "zhipu.example.com/api",
-        "--zhipu-search-engine",
-        "search_pro",
-        "--zhipu-mcp-key",
-        "zmcp-secret",
-        "--zhipu-mcp-search-api-url",
-        "https://zmcp.example.com/search",
-        "--zhipu-mcp-reader-api-url",
-        "https://zmcp.example.com/reader",
-        "--zhipu-mcp-zread-api-url",
-        "https://zmcp.example.com/zread",
-        "--zhipu-mcp-timeout",
-        "8",
-        "--jina-key",
-        "jina-secret",
-        "--jina-reader-api-url",
-        "r.jina.ai",
-        "--jina-respond-with",
-        "readerlm-v2",
-        "--jina-timeout",
-        "10",
-        "--context7-key",
-        "ctx-secret",
-        "--tavily-api-url",
-        "pool.example.com",
-        "--tavily-key",
-        "th-test-secret",
-        "--firecrawl-api-url",
-        "firecrawl.example.com/v2",
-        "--firecrawl-key",
-        "firecrawl-secret",
-        "--anysearch-api-url",
-        "anysearch.example.com/mcp",
-        "--anysearch-key",
-        "as-test-secret",
-        "--anysearch-timeout",
-        "9",
-    ])
-
-    out = capsys.readouterr().out
-    assert code == cli.EXIT_OK
-    assert saved["XAI_API_KEY"] == "xai-test-secret"
-    assert saved["XAI_MODEL"] == "xai-model"
-    assert saved["XAI_TOOLS"] == "web_search"
-    assert saved["OPENAI_COMPATIBLE_API_URL"] == "https://relay.example.com/v1"
-    assert saved["OPENAI_COMPATIBLE_API_KEY"] == "relay-test-secret"
-    assert saved["OPENAI_COMPATIBLE_MODEL"] == "relay-model"
-    assert saved["OPENAI_COMPATIBLE_FALLBACK_MODELS"] == "fallback-a,fallback-b"
-    assert saved["OPENAI_COMPATIBLE_STREAM"] == "true"
-    assert saved["SMART_SEARCH_VALIDATION_LEVEL"] == "balanced"
-    assert saved["SMART_SEARCH_FALLBACK_MODE"] == "auto"
-    assert saved["SMART_SEARCH_MINIMUM_PROFILE"] == "standard"
-    assert saved["SMART_SEARCH_INTENT_ROUTER"] == "hybrid"
-    assert saved["INTENT_EMBEDDING_API_URL"] == "https://api.example.com/v1/embeddings"
-    assert saved["INTENT_EMBEDDING_API_KEY"] == "embed-test-secret"
-    assert saved["INTENT_EMBEDDING_MODEL"] == "embed-model"
-    assert saved["INTENT_CLASSIFIER_API_URL"] == "https://classifier.example.com/v1/chat/completions"
-    assert saved["INTENT_CLASSIFIER_API_KEY"] == "classifier-test-secret"
-    assert saved["INTENT_CLASSIFIER_MODEL"] == "intent-mini"
-    assert saved["INTENT_ROUTER_TIMEOUT_SECONDS"] == "4.5"
-    assert saved["ZHIPU_API_KEY"] == "zhipu-secret"
-    assert saved["ZHIPU_API_URL"] == "https://zhipu.example.com/api"
-    assert saved["ZHIPU_SEARCH_ENGINE"] == "search_pro"
-    assert saved["ZHIPU_MCP_API_KEY"] == "zmcp-secret"
-    assert saved["ZHIPU_MCP_SEARCH_API_URL"] == "https://zmcp.example.com/search"
-    assert saved["ZHIPU_MCP_READER_API_URL"] == "https://zmcp.example.com/reader"
-    assert saved["ZHIPU_MCP_ZREAD_API_URL"] == "https://zmcp.example.com/zread"
-    assert saved["ZHIPU_MCP_TIMEOUT_SECONDS"] == "8"
-    assert saved["JINA_API_KEY"] == "jina-secret"
-    assert saved["JINA_READER_API_URL"] == "https://r.jina.ai"
-    assert saved["JINA_RESPOND_WITH"] == "readerlm-v2"
-    assert saved["JINA_TIMEOUT_SECONDS"] == "10"
-    assert saved["CONTEXT7_API_KEY"] == "ctx-secret"
-    assert saved["TAVILY_API_URL"] == "https://pool.example.com/api/tavily"
-    assert saved["TAVILY_API_KEY"] == "th-test-secret"
-    assert saved["FIRECRAWL_API_URL"] == "https://firecrawl.example.com/v2"
-    assert saved["FIRECRAWL_API_KEY"] == "firecrawl-secret"
-    assert saved["ANYSEARCH_API_URL"] == "https://anysearch.example.com/mcp"
-    assert saved["ANYSEARCH_API_KEY"] == "as-test-secret"
-    assert saved["ANYSEARCH_TIMEOUT_SECONDS"] == "9"
-    assert "xai-test-secret" not in out
-    assert "th-test-secret" not in out
-    assert "jina-secret" not in out
-    assert "zmcp-secret" not in out
-    assert "as-test-secret" not in out
-    assert "embed-test-secret" not in out
-    assert "classifier-test-secret" not in out
-
-
-def test_setup_reports_config_storage_failure(monkeypatch, capsys):
-    def fake_config_set(key, value):
-        return {
-            "ok": False,
-            "error_type": "config_error",
-            "error": "无法保存配置文件。请设置 SMART_SEARCH_CONFIG_DIR。",
-            "config_file": "C:/tmp/config.json",
-        }
-
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-
-    code = cli.main([
-        "setup",
-        "--non-interactive",
-        "--skip-skills",
-        "--xai-api-key",
-        "secret",
-        "--format",
-        "json",
-    ])
-
-    data = json.loads(capsys.readouterr().out)
-    assert code == cli.EXIT_CONFIG_ERROR
-    assert data["ok"] is False
-    assert data["error_type"] == "config_error"
-    assert "SMART_SEARCH_CONFIG_DIR" in data["error"]
-    assert "secret" not in json.dumps(data)
-
-
-def test_setup_non_interactive_autofills_qwen3_8b_embedding_preset(monkeypatch, tmp_path, capsys):
-    saved = {}
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service.config, "_config_file", tmp_path / "config.json")
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": {}})
-
-    code = cli.main([
-        "setup",
-        "--non-interactive",
-        "--intent-router",
-        "hybrid",
-        "--intent-embedding-api-key",
-        "embed-test-secret",
-        "--intent-embedding-model",
-        "Qwen/Qwen3-Embedding-8B",
-    ])
-    data = json.loads(capsys.readouterr().out)
-
-    assert code == cli.EXIT_OK
-    assert saved["INTENT_EMBEDDING_API_URL"] == "https://api.siliconflow.cn/v1/embeddings"
-    assert saved["INTENT_EMBEDDING_MODEL"] == "Qwen/Qwen3-Embedding-8B"
-    assert saved["INTENT_EMBEDDING_THRESHOLD"] == "0.475"
-    assert saved["INTENT_EMBEDDING_MARGIN"] == "0.053"
-    assert "warnings" not in data
-    assert "embed-test-secret" not in json.dumps(data)
-
-
-def test_setup_non_interactive_keeps_explicit_embedding_thresholds(monkeypatch, tmp_path, capsys):
-    saved = {}
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service.config, "_config_file", tmp_path / "config.json")
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": {}})
-
-    code = cli.main([
-        "setup",
-        "--non-interactive",
-        "--intent-embedding-model",
-        "Qwen/Qwen3-Embedding-8B",
-        "--intent-embedding-threshold",
-        "0.42",
-        "--intent-embedding-margin",
-        "0.07",
-    ])
-
-    assert code == cli.EXIT_OK
-    assert saved["INTENT_EMBEDDING_THRESHOLD"] == "0.42"
-    assert saved["INTENT_EMBEDDING_MARGIN"] == "0.07"
-    assert saved["INTENT_EMBEDDING_API_URL"] == "https://api.siliconflow.cn/v1/embeddings"
-
-
-def test_setup_non_interactive_does_not_apply_qwen3_8b_preset_to_other_models(monkeypatch, tmp_path, capsys):
-    saved = {}
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service.config, "_config_file", tmp_path / "config.json")
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": {}})
-
-    code = cli.main([
-        "setup",
-        "--non-interactive",
-        "--intent-embedding-model",
-        "custom-embedding-model",
-    ])
-
-    assert code == cli.EXIT_OK
-    assert saved == {"INTENT_EMBEDDING_MODEL": "custom-embedding-model"}
-
-
-def test_setup_non_interactive_does_not_apply_qwen3_8b_preset_without_model(monkeypatch, tmp_path, capsys):
-    saved = {}
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service.config, "_config_file", tmp_path / "config.json")
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": {}})
-
-    code = cli.main([
-        "setup",
-        "--non-interactive",
-        "--intent-embedding-api-key",
-        "embed-test-secret",
-    ])
-
-    assert code == cli.EXIT_OK
-    assert saved == {"INTENT_EMBEDDING_API_KEY": "embed-test-secret"}
-
-
-def test_setup_non_interactive_warns_when_qwen3_8b_existing_thresholds_mismatch(monkeypatch, tmp_path, capsys):
-    saved = {}
-    current = {
-        "INTENT_EMBEDDING_API_URL": "https://api.siliconflow.cn/v1/embeddings",
-        "INTENT_EMBEDDING_THRESHOLD": "0.74",
-        "INTENT_EMBEDDING_MARGIN": "0.05",
-    }
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service.config, "_config_file", tmp_path / "config.json")
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": dict(current)})
-    monkeypatch.setattr(cli.service.config, "get_config_source", lambda key: "config_file" if key in current else "default")
-
-    code = cli.main([
-        "setup",
-        "--non-interactive",
-        "--intent-embedding-model",
-        "Qwen/Qwen3-Embedding-8B",
-    ])
-    data = json.loads(capsys.readouterr().out)
-
-    assert code == cli.EXIT_OK
-    assert saved == {"INTENT_EMBEDDING_MODEL": "Qwen/Qwen3-Embedding-8B"}
-    assert "warnings" in data
-    assert any("INTENT_EMBEDDING_THRESHOLD" in warning and "0.475" in warning for warning in data["warnings"])
-    assert any("INTENT_EMBEDDING_MARGIN" in warning and "0.053" in warning for warning in data["warnings"])
-
-
-def test_setup_non_interactive_warns_without_overwriting_env_embedding_thresholds(monkeypatch, tmp_path, capsys):
-    saved = {}
-    monkeypatch.setattr(cli.service.config, "_config_file", tmp_path / "config.json")
-    monkeypatch.setenv("INTENT_EMBEDDING_THRESHOLD", "0.74")
-    monkeypatch.setenv("INTENT_EMBEDDING_MARGIN", "0.05")
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": {}})
-
-    code = cli.main([
-        "setup",
-        "--non-interactive",
-        "--intent-embedding-model",
-        "Qwen/Qwen3-Embedding-8B",
-    ])
-    data = json.loads(capsys.readouterr().out)
-
-    assert code == cli.EXIT_OK
-    assert saved == {
-        "INTENT_EMBEDDING_API_URL": "https://api.siliconflow.cn/v1/embeddings",
-        "INTENT_EMBEDDING_MODEL": "Qwen/Qwen3-Embedding-8B",
-    }
-    assert any("INTENT_EMBEDDING_THRESHOLD" in warning and "0.475" in warning for warning in data["warnings"])
-    assert any("INTENT_EMBEDDING_MARGIN" in warning and "0.053" in warning for warning in data["warnings"])
-
-
-def test_setup_non_interactive_rejects_legacy_flags(capsys):
-    for flag, value in [
-        ("--api-url", "https://api.example.com/v1"),
-        ("--api-key", "sk-test-secret"),
-        ("--api-mode", "chat-completions"),
-        ("--model", "test-model"),
-        ("--xai-tools", "web_search"),
-    ]:
-        try:
-            cli.main(["setup", "--non-interactive", flag, value])
-        except SystemExit as exc:
-            assert exc.code == 2
-        else:
-            raise AssertionError(f"{flag} should be rejected by argparse")
-        capsys.readouterr()
-
-
-def test_setup_non_interactive_installs_selected_skills_under_user_root_override(monkeypatch, tmp_path, capsys):
-    saved = {}
-
-    monkeypatch.setattr(cli.service, "config_set", lambda key, value: {"ok": True, "key": key, "value": "***"})
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-
-    code = cli.main([
-        "setup",
-        "--non-interactive",
-        "--install-skills",
-        "codex,claude,cursor",
-        "--skills-root",
-        str(tmp_path),
-    ])
-    data = json.loads(capsys.readouterr().out)
-
-    assert code == cli.EXIT_OK
-    assert saved == {}
-    assert data["skills"]["installed_count"] == 3
-    assert (tmp_path / ".codex" / "skills" / "smart-search-cli" / "SKILL.md").is_file()
-    assert (tmp_path / ".claude" / "skills" / "smart-search-cli" / "SKILL.md").is_file()
-    assert (tmp_path / ".cursor" / "skills" / "smart-search-cli" / "SKILL.md").is_file()
-
-
-def test_setup_non_interactive_installs_skill_under_home_by_default(monkeypatch, tmp_path, capsys):
-    fake_home = tmp_path / "home"
-
-    monkeypatch.setattr(cli.service, "config_set", lambda key, value: {"ok": True, "key": key, "value": "***"})
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(skill_installer.Path, "home", lambda: fake_home)
-
-    code = cli.main([
-        "setup",
-        "--non-interactive",
-        "--install-skills",
-        "codex,hermes-agent",
-    ])
-    data = json.loads(capsys.readouterr().out)
-
-    assert code == cli.EXIT_OK
-    assert data["skills"]["installed_count"] == 2
-    assert {item["target"] for item in data["skills"]["installed"]} == {"codex", "hermes"}
-    assert (fake_home / ".codex" / "skills" / "smart-search-cli" / "SKILL.md").is_file()
-    assert (fake_home / ".hermes" / "skills" / "smart-search-cli" / "SKILL.md").is_file()
-    assert not (tmp_path / "project" / ".codex" / "skills" / "smart-search-cli").exists()
-    assert not (tmp_path / "project" / ".hermes" / "skills" / "smart-search-cli").exists()
-
-
-def test_setup_skip_skills_writes_no_skill_files(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(cli.service, "config_set", lambda key, value: {"ok": True, "key": key, "value": "***"})
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-
-    code = cli.main([
-        "setup",
-        "--non-interactive",
-        "--skip-skills",
-        "--install-skills",
-        "codex",
-        "--skills-root",
-        str(tmp_path),
-    ])
-    data = json.loads(capsys.readouterr().out)
-
-    assert code == cli.EXIT_OK
-    assert "skills" not in data
-    assert not (tmp_path / ".codex" / "skills" / "smart-search-cli").exists()
-
-
-def test_setup_unknown_skill_target_returns_parameter_error(monkeypatch, capsys):
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-
-    code = cli.main(["setup", "--non-interactive", "--install-skills", "unknown"])
-    data = json.loads(capsys.readouterr().out)
-
-    assert code == cli.EXIT_PARAMETER_ERROR
-    assert data["error_type"] == "parameter_error"
-    assert "Unknown skill target" in data["error"]
-
-
-def test_setup_guided_installs_tui_selected_skill_targets(monkeypatch, tmp_path, capsys):
-    saved = {}
-    answers = iter(["n", "n"])
-    checkbox_calls = []
-
-    def fake_checkbox(message, choices):
-        checkbox_calls.append((message, choices))
-        if "AI tools" in message:
-            return ["codex", "cursor"]
-        return []
-
-    monkeypatch.setattr(cli_setup, "_checkbox_with_tui", fake_checkbox)
-    monkeypatch.setattr(cli.service, "config_set", lambda key, value: {"ok": True, "key": key, "value": "***"})
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-
-    code = cli.main(["setup", "--lang", "en", "--skills-root", str(tmp_path)])
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-
-    assert code == cli.EXIT_OK
-    assert data["skills"]["installed_count"] == 2
-    assert (tmp_path / ".codex" / "skills" / "smart-search-cli" / "SKILL.md").is_file()
-    assert (tmp_path / ".cursor" / "skills" / "smart-search-cli" / "SKILL.md").is_file()
-    skill_choices = next(choices for message, choices in checkbox_calls if "AI tools" in message)
-    skill_choice_names = [choice["name"] for choice in skill_choices]
-    assert "Codex (~/.codex/skills)" in skill_choice_names
-    assert "Cursor (~/.cursor/skills)" in skill_choice_names
-    assert not any("project/" in name for name in skill_choice_names)
-    assert "Install the smart-search-cli skill" in captured.err
-    assert "user-level AI tools" in captured.err
-    assert "Skill install result" in captured.err
+    """Bare ``setup`` is removed; the canonical control-plane spelling is
+    ``config set``. The interactive wizard module stays importable for the
+    cleanup task but is no longer reachable from the CLI."""
+    code, out, _ = _run_main(["setup", "--non-interactive"])
+    assert code == 2
+    payload = json.loads(out)
+    assert payload["schema_version"] == "3"
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert payload["error"]["details"]["legacy_spelling"] == "setup"
 
 
 def test_setup_banner_falls_back_when_pyfiglet_unavailable(monkeypatch, capsys):
@@ -2049,753 +963,28 @@ def test_zhipu_prompt_allows_custom_search_engine(monkeypatch):
     assert values["ZHIPU_SEARCH_ENGINE"] == "search_future"
 
 
-def test_setup_guided_zh_groups_minimum_capabilities(monkeypatch, capsys):
-    saved = {}
-    answers = iter(["xai", "", "context7", "tavily", "", "n", "n", "n"])
-    secrets = iter(["xai-test-secret", "context7-test-secret", "tavily-test-secret"])
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
-
-    code = cli.main(["setup", "--skip-skills", "--lang", "zh"])
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-
-    assert code == cli.EXIT_OK
-    assert saved == {
-        "XAI_API_KEY": "xai-test-secret",
-        "CONTEXT7_API_KEY": "context7-test-secret",
-        "TAVILY_API_URL": "https://api.tavily.com",
-        "TAVILY_API_KEY": "tavily-test-secret",
-    }
-    assert data["minimum_profile_ok"] is True
-    assert data["minimum_profile_missing"] == []
-    assert captured.out.lstrip().startswith("{")
-    assert "Smart Search" in captured.err
-    assert "不知道怎么填" in captured.err
-    assert "main_search + docs_search + web_fetch" in captured.err
-    assert "[1/3" in captured.err
-    assert "main_search" in captured.err
-    assert "pool.example.com" not in captured.out
-    assert "xai-test-secret" not in captured.err
-    assert "xai-test-secret" not in captured.out
-
-
-def test_setup_guided_zhipu_optional_reinforcement_saves_url_and_engine(monkeypatch, capsys):
-    saved = {}
-    answers = iter(["skip", "skip", "skip", "zhipu", "official", "search_pro_quark", "n", "n"])
-    secrets = iter(["zhipu-test-secret"])
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
-
-    code = cli.main(["setup", "--skip-skills", "--lang", "zh"])
-    captured = capsys.readouterr()
-
-    assert code == cli.EXIT_OK
-    assert saved["ZHIPU_API_KEY"] == "zhipu-test-secret"
-    assert saved["ZHIPU_API_URL"] == "https://open.bigmodel.cn/api"
-    assert saved["ZHIPU_SEARCH_ENGINE"] == "search_pro_quark"
-    assert "智谱搜索服务" in captured.err
-    assert "zhipu-test-secret" not in captured.out
-    assert "zhipu-test-secret" not in captured.err
-
-
-def test_setup_guided_uses_tui_defaults_for_configured_providers(monkeypatch, capsys):
-    current = {
-        "OPENAI_COMPATIBLE_API_URL": "https://relay.example.com/v1",
-        "OPENAI_COMPATIBLE_API_KEY": "relay-old-secret",
-        "CONTEXT7_API_KEY": "ctx-old-secret",
-        "FIRECRAWL_API_KEY": "firecrawl-old-secret",
-        "FIRECRAWL_API_URL": "https://firecrawl.example.com/v2",
-    }
-    saved = {}
-    checkbox_calls = []
-
-    def fake_checkbox(message, choices):
-        selected = [choice["value"] for choice in choices if choice.get("enabled")]
-        checkbox_calls.append((message, selected))
-        return selected
-
-    monkeypatch.setattr(cli_setup, "_checkbox_with_tui", fake_checkbox)
-    monkeypatch.setattr(cli_setup, "_select_with_tui", lambda message, choices, default=None: default)
-    monkeypatch.setattr(cli.service, "config_set", lambda key, value: {"ok": True, "key": key, "value": "***"})
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": {**current, **saved}})
-    monkeypatch.setattr("builtins.input", lambda prompt: "")
-    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: "")
-
-    code = cli.main(["setup", "--skip-skills", "--lang", "en"])
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-
-    assert code == cli.EXIT_OK
-    assert data["minimum_profile_ok"] is True
-    assert saved == {}
-    assert "https://relay.example.com/v1" not in captured.err
-    assert "https://firecrawl.example.com/v2" not in captured.err
-    assert "configured" in captured.err
-    assert checkbox_calls[:3] == [
-        ("Choose main_search providers", ["openai-compatible"]),
-        ("Choose docs_search providers", ["context7"]),
-        ("Choose web_fetch providers", ["firecrawl"]),
-    ]
-
-
-def test_setup_guided_en_reports_missing_minimum(monkeypatch, capsys):
-    saved = {}
-    answers = iter(["skip", "skip", "skip", "n", "n", "n"])
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-
-    code = cli.main(["setup", "--skip-skills", "--lang", "en"])
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-
-    assert code == cli.EXIT_OK
-    assert saved == {}
-    assert data["minimum_profile_ok"] is False
-    assert data["minimum_profile_missing"] == ["main_search", "docs_search", "web_fetch"]
-    assert "Smart Search setup wizard" in captured.err
-    assert "If unsure" in captured.err
-    assert "main_search + docs_search + web_fetch" in captured.err
-    assert "[MISSING] main_search primary search" in captured.err
-    assert "doctor reports the profile gap" in captured.err
-    assert "normal commands validate their own required capabilities" in captured.err
-    assert "your-relay.example.com" not in captured.out
-
-
-def test_setup_guided_masks_configured_url_defaults(monkeypatch, capsys):
-    current = {
-        "OPENAI_COMPATIBLE_API_URL": "https://private-relay.example.com/v1",
-        "OPENAI_COMPATIBLE_API_KEY": "relay-old-secret",
-    }
-    answers = iter(["openai", "", "", "", "", "skip", "skip", "n", "n", "n"])
-    secrets = iter([""])
-
-    monkeypatch.setattr(cli.service, "config_set", lambda key, value: {"ok": True, "key": key, "value": "***"})
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": current.copy()})
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
-
-    code = cli.main(["setup", "--skip-skills", "--lang", "en"])
-    captured = capsys.readouterr()
-
-    assert code == cli.EXIT_OK
-    assert "https://private-relay.example.com/v1" not in captured.err
-    assert "configured, press Enter to keep" in captured.err
-
-
-def test_setup_guided_main_search_can_save_openai_compatible_peer(monkeypatch, capsys):
-    saved = {}
-    answers = iter(["openai", "https://relay.example.com/v1", "", "", "", "skip", "skip", "n", "n", "n"])
-    secrets = iter(["relay-test-secret"])
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
-
-    code = cli.main(["setup", "--skip-skills", "--lang", "en"])
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-
-    assert code == cli.EXIT_OK
-    assert saved == {
-        "OPENAI_COMPATIBLE_API_URL": "https://relay.example.com/v1",
-        "OPENAI_COMPATIBLE_API_KEY": "relay-test-secret",
-    }
-    assert data["capability_status"]["main_search"]["configured"] == ["openai-compatible"]
-    assert data["minimum_profile_missing"] == ["docs_search", "web_fetch"]
-    assert "relay-test-secret" not in captured.out
-    assert "relay-test-secret" not in captured.err
-
-
-def test_setup_guided_main_search_can_save_both_peer_providers(monkeypatch, capsys):
-    saved = {}
-    answers = iter(["both", "", "https://relay.example.com/v1", "", "", "", "skip", "skip", "n", "n", "n"])
-    secrets = iter(["xai-test-secret", "relay-test-secret"])
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
-
-    code = cli.main(["setup", "--skip-skills", "--lang", "en"])
-    data = json.loads(capsys.readouterr().out)
-
-    assert code == cli.EXIT_OK
-    assert saved == {
-        "XAI_API_KEY": "xai-test-secret",
-        "OPENAI_COMPATIBLE_API_URL": "https://relay.example.com/v1",
-        "OPENAI_COMPATIBLE_API_KEY": "relay-test-secret",
-    }
-    assert data["capability_status"]["main_search"]["configured"] == ["xai-responses", "openai-compatible"]
-    assert data["capability_status"]["main_search"]["fallback_chain"] == ["xai-responses", "openai-compatible"]
-
-
-def test_setup_guided_can_configure_intent_router(monkeypatch, capsys):
-    saved = {}
-    answers = iter([
-        "skip",
-        "skip",
-        "skip",
-        "skip",
-        "n",
-        "y",
-        "hybrid",
-        "y",
-        "https://api.example.com/v1/embeddings",
-        "embed-model",
-        "y",
-        "https://classifier.example.com/v1/chat/completions",
-        "intent-mini",
-        "30",
-    ])
-    secrets = iter(["embed-test-secret", "classifier-test-secret"])
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
-
-    code = cli.main(["setup", "--skip-skills", "--lang", "en"])
-    captured = capsys.readouterr()
-
-    assert code == cli.EXIT_OK
-    assert json.loads(captured.out)["minimum_profile_ok"] is False
-    assert saved == {
-        "SMART_SEARCH_INTENT_ROUTER": "hybrid",
-        "INTENT_EMBEDDING_API_URL": "https://api.example.com/v1/embeddings",
-        "INTENT_EMBEDDING_API_KEY": "embed-test-secret",
-        "INTENT_EMBEDDING_MODEL": "embed-model",
-        "INTENT_CLASSIFIER_API_URL": "https://classifier.example.com/v1/chat/completions",
-        "INTENT_CLASSIFIER_API_KEY": "classifier-test-secret",
-        "INTENT_CLASSIFIER_MODEL": "intent-mini",
-        "INTENT_ROUTER_TIMEOUT_SECONDS": "30",
-    }
-    assert "smart intent routing" in captured.err
-    assert "embeddings semantic routing" in captured.err
-    assert "classifier model routing" in captured.err
-    assert "embed-test-secret" not in captured.out
-    assert "embed-test-secret" not in captured.err
-    assert "classifier-test-secret" not in captured.out
-    assert "classifier-test-secret" not in captured.err
-
-
-def test_setup_guided_autofills_qwen3_8b_embedding_preset(monkeypatch, capsys):
-    saved = {}
-    answers = iter([
-        "skip",
-        "skip",
-        "skip",
-        "skip",
-        "n",
-        "y",
-        "hybrid",
-        "y",
-        "",
-        "",
-        "n",
-        "30",
-    ])
-    secrets = iter(["embed-test-secret"])
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    monkeypatch.setattr(cli_setup.getpass, "getpass", lambda prompt: next(secrets))
-
-    code = cli.main(["setup", "--skip-skills", "--lang", "en"])
-    captured = capsys.readouterr()
-
-    assert code == cli.EXIT_OK
-    assert saved["INTENT_EMBEDDING_API_URL"] == "https://api.siliconflow.cn/v1/embeddings"
-    assert saved["INTENT_EMBEDDING_API_KEY"] == "embed-test-secret"
-    assert saved["INTENT_EMBEDDING_MODEL"] == "Qwen/Qwen3-Embedding-8B"
-    assert saved["INTENT_EMBEDDING_THRESHOLD"] == "0.475"
-    assert saved["INTENT_EMBEDDING_MARGIN"] == "0.053"
-    assert "Recommended preset" in captured.err
-    assert "embed-test-secret" not in captured.out
-    assert "embed-test-secret" not in captured.err
-
-
-def test_setup_interactive_language_prompt(monkeypatch, capsys):
-    saved = {}
-    answers = iter(["en", "skip", "skip", "skip", "n", "n", "n"])
-
-    monkeypatch.setattr(cli.service, "config_set", lambda key, value: {"ok": True, "value": "***"})
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(cli.service, "config_list", lambda show_secrets=False: {"ok": True, "values": saved.copy()})
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-
-    code = cli.main(["setup", "--skip-skills"])
-    captured = capsys.readouterr()
-
-    assert code == cli.EXIT_OK
-    assert "Smart Search setup wizard" in captured.err
-
-
-def test_search_passes_routing_options(monkeypatch, capsys):
-    captured = {}
-
-    async def fake_search(query, platform="", model="", extra_sources=0, validation="", fallback="", providers="auto"):
-        captured.update({"validation": validation, "fallback": fallback, "providers": providers})
-        return {"ok": True, "content": "Answer", "sources": [], "sources_count": 0}
-
-    monkeypatch.setattr(cli.service, "search", fake_search)
-
-    code = cli.main([
-        "search",
-        "query",
-        "--validation",
-        "strict",
-        "--fallback",
-        "off",
-        "--providers",
-        "grok,zhipu",
-    ])
-
-    assert code == cli.EXIT_OK
-    assert captured == {"validation": "strict", "fallback": "off", "providers": "grok,zhipu"}
-    assert json.loads(capsys.readouterr().out)["content"] == "Answer"
-
-
-def test_route_command_outputs_json_markdown_and_content(monkeypatch, capsys):
-    async def fake_route(query, validation="", mode="", allow_remote=True):
-        return {
-            "ok": True,
-            "query": query,
-            "docs_intent": True,
-            "zh_current_intent": False,
-            "web_current_intent": False,
-            "fetch_intent": False,
-            "supplemental_paths": ["docs_search"],
-            "intent_router_mode": mode or "hybrid",
-            "required_capabilities": ["docs_search"],
-            "intent_signals": {"docs_api_intent": True},
-            "confidence": 0.82,
-            "router_engines_used": ["rules"],
-            "degraded": True,
-            "degraded_reason": "embeddings not configured",
-            "reasons": ["rules matched docs/API/library terms"],
-            "embedding_model": "embed-model",
-            "embedding_threshold": 0.74,
-            "embedding_margin": 0.05,
-            "embedding_threshold_source": "default",
-            "embedding_margin_source": "default",
-            "embedding_preset_id": "qwen3-embedding-8b",
-            "embedding_preset_threshold": "0.475",
-            "embedding_preset_margin": "0.053",
-            "embedding_preset_recommended": True,
-            "embedding_preset_recommendation": "Qwen/Qwen3-Embedding-8B works best with calibrated threshold and margin.",
-            "embedding_preset_commands": [
-                "smart-search config set INTENT_EMBEDDING_THRESHOLD 0.475",
-                "smart-search config set INTENT_EMBEDDING_MARGIN 0.053",
-            ],
-            "validation_level": validation or "balanced",
-            "executed_search": False,
-            "provider_selection": "not_executed",
-        }
-
-    monkeypatch.setattr(cli.service, "route", fake_route)
-
-    assert cli.main(["route", "React useEffect API docs", "--format", "json"]) == cli.EXIT_OK
-    json_data = json.loads(capsys.readouterr().out)
-    assert json_data["required_capabilities"] == ["docs_search"]
-    assert json_data["executed_search"] is False
-
-    assert cli.main(["rt", "React useEffect API docs", "--router-mode", "rules", "--format", "markdown"]) == cli.EXIT_OK
-    markdown = capsys.readouterr().out
-    assert markdown.startswith("# Intent Route")
-    assert "Required capabilities: `docs_search`" in markdown
-    assert "Embedding threshold: `0.74` (default)" in markdown
-    assert "Embedding Preset Recommendation" in markdown
-    assert "smart-search config set INTENT_EMBEDDING_THRESHOLD 0.475" in markdown
-    assert "rules matched docs/API/library terms" in markdown
-
-    assert cli.main(["route", "React useEffect API docs", "--format", "content"]) == cli.EXIT_OK
-    content = capsys.readouterr().out
-    assert "capabilities=docs_search" in content
-    assert "mode=hybrid" in content
-    assert "threshold=0.74(default)" in content
-    assert "embedding_preset_recommendation=threshold=0.475 margin=0.053" in content
-
-
-def test_route_calibrate_command_outputs_json_markdown_and_content(monkeypatch, capsys):
-    async def fake_route_calibrate(models=""):
-        return {
-            "ok": True,
-            "metric": "semantic_macro_f1",
-            "primary_metric": "semantic_macro_f1",
-            "models": [item.strip() for item in models.split(",") if item.strip()],
-            "dataset_size": 100,
-            "recommended_model": "good-model",
-            "recommended_threshold": 0.71,
-            "recommended_margin": 0.06,
-            "failed_models": ["bad-model"],
-            "model_results": [
-                {
-                    "model": "good-model",
-                    "ok": True,
-                    "dimension": 1024,
-                    "latency_ms": 12.3,
-                    "semantic_macro_f1": 0.95,
-                    "full_route_macro_f1": 0.9,
-                    "recommended_threshold": 0.71,
-                    "recommended_margin": 0.06,
-                    "semantic_failures": [
-                        {
-                            "id": "none-01",
-                            "query": "普通问题",
-                            "expected": "none",
-                            "predicted": "docs_search",
-                            "top_capability": "docs_search",
-                            "top_score": 0.77,
-                            "margin": 0.02,
-                        }
-                    ],
-                },
-                {
-                    "model": "bad-model",
-                    "ok": False,
-                    "error_type": "provider_error",
-                    "error": "model unavailable",
-                    "dimension": 0,
-                    "latency_ms": 0,
-                    "semantic_macro_f1": 0,
-                    "full_route_macro_f1": 0,
-                },
-            ],
-        }
-
-    monkeypatch.setattr(cli.service, "route_calibrate", fake_route_calibrate)
-
-    assert cli.main(["route-calibrate", "--models", "good-model,bad-model", "--format", "json"]) == cli.EXIT_OK
-    json_data = json.loads(capsys.readouterr().out)
-    assert json_data["recommended_model"] == "good-model"
-    assert json_data["failed_models"] == ["bad-model"]
-
-    assert cli.main(["route-cal", "--models", "good-model,bad-model", "--format", "markdown"]) == cli.EXIT_OK
-    markdown = capsys.readouterr().out
-    assert markdown.startswith("# Route Calibration")
-    assert "good-model" in markdown
-    assert "bad-model" in markdown
-    assert not markdown.lstrip().startswith("{")
-
-    assert cli.main(["rcal", "--models", "good-model,bad-model", "--format", "content"]) == cli.EXIT_OK
-    content = capsys.readouterr().out
-    assert "Route calibration OK" in content
-    assert "recommended=good-model" in content
-    assert not content.lstrip().startswith("{")
-
-
-def test_route_calibrate_provider_error_uses_network_exit(monkeypatch, capsys):
-    async def fake_route_calibrate(models=""):
-        return {
-            "ok": False,
-            "error_type": "provider_error",
-            "error": "No embedding model could be calibrated. See model_results for per-model errors.",
-            "metric": "semantic_macro_f1",
-            "primary_metric": "semantic_macro_f1",
-            "models": ["bad-model"],
-            "dataset_size": 100,
-            "recommended_model": "",
-            "failed_models": ["bad-model"],
-            "model_results": [
-                {"model": "bad-model", "ok": False, "error_type": "provider_error", "error": "model unavailable"}
-            ],
-        }
-
-    monkeypatch.setattr(cli.service, "route_calibrate", fake_route_calibrate)
-
-    code = cli.main(["route-calibrate", "--models", "bad-model", "--format", "content"])
-
-    assert code == cli.EXIT_NETWORK_ERROR
-    out = capsys.readouterr().out
-    assert "Route calibration FAIL" in out
-    assert "failed=bad-model" in out
-
-
-def test_smoke_command_uses_service(monkeypatch, capsys):
-    async def fake_smoke(mode="mock"):
-        return {"ok": True, "mode": mode, "failed_cases": [], "cases": []}
-
-    async def fake_research(*args, **kwargs):
-        return {"ok": True, "query_mode": "research", "content": "Research"}
-
-    monkeypatch.setattr(cli.service, "smoke", fake_smoke)
-
-    code = cli.main(["smoke", "--mode", "mock"])
-
-    assert code == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["mode"] == "mock"
-
-
-def test_provider_and_smoke_aliases_use_canonical_commands(monkeypatch, capsys):
-    async def fake_smoke(mode="mock"):
-        return {"ok": True, "mode": mode, "failed_cases": [], "cases": []}
-
-    async def fake_research(*args, **kwargs):
-        return {"ok": True, "query_mode": "research", "content": "Research"}
-
-    monkeypatch.setattr(cli.service, "smoke", fake_smoke)
-    monkeypatch.setattr(cli.service, "research", fake_research)
-
-    assert cli.main(["rs", "query"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["query_mode"] == "research"
-    assert cli.main(["sm"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["mode"] == "mock"
-
-
-def test_smoke_command_accepts_mock_and_live_flags(monkeypatch, capsys):
-    captured = []
-
-    async def fake_smoke(mode="mock"):
-        captured.append(mode)
-        return {"ok": True, "mode": mode, "failed_cases": [], "cases": []}
-
-    monkeypatch.setattr(cli.service, "smoke", fake_smoke)
-
-    assert cli.main(["smoke", "--mock"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["mode"] == "mock"
-    assert cli.main(["smoke", "--live"]) == cli.EXIT_OK
-    assert json.loads(capsys.readouterr().out)["mode"] == "live"
-    assert captured == ["mock", "live"]
-
-
-def test_setup_interactive_does_not_print_current_secret(monkeypatch, capsys):
-    prompts = []
-
-    def fake_config_set(key, value):
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    def fake_input(prompt):
-        prompts.append(prompt)
-        return ""
-
-    def fake_getpass(prompt):
-        prompts.append(prompt)
-        return ""
-
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(
-        cli.service,
-        "config_list",
-        lambda show_secrets=False: {
-            "ok": True,
-            "values": {
-                "XAI_API_KEY": "xai-test-secret",
-                "XAI_MODEL": "test-model",
-                "EXA_API_KEY": "exa-test-secret",
-            },
-        },
-    )
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr("builtins.input", fake_input)
-    monkeypatch.setattr(cli_setup.getpass, "getpass", fake_getpass)
-
-    code = cli.main(["setup", "--advanced", "--lang", "en"])
-    captured = capsys.readouterr()
-    prompt_text = "\n".join(prompts)
-
-    assert code == cli.EXIT_OK
-    assert "xai-test-secret" not in captured.out
-    assert "xai-test-secret" not in captured.err
-    assert "xai-test-secret" not in prompt_text
-    assert "exa-test-secret" not in prompt_text
-    assert "xAI API key optional [configured, press Enter to keep]" in prompt_text
-
-
-def test_setup_advanced_mode_keeps_low_level_prompts(monkeypatch, capsys):
-    prompts = []
-    saved = {}
-
-    def fake_config_set(key, value):
-        saved[key] = value
-        return {"ok": True, "key": key, "value": "***", "config_file": "C:/tmp/config.json"}
-
-    def fake_input(prompt):
-        prompts.append(prompt)
-        return ""
-
-    def fake_getpass(prompt):
-        prompts.append(prompt)
-        return ""
-
-    monkeypatch.setattr(cli.service, "config_path", lambda: {"ok": True, "config_file": "C:/tmp/config.json"})
-    monkeypatch.setattr(
-        cli.service,
-        "config_list",
-        lambda show_secrets=False: {"ok": True, "values": {"XAI_API_URL": "https://api.x.ai/v1"}},
-    )
-    monkeypatch.setattr(cli.service, "config_set", fake_config_set)
-    monkeypatch.setattr("builtins.input", fake_input)
-    monkeypatch.setattr(cli_setup.getpass, "getpass", fake_getpass)
-
-    code = cli.main(["setup", "--advanced", "--lang", "en"])
-
-    assert code == cli.EXIT_OK
-    captured = capsys.readouterr()
-    assert "Legacy primary API URL optional" not in captured.err
-    assert "xAI Responses API URL optional" in captured.err
-    assert "OpenAI-compatible API URL optional" in captured.err
-    assert "Zhipu Web Search API URL optional" in captured.err
-    assert "Zhipu search service" in captured.err
-    assert "Advanced mode" in captured.err
-
-
-def test_regression_invokes_pytest(monkeypatch):
-    captured = {}
-
-    def fake_call(cmd, cwd):
-        captured["cmd"] = cmd
-        captured["cwd"] = cwd
-        return 0
-
-    monkeypatch.setattr(cli.subprocess, "call", fake_call)
-
-    code = cli.main(["regression"])
-
-    assert code == 0
-    assert "-m" in captured["cmd"]
-    assert "pytest" in captured["cmd"]
-    assert "tests/test_cli.py" in captured["cmd"]
-    assert "tests/test_smoke.py" in captured["cmd"]
-    assert "tests/test_release_workflow.py" in captured["cmd"]
-
-
-def test_regression_alias_invokes_pytest(monkeypatch):
-    captured = {}
-
-    def fake_call(cmd, cwd):
-        captured["cmd"] = cmd
-        captured["cwd"] = cwd
-        return 0
-
-    monkeypatch.setattr(cli.subprocess, "call", fake_call)
-
-    code = cli.main(["reg"])
-
-    assert code == 0
-    assert "pytest" in captured["cmd"]
-
-
-def test_regression_uses_mock_smoke_when_packaged_tests_missing(monkeypatch, capsys):
-    class MissingPath:
-        def __init__(self, value):
-            self.value = value
-
-        def __truediv__(self, other):
-            return MissingPath(f"{self.value}/{other}")
-
-        @property
-        def parents(self):
-            return [self, self, self]
-
-        def exists(self):
-            return False
-
-        def read_text(self, encoding="utf-8"):
-            return '{"version": "0.1.test"}'
-
-        def __str__(self):
-            return self.value
-
-    async def fake_smoke(mode="mock"):
-        return {"ok": True, "mode": mode, "failed_cases": [], "cases": []}
-
-    def should_not_call_pytest(cmd, cwd):
-        raise AssertionError("packaged regression fallback should not require pytest")
-
-    monkeypatch.setattr(cli.Path, "resolve", lambda self: MissingPath("pkg/src/smart_search/cli.py"))
-    monkeypatch.setattr(cli.subprocess, "call", should_not_call_pytest)
-    monkeypatch.setattr(cli.service, "smoke", fake_smoke)
-
-    code = cli.main(["regression"])
-
-    captured = capsys.readouterr()
-    assert code == cli.EXIT_OK
-    assert "Packaged install has no test files" in captured.err
-    assert json.loads(captured.out)["mode"] == "mock"
-
-
-def test_provider_probe_isolation_and_zero_network_local_failures(monkeypatch, capsys):
-    from smart_search import operations_service, provider_diagnostics
-
-    calls: list[str] = []
-
-    for provider, disposition in list(provider_diagnostics.PROVIDER_PROBE_REGISTRY.items()):
-        if disposition.get("route_family"):
-            continue
-
-        async def adapter(provider_name=provider):
-            calls.append(provider_name)
-            return {"status": "ok", "message": f"{provider_name} ok", "response_time_ms": 1}
-
-        monkeypatch.setitem(provider_diagnostics.PROVIDER_PROBE_REGISTRY[provider], "adapter", adapter)
-
-    async def no_main(*args, **kwargs):
-        raise AssertionError("main-search family should not run for non-main probe")
-
-    monkeypatch.setattr(operations_service, "_safe_test_main_provider_connection", no_main)
-
-    code = cli.main(["provider", "probe", "exa", "--format", "json"])
-    payload = json.loads(capsys.readouterr().out)
-    assert code in {cli.EXIT_OK, cli.EXIT_CONFIG_ERROR, cli.EXIT_NETWORK_ERROR}
-    assert payload["command"] == "provider-probe"
-    assert payload["data"]["provider"] == "exa"
-    if payload["data"].get("network_attempted"):
-        assert calls == ["exa"]
-    else:
-        assert payload["data"]["status"] in {"not_configured", "disabled", "config_error"}
-        assert calls == []
-
-    calls.clear()
-    code = cli.main(["provider", "probe", "main-search", "--format", "json"])
-    payload = json.loads(capsys.readouterr().out)
-    assert code == cli.EXIT_PARAMETER_ERROR
-    assert payload["data"]["network_attempted"] is False
-    assert calls == []
+def test_smoke_spelling_fails_with_v3_family(capsys):
+    code, out, _ = _run_main(["smoke", "--mock"])
+    assert code == 2
+    payload = json.loads(out)
+    assert payload["schema_version"] == "3"
+    assert payload["error"]["details"]["legacy_spelling"] == "smoke"
+    assert payload["error"]["details"]["replacement"] == "dev smoke"
+
+
+def test_provider_and_smoke_aliases_are_removed(capsys):
+    for argv, spelling in ((["rs", "query"], "rs query"), (["sm"], "sm")):
+        code, out, _ = _run_main(argv)
+        assert code == 2, argv
+        payload = json.loads(out)
+        assert payload["error"]["code"] == "INVALID_ARGUMENT"
+        assert payload["error"]["details"]["legacy_spelling"] == spelling
+
+
+def test_regression_spelling_fails_with_v3_family(capsys):
+    code, out, _ = _run_main(["regression"])
+    assert code == 2
+    payload = json.loads(out)
+    assert payload["schema_version"] == "3"
+    assert payload["error"]["details"]["legacy_spelling"] == "regression"
+    assert payload["error"]["details"]["replacement"] == "dev regression"

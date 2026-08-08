@@ -1,4 +1,4 @@
-"""Phase 4 namespace compatibility coverage."""
+"""Canonical namespace routing coverage."""
 
 from __future__ import annotations
 
@@ -20,19 +20,19 @@ ROOT = Path(__file__).parents[1]
 @pytest.mark.parametrize(
     ("argv", "command", "operation"),
     [
-        (["research", "plan", "topic"], "deep", "research-plan"),
+        (["research", "plan", "topic"], "research", "research-plan"),
         (["research", "run", "topic"], "research", "research-run"),
         (["doctor", "probe"], "doctor", "doctor-probe"),
         (["doctor", "status"], "doctor", "doctor-status"),
         (["provider", "list"], "provider-list", "provider-list"),
         (["provider", "status"], "provider-status", "provider-status"),
         (["provider", "probe", "exa"], "provider-probe", "provider-probe"),
-        (["provider", "routes", "current"], "model", "provider-routes-current"),
-        (["dev", "route-explain", "topic"], "route", "dev-route-explain"),
-        (["dev", "skills", "status"], "skills", "dev-skills-status"),
+        (["provider", "routes", "current"], "provider", "provider-routes-current"),
+        (["dev", "route-explain", "topic"], "dev", "dev-route-explain"),
+        (["dev", "skills", "status"], "dev", "dev-skills-status"),
     ],
 )
-def test_namespace_paths_normalize_to_v1_command(argv, command, operation):
+def test_namespace_paths_normalize_to_canonical_command(argv, command, operation):
     args = build_parser().parse_args(argv)
     assert args.command == command
     assert getattr(args, "namespace_operation", None) == operation
@@ -56,7 +56,6 @@ def test_collision_and_deferred_paths_remain_honest():
     parser = build_parser()
     assert parser.parse_args(["research", "plan"]).command == "research"
     assert parser.parse_args(["research", "run"]).command == "research"
-    assert parser.parse_args(["rs", "plan"]).command == "research"
     assert parser.parse_args(["research", "--budget", "quick", "plan", "topic"]).namespace_operation == "research-plan"
     assert parser.parse_args(["research", "plan", "--budget", "quick", "topic"]).namespace_operation == "research-plan"
     assert parser.parse_args(["research", "plan", "--", "-topic"]).namespace_operation == "research-plan"
@@ -86,36 +85,32 @@ def test_parse_args_none_classifies_collision_paths(monkeypatch):
 
     monkeypatch.setattr(sys, "argv", ["smart-search", "research", "plan", "topic"])
     research = build_parser().parse_args()
-    assert (research.command, research.namespace_operation, research.query) == ("deep", "research-plan", "topic")
+    assert (research.command, research.namespace_operation, research.query) == ("research", "research-plan", "topic")
 
     monkeypatch.setattr(sys, "argv", ["smart-search", "doctor", "probe"])
     doctor = build_parser().parse_args()
     assert (doctor.command, doctor.namespace_operation) == ("doctor", "doctor-probe")
 
 
-def test_v2_namespace_paths_are_not_normalized_before_parser_errors(capsys):
-    assert cli.main(["--schema-version", "2", "research", "plan", "topic"]) == 2
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["command"] == "research"
-    assert payload["operation"] is None
-
-
 def test_root_help_and_help_all_are_deterministic_and_local(capsys):
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     root_help = capsys.readouterr().out
-    for name in ("search", "fetch", "capabilities", "setup"):
+    for name in ("search", "fetch", "capabilities"):
         assert f"    {name}" in root_help
-    for name in ("doctor", "provider", "dev", "map"):
+    for name in ("doctor", "provider", "dev", "map", "setup", "model", "smoke"):
         assert f"    {name}" not in root_help
 
     assert cli.main(["--help-all"]) == 0
     full = capsys.readouterr().out
     for item in NAMESPACE_COMMANDS:
         assert item["path"] in full
-    assert "Legacy commands and aliases:" in full
-    for legacy_path in ("config path (p)", "model current (cur, c)", "skills status (st)"):
-        assert legacy_path in full
+    assert "Evidence Core (V2):" in full
+    assert "Control plane (V3):" in full
+    assert "Research workflow:" in full
+    # removed spellings are no longer advertised
+    for removed in ("model add", "skills status (st)", "Legacy commands and aliases:"):
+        assert removed not in full
 
 
 def test_help_all_does_not_import_runtime_modules():
@@ -132,21 +127,31 @@ for name in ('smart_search.service', 'smart_search.config', 'smart_search.provid
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_research_plan_and_deep_share_one_handler(monkeypatch, capsys):
-    calls = []
+def test_research_plan_and_run_route_to_workflow(monkeypatch, capsys):
+    """Canonical research plan/run both enter the workflow family."""
+    from smart_search import research_service
+    from smart_search.research_plan import ResearchPlanOperation, build_research_plan
 
-    def fake_plan(query, *, budget, evidence_dir):
-        calls.append((query, budget, evidence_dir))
-        return {"ok": True, "query": query, "steps": [{"command": "smart-search fetch x", "output_path": "x.json"}]}
+    calls: list[str] = []
 
-    monkeypatch.setattr(cli.service, "build_deep_research_plan", fake_plan)
-    assert cli.main(["deep", "topic", "--budget", "quick"]) == 0
-    deep = json.loads(capsys.readouterr().out)
-    assert cli.main(["research", "plan", "topic", "--budget", "quick"]) == 0
-    namespaced = json.loads(capsys.readouterr().out)
-    assert calls == [("topic", "quick", ""), ("topic", "quick", "")]
-    assert deep["command"] == namespaced["command"] == "deep"
-    assert deep["steps"] == namespaced["steps"]
+    def fake_plan(query, budget="deep", evidence_dir=""):
+        calls.append(query)
+        return build_research_plan(
+            [
+                ResearchPlanOperation(
+                    id="fetch-1", operation="content_fetch",
+                    input={"resource": "https://example.com/page"},
+                    constraints={}, depends_on=(),
+                )
+            ]
+        )
+
+    monkeypatch.setattr(research_service, "build_research_workflow_plan", fake_plan)
+    assert cli.main(["research", "plan", "topic", "--budget", "quick"]) == cli.EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["operation"] == "research.run"
+    assert payload["stages"] == []
+    assert calls == ["topic"]
 
 
 def test_provider_catalog_is_one_snapshot_and_never_probes(monkeypatch, capsys):
@@ -169,12 +174,10 @@ def test_provider_catalog_is_one_snapshot_and_never_probes(monkeypatch, capsys):
     assert cli.main(["provider", "status", "--format", "json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert calls == ["status"]
-    assert payload["command"] == "provider-status"
-    assert payload["data"]["local_only"] is True
-    entry = payload["data"]["providers"][0]
-    assert entry["status"][0]["eligible"] is True
-    assert entry["v2_capabilities"] == ["docs_discovery"]
-    assert entry["qualifications"] == []
+    assert payload["command"] == "provider"
+    assert payload["operation"] == "provider.catalog.status"
+    assert payload["result"]["providers"][0]["v2_capabilities"] == ["docs_discovery"]
+    assert payload["result"]["providers"][0]["status"][0]["eligible"] is True
     assert secret not in json.dumps(payload)
 
 
@@ -220,5 +223,5 @@ def test_provider_catalog_maps_qualifications_and_excludes_synthetic_profile(mon
     ]
 
 
-def test_dev_smoke_keeps_legacy_mock_default():
+def test_dev_smoke_keeps_mock_default():
     assert build_parser().parse_args(["dev", "smoke"]).mode == "mock"

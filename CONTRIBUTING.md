@@ -31,8 +31,8 @@ Run the narrowest relevant checks first, then the complete set:
 ```sh
 python -m compileall -q src tests
 python -m pytest tests -q
-python -m smart_search.cli regression
-python -m smart_search.cli smoke --mock --format json
+python -m smart_search.cli dev regression
+python -m smart_search.cli dev smoke --mock --format json
 npm test
 npm pack --dry-run
 git diff --check

@@ -52,9 +52,9 @@ def test_inventory_has_stable_control_plane_operation_ids_and_canonical_paths():
         "dev.route.explain", "dev.route.calibrate", "dev.diagnose.openai-compatible",
         "dev.smoke", "dev.regression", "dev.skills.status", "dev.skills.update",
     )
-    assert operation_for_argv(["--schema-version", "3", "provider", "routes", "list"]).operation == "provider.routes.list"
-    assert operation_for_argv(["--schema-version", "3", "cfg", "list"]) is None
-    assert operation_for_argv(["--schema-version", "3", "experimental", "anysearch", "search"]) is None
+    assert operation_for_argv(["provider", "routes", "list"]).operation == "provider.routes.list"
+    assert operation_for_argv(["cfg", "list"]) is None
+    assert operation_for_argv(["experimental", "anysearch", "search"]) is None
 
 
 def test_v3_schema_is_strict_and_fixtures_validate():
@@ -138,7 +138,7 @@ def test_v3_parser_error_has_no_runtime_imports(tmp_path):
     script = r'''
 import sys
 from smart_search.cli import main
-code = main(["--schema-version", "3", "search"])
+code = main(["provider", "probe"])
 assert code == 2
 for name in ("smart_search.service", "smart_search.config", "httpx", "smart_search.providers.openai_compatible"):
     assert name not in sys.modules, name
@@ -153,12 +153,12 @@ print("ok")
 def test_v3_parser_error_and_unsupported_alias_are_single_documents(capsys):
     from smart_search.cli import main
 
-    assert main(["--schema-version", "3", "config"]) == 2
+    assert main(["provider"]) == 2
     first = json.loads(capsys.readouterr().out)
     assert tuple(first) == V3_TOP_LEVEL_FIELDS
     assert first["operation"] is None
 
-    assert main(["--schema-version", "3", "cfg", "list"]) == 2
+    assert main(["cfg", "list"]) == 2
     second = json.loads(capsys.readouterr().out)
     assert second["error"]["code"] == "INVALID_ARGUMENT"
     assert second["operation"] is None
@@ -170,7 +170,7 @@ def test_v3_rejects_v1_output_before_owner(monkeypatch, capsys):
     from smart_search import operations_service
 
     monkeypatch.setattr(operations_service, "config_list", lambda **_: (_ for _ in ()).throw(AssertionError("owner called")))
-    code = main(["--schema-version", "3", "config", "list", "--output", "result.json"])
+    code = main(["config", "list", "--output", "result.json"])
     assert code == 2
     payload = json.loads(capsys.readouterr().out)
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
@@ -201,7 +201,7 @@ def test_v3_fail_on_degraded_keeps_envelope(monkeypatch, capsys):
         )
 
     monkeypatch.setattr(control_operations, "run_provider_probe", fake_probe)
-    code = main(["--schema-version", "3", "--fail-on-degraded", "provider", "probe", "xai-responses"])
+    code = main(["--fail-on-degraded", "provider", "probe", "xai-responses"])
     assert code == 6
     payload = json.loads(capsys.readouterr().out)
     assert payload["schema_version"] == "3"
@@ -210,7 +210,7 @@ def test_v3_fail_on_degraded_keeps_envelope(monkeypatch, capsys):
     assert payload["network"]["attempted"] is True
 
 
-def test_v1_and_v2_selection_remain_unchanged(monkeypatch, capsys):
+def test_v2_evidence_selection_remains_unchanged(monkeypatch, capsys):
     from smart_search.cli import main
     from smart_search import api_v2
 
@@ -218,7 +218,7 @@ def test_v1_and_v2_selection_remain_unchanged(monkeypatch, capsys):
         return await api_v2.source_discovery(api_v2.SourceDiscoveryRequest(query=query, max_results=max_results))
 
     monkeypatch.setattr(api_v2, "_composite_search", fake_composite)
-    code = main(["--schema-version", "2", "search", "q"])
+    code = main(["search", "q"])
     assert code in {0, 3, 4}
     output = capsys.readouterr().out
     if output:

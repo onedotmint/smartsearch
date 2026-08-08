@@ -1,8 +1,13 @@
 """Stable CLI facade for parsing, dispatch, rendering, and exit codes.
 
-Parser construction is stdlib-only. Legacy service/setup/render/dispatch modules
-are imported only after a successful parse selects the v1 branch. The v2 branch
-imports only its own canonical dependencies.
+Parser construction and domain classification are stdlib-only. Routing is
+canonical command-domain based: evidence commands use V2, retained
+control-plane leaves use V3, and ``research plan`` / ``research run`` use the
+Research Workflow family. Removed selectors, aliases, and legacy spellings
+fail with the replacement family's strict INVALID_ARGUMENT envelope before
+any owner/config/provider import. Legacy service/setup/render/dispatch
+modules remain importable for the later cleanup task but are no longer
+reachable from dispatch.
 """
 
 from __future__ import annotations
@@ -18,8 +23,9 @@ from .cli_constants import (
     EXIT_OK,
     EXIT_PARAMETER_ERROR,
     EXIT_RUNTIME_ERROR,
-    prescan_schema_version,
+    classify_command_domain,
     help_all_text,
+    removed_spelling_message,
 )
 from .cli_parser import build_parser
 
@@ -140,123 +146,110 @@ def main(argv: list[str] | None = None) -> int:
     if raw_argv == ["--help-all"]:
         sys.stdout.write(help_all_text())
         return EXIT_OK
-    prescan = prescan_schema_version(raw_argv)
-    want_v2 = bool(prescan.get("v2"))
-    want_v3 = bool(prescan.get("v3"))
 
-    parser = build_parser(raise_on_error=want_v2 or want_v3)
+    classification = classify_command_domain(raw_argv)
+
+    # Removed selectors, aliases, and legacy spellings fail with the
+    # replacement family's strict INVALID_ARGUMENT envelope before any
+    # owner/config/provider import and before argparse is involved.
+    if classification["family"] == "removed":
+        return _emit_removed_family_error(classification)
+
+    # Unidentifiable input uses the existing V2 root parser-error sentinel.
+    if classification["family"] == "unknown":
+        from .cli_v2 import emit_parser_error as v2_emit
+
+        token = classification.get("command")
+        message = f"unrecognized command {token!r}" if token else "unrecognized command"
+        return v2_emit(command=None, operation=None, message=message)
+
+    parser = build_parser(raise_on_error=True)
     try:
         args = parser.parse_args(raw_argv)
     except CLIParseError as exc:
-        if want_v3:
-            from .cli_v3 import emit_parser_error
-        else:
-            from .cli_v2 import emit_parser_error
+        return _emit_family_parse_error(classification, exc.message)
+    # argparse help/version actions raise SystemExit(0) from parse_args; do
+    # not swallow them here.
 
-        return emit_parser_error(
-            command=prescan.get("command") if isinstance(prescan.get("command"), str) else None,
-            operation=prescan.get("operation") if isinstance(prescan.get("operation"), str) else None,
-            message=exc.message,
-        )
-    # v1 argparse errors, --help, and --version raise SystemExit from parse_args
-    # exactly as before Phase 3; do not swallow them here.
-
-    schema_version = str(getattr(args, "schema_version", "1") or "1")
     _CLI_FORCE_OUTPUT = bool(getattr(args, "force", False))
 
-    if schema_version == "3":
+    family = classification["family"]
+    if family == "v3":
         from .cli_v3 import dispatch
 
         return asyncio.run(dispatch(args, argv=raw_argv))
-
-    if schema_version == "2":
+    if family == "v2":
         from .cli_v2 import dispatch
 
         return asyncio.run(dispatch(args, argv=raw_argv))
 
-    # Strict research workflow route: canonical ``research run QUERY`` is a
-    # schema-neutral workflow, not a v1 result. Invalid options/input fail
-    # here with a strict INVALID_ARGUMENT result before any owner, provider,
-    # or config work and before the legacy v1 dispatcher is imported.
-    if (
-        getattr(args, "command", None) == "research"
-        and getattr(args, "namespace_operation", None) == "research-run"
-    ):
-        from .cli_research import dispatch as research_run_dispatch
+    # Research Workflow family: canonical ``research plan`` / ``research run``.
+    missing_query = classification.get("missing_query")
+    if missing_query:
+        from .cli_research import emit_parser_error as workflow_emit
 
-        return asyncio.run(research_run_dispatch(args, argv=raw_argv))
+        return workflow_emit(f"{missing_query} requires a non-blank query")
+    from .cli_research import dispatch as research_dispatch
 
-    # v1 path: lazy-load logging, setup, and dispatch.
-    from .logger import configure_cli_logging, logger
-    from .utils import PromptConfigurationError
+    return asyncio.run(research_dispatch(args, argv=raw_argv))
 
-    configure_cli_logging(json_mode=getattr(args, "format", "") == "json")
 
-    # Reject v2-only flags under schema 1.
-    if getattr(args, "fail_on_degraded", False) or getattr(args, "trace", False):
-        data = {
-            "ok": False,
-            "error_type": "parameter_error",
-            "error_code": "INVALID_ARGUMENT",
-            "error": "--fail-on-degraded and --trace require --schema-version 2",
-        }
-        return _print_result(
-            getattr(args, "command", "unknown"),
-            data,
-            getattr(args, "format", "json"),
-            getattr(args, "output", ""),
+def _emit_removed_family_error(classification: dict[str, object]) -> int:
+    """Emit the replacement family's strict INVALID_ARGUMENT envelope."""
+    error_family = classification["error_family"]
+    legacy_spelling = str(classification.get("legacy_spelling") or "")
+    replacement = str(classification.get("replacement") or "")
+    message = removed_spelling_message(legacy_spelling, replacement)
+    details = {"legacy_spelling": legacy_spelling, "replacement": replacement}
+    command = classification.get("command")
+    operation = classification.get("operation")
+    if error_family == "v2":
+        from .cli_v2 import emit_parser_error
+
+        return emit_parser_error(
+            command=command if isinstance(command, str) else None,
+            operation=operation if isinstance(operation, str) else None,
+            message=message,
+            details=details,
         )
+    if error_family == "v3":
+        from .cli_v3 import emit_parser_error
 
-    try:
-        from .cli_dispatch import (
-            _run_async,
-            _run_config,
-            _run_model,
-            _run_regression,
-            _run_setup,
-            _run_skills,
+        return emit_parser_error(
+            command=command if isinstance(command, str) else None,
+            operation=operation if isinstance(operation, str) else None,
+            message=message,
+            details=details,
         )
+    from .cli_research import emit_parser_error
 
-        if args.command == "regression":
-            return _run_regression()
-        if args.command == "setup":
-            return _run_setup(args)
-        if args.command == "skills":
-            return _run_skills(args)
-        if args.command == "config":
-            return _run_config(args)
-        if args.command == "model":
-            return _run_model(args)
-        return asyncio.run(_run_async(args))
-    except KeyboardInterrupt:
-        return EXIT_RUNTIME_ERROR
-    except PromptConfigurationError as exc:
-        data = {
-            "ok": False,
-            "error_type": "config_error",
-            "error_code": "CONFIGURATION_ERROR",
-            "error": str(exc),
-        }
-        return _print_result(
-            getattr(args, "command", "unknown"),
-            data,
-            getattr(args, "format", "json"),
-            getattr(args, "output", ""),
+    return emit_parser_error(message, details=details)
+
+
+def _emit_family_parse_error(classification: dict[str, object], message: str) -> int:
+    """Emit the canonical family's parser error for malformed canonical input."""
+    family = classification["family"]
+    command = classification.get("command")
+    operation = classification.get("operation")
+    if family == "v2":
+        from .cli_v2 import emit_parser_error
+
+        return emit_parser_error(
+            command=command if isinstance(command, str) else None,
+            operation=operation if isinstance(operation, str) else None,
+            message=message,
         )
-    except Exception as exc:
-        logger.exception("CLI 命令执行失败: command=%s", getattr(args, "command", "unknown"))
-        data = {
-            "ok": False,
-            "error_type": "runtime_error",
-            "error_code": "INTERNAL_ERROR",
-            "error": str(exc),
-        }
-        return _print_result(
-            getattr(args, "command", "unknown"),
-            data,
-            getattr(args, "format", "json"),
-            getattr(args, "output", ""),
+    if family == "v3":
+        from .cli_v3 import emit_parser_error
+
+        return emit_parser_error(
+            command=command if isinstance(command, str) else None,
+            operation=operation if isinstance(operation, str) else None,
+            message=message,
         )
+    from .cli_research import emit_parser_error
+
+    return emit_parser_error(message)
 
 
 _LAZY_SUPPORT_NAMES = frozenset({

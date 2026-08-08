@@ -5,18 +5,18 @@ These commands share the same CLI and provider registry, but they have different
 | Command | Role | Provider behavior | Output |
 | --- | --- | --- | --- |
 | `search` | Fast live answer | Calls the selected live capabilities | Answer, sources, routing, and provider attempts |
-| `deep` | Offline planner | Does not call providers, fetch pages, or run `doctor` | `research_plan` with ordered steps |
-| `research` | Live executor | Runs discovery, fetch/read, gap check, and synthesis | Evidence bundle, citations, gaps, and final answer |
+| `research plan` | Offline planner | Does not call providers, fetch pages, or run `doctor` | Workflow plan-only result with typed `plan` |
+| `research run` | Live executor | Runs discovery, fetch/read, and gap check | Strict workflow result: plan, evidence, citations, gaps, attempts, artifacts |
 
 ## Offline planner
 
 ```sh
-smart-search deep "Compare Responses API web_search with Chat Completions search" --budget deep --format json
+smart-search research plan "Compare Responses API web_search with Chat Completions search" --budget deep --format json
 ```
 
-`smart-search deep` is the public offline planner command. It is not an executor and does not change default `smart-search search` behavior. Deep Research is not a fixed topic recipe system: product comparison, technical docs, news, policy, market research, claim verification, and URL-first prompts are user language, not required schema enums.
+`smart-search research plan` is the public offline planner command. It is not an executor and does not change default `smart-search search` behavior. Deep Research is not a fixed topic recipe system: product comparison, technical docs, news, policy, market research, claim verification, and URL-first prompts are user language, not required schema enums.
 
-The planner emits a `research_plan` with these stable sections:
+The plan-only workflow result carries a typed `plan` with these stable sections:
 
 - `mode`: always `deep_research`;
 - `query_mode`: always `deep`;
@@ -31,7 +31,7 @@ The planner emits a `research_plan` with these stable sections:
 - `steps`: ordered CLI command steps;
 - `gap_check`: how the agent verifies missing evidence;
 - `final_answer_policy`: how to cite fetched evidence;
-- `usage_boundary`: the user-facing distinction between `search`, `deep`, and `research`.
+- `usage_boundary`: the user-facing distinction between `search`, `research plan`, and `research run`.
 
 Allowed planned tools are `search`, `fetch`, and `map`. `doctor` is a `preflight` action, not a `steps[]` item. Plans must not require fixed topic recipe ids. Even `--budget quick` plans retain at least one `fetch` step when evidence policy requires it.
 
@@ -40,13 +40,13 @@ The plan's `steps[].command` and `steps[].output_path` are one contract. Prefer 
 ## Live executor
 
 ```sh
-smart-search research "Compare Responses API web_search with Chat Completions search" --budget deep --fallback auto --format json
+smart-search research run "Compare Responses API web_search with Chat Completions search" --budget deep --format json
 ```
 
-`smart-search research` is the public live executor command. It runs:
+`smart-search research run` is the public live executor command. It runs:
 
 ```text
-plan -> discover -> fetch/read -> gap check -> evidence-only synthesis
+plan -> discover -> fetch/read -> gap check
 ```
 
 The executor uses capability-based orchestration and provider advantage routing:
@@ -58,21 +58,21 @@ The executor uses capability-based orchestration and provider advantage routing:
 - Firecrawl is favored for JS-heavy, dynamic, browser-like, OCR/PDF, or robust fallback extraction.
 - AnySearch is an experimental vertical capability with no generic Evidence owner and does not participate in the research executor.
 
-`research --fallback auto` permits same-capability fallback. `--fallback off` tries only the first eligible provider in each capability. Research provider overrides can reorder or disable providers only within their declared capabilities.
+Research provider overrides can reorder or disable providers only within their declared capabilities. The workflow family rejects `--fallback`, `--synthesize`, `--evidence-dir`, `--output`, and `--force` before any owner work.
 
-Research JSON includes `final_answer`, `content`, `citations`, `evidence_items`, `gap_check`, `provider_attempts`, `fallback_used`, `degraded`, `response_mode`, `synthesis_enabled`, `route_policy_version`, and `evidence_dir`. The additive `evidence_bundle` groups `discovery_candidates`, `fetched_evidence`, `sources`, `citations`, `gaps`, and provider attempts. Prefer `research run` for Agent workflows: it defaults to evidence-only mode with empty answer fields and leaves final writing to the host. Bare `research` and `research run --synthesize` reuse evidence-only synthesis. If synthesis fails, fetched evidence and citations remain in the result with `synthesis_error` and degraded gaps; the executor does not silently search or fetch again.
+Research JSON uses the workflow envelope: `schema_version`, `ok`, `status`, `command`, `operation=research.run`, `plan`, `stages`, `evidence`, `citations`, `gaps`, `attempts`, `artifacts`, `error`, and `meta`. It contains no `final_answer`/`content`/synthesis fields; the host agent writes the final prose from admitted evidence. `research run` leaves final writing to the host. Bare `research`, `rs`, `deep`, and `dr` are removed spellings and fail with the workflow family's strict error; the executor never silently searches or fetches again.
 
 Good smoke prompts include:
 
 ```sh
-smart-search deep "深度搜索一下最近的比特币行情" --format json
-smart-search deep "OpenAI Responses API web_search 和 Chat Completions 联网搜索怎么选" --budget deep --format json
-smart-search deep "帮我核验这个说法是真是假：某某工具已经完全替代 Tavily 做 AI 搜索了" --format json
-smart-search deep "https://example.com/source" --format json
+smart-search research plan "深度搜索一下最近的比特币行情" --format json
+smart-search research plan "OpenAI Responses API web_search 和 Chat Completions 联网搜索怎么选" --budget deep --format json
+smart-search research plan "帮我核验这个说法是真是假：某某工具已经完全替代 Tavily 做 AI 搜索了" --format json
+smart-search research plan "https://example.com/source" --format json
 ```
 
 ## Related contracts
 
 - [Evidence policy](evidence.md) defines when a candidate becomes usable evidence.
 - [Routing](routing.md) defines `intent_signals`, capability selection, and degraded routing.
-- [Command reference](../commands.md) lists aliases, output flags, and skill lifecycle commands such as `smart-search skills status` and `smart-search skills update`.
+- [Command reference](../commands.md) lists output flags and skill lifecycle commands such as `smart-search dev skills status` and `smart-search dev skills update`.

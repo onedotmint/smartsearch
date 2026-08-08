@@ -132,7 +132,7 @@ def test_release_docs_explain_beta_lane_and_npm_immutability():
         "GitHub release creation fails",
         "npm `E409`",
         "diff-style gap check",
-        "smart-search smoke --mock --format json",
+        "smart-search dev smoke --mock --format json",
         "Windows npm/mise wrapper is emitting UTF-8 JSON",
     ]
     for marker in contract_markers:

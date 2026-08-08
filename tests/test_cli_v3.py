@@ -13,7 +13,7 @@ def _payload(capsys):
 
 def test_v3_config_read_and_write_metadata(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(tmp_path))
-    assert main(["--schema-version", "3", "config", "list"]) == 0
+    assert main(["config", "list"]) == 0
     listed = _payload(capsys)
     assert listed["operation"] == "config.list"
     assert listed["result"]["values"] == {}
@@ -21,7 +21,7 @@ def test_v3_config_read_and_write_metadata(monkeypatch, tmp_path, capsys):
         "read": True, "write_attempted": False, "write_committed": False,
     }
 
-    assert main(["--schema-version", "3", "config", "set", "XAI_API_KEY", "raw-secret"]) == 0
+    assert main(["config", "set", "XAI_API_KEY", "raw-secret"]) == 0
     written = _payload(capsys)
     assert written["operation"] == "config.set"
     assert written["side_effects"]["config"]["write_committed"] is True
@@ -30,7 +30,7 @@ def test_v3_config_read_and_write_metadata(monkeypatch, tmp_path, capsys):
 
 def test_v3_config_parameter_failure_does_not_attempt_write(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(tmp_path))
-    assert main(["--schema-version", "3", "config", "set", "SMART_SEARCH_API_KEY", "old"]) == 2
+    assert main(["config", "set", "SMART_SEARCH_API_KEY", "old"]) == 2
     payload = _payload(capsys)
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
     assert payload["side_effects"]["config"]["write_attempted"] is False
@@ -72,7 +72,7 @@ def test_v3_route_write_projects_masked_routes(monkeypatch, capsys):
 
     monkeypatch.setattr(control_operations, "run_provider_routes_add", fake_add)
     code = main([
-        "--schema-version", "3", "provider", "routes", "add",
+        "provider", "routes", "add",
         "--id", "primary", "--provider", "openai-compatible",
         "--api-url", "https://user:pass@example.com/v1?api_key=route-secret",
         "--api-key", "route-secret", "--model", "model-a",
@@ -98,7 +98,7 @@ def test_v3_provider_catalog_and_probe_metadata(monkeypatch, tmp_path, capsys):
     from smart_search.execution_primitives import ExecutionError, ExecutionMetadata
 
     monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(tmp_path))
-    assert main(["--schema-version", "3", "provider", "list"]) == 0
+    assert main(["provider", "list"]) == 0
     catalog = _payload(capsys)
     assert catalog["operation"] == "provider.catalog.list"
     assert catalog["network"]["attempted"] is False
@@ -118,7 +118,7 @@ def test_v3_provider_catalog_and_probe_metadata(monkeypatch, tmp_path, capsys):
         )
 
     monkeypatch.setattr(control_operations, "run_provider_probe", fake_probe)
-    assert main(["--schema-version", "3", "provider", "probe", "tavily"]) == 3
+    assert main(["provider", "probe", "tavily"]) == 3
     probe = _payload(capsys)
     assert probe["error"]["code"] == "CONFIGURATION_ERROR"
     assert probe["network"] == {
@@ -135,7 +135,7 @@ def test_v3_doctor_status_and_partial_probe(monkeypatch, capsys):
         "core_evidence_ready": True, "core_evidence_path": {},
         "capability_status": {}, "intent_router_status": {},
     })
-    assert main(["--schema-version", "3", "doctor", "status"]) == 0
+    assert main(["doctor", "status"]) == 0
     status = _payload(capsys)
     assert status["operation"] == "doctor.status"
     assert status["network"]["policy"] == "none"
@@ -152,7 +152,7 @@ def test_v3_doctor_status_and_partial_probe(monkeypatch, capsys):
         }
 
     monkeypatch.setattr(operations_service, "_execute_doctor_probe", fake_doctor)
-    assert main(["--schema-version", "3", "doctor", "probe"]) == 0
+    assert main(["doctor", "probe"]) == 0
     probe = _payload(capsys)
     assert probe["status"] == "degraded"
     assert probe["network"]["attempted"] is True
@@ -169,7 +169,7 @@ def test_v3_doctor_status_and_partial_probe(monkeypatch, capsys):
         }
 
     monkeypatch.setattr(operations_service, "_execute_doctor_probe", owner_degraded_doctor)
-    assert main(["--schema-version", "3", "doctor", "probe"]) == 0
+    assert main(["doctor", "probe"]) == 0
     owner_degraded = _payload(capsys)
     assert owner_degraded["status"] == "degraded"
     assert "optional capabilities unavailable" in owner_degraded["meta"]["warnings"][0]
@@ -202,12 +202,12 @@ def test_v3_route_diagnostics_project_degraded_and_network(monkeypatch, capsys):
 
     monkeypatch.setattr(capability_service, "route", fake_route)
     monkeypatch.setattr(capability_service, "route_calibrate", fake_calibrate)
-    assert main(["--schema-version", "3", "dev", "route-explain", "docs"]) == 0
+    assert main(["dev", "route-explain", "docs"]) == 0
     route = _payload(capsys)
     assert route["status"] == "degraded"
     assert route["network"]["attempted"] is True
 
-    assert main(["--schema-version", "3", "dev", "route-calibrate", "--models", "a,b"]) == 0
+    assert main(["dev", "route-calibrate", "--models", "a,b"]) == 0
     calibration = _payload(capsys)
     assert calibration["status"] == "degraded"
     assert calibration["result"]["failed_models"] == ["b"]
@@ -241,31 +241,31 @@ def test_v3_diagnose_smoke_regression_and_skills(monkeypatch, capsys):
         "skipped_count": 0, "failed_count": 1,
     })
 
-    assert main(["--schema-version", "3", "dev", "diagnose", "openai-compatible"]) == 3
+    assert main(["dev", "diagnose", "openai-compatible"]) == 3
     diagnose = _payload(capsys)
     assert diagnose["network"]["attempted"] is False
 
-    assert main(["--schema-version", "3", "dev", "smoke", "--mock"]) == 0
+    assert main(["dev", "smoke", "--mock"]) == 0
     smoke = _payload(capsys)
     assert smoke["status"] == "complete"
     assert smoke["network"]["attempted"] is False
 
-    assert main(["--schema-version", "3", "dev", "regression"]) == 5
+    assert main(["dev", "regression"]) == 5
     regression = _payload(capsys)
     assert regression["error"]["code"] == "SUBPROCESS_FAILED"
     assert regression["side_effects"]["subprocess"]["started"] is True
 
-    assert main(["--schema-version", "3", "dev", "skills", "status", "--targets", "codex"]) == 0
+    assert main(["dev", "skills", "status", "--targets", "codex"]) == 0
     skills_status = _payload(capsys)
     assert skills_status["side_effects"]["filesystem"]["read"] is True
     assert skills_status["side_effects"]["filesystem"]["write_attempted"] is False
 
-    assert main(["--schema-version", "3", "dev", "skills", "status", "--targets", "not-a-real-target"]) == 2
+    assert main(["dev", "skills", "status", "--targets", "not-a-real-target"]) == 2
     skills_bad = _payload(capsys)
     assert skills_bad["error"]["code"] == "INVALID_ARGUMENT"
     assert skills_bad["side_effects"]["filesystem"]["write_attempted"] is False
 
-    assert main(["--schema-version", "3", "dev", "skills", "update", "--targets", "codex,claude"]) == 0
+    assert main(["dev", "skills", "update", "--targets", "codex,claude"]) == 0
     skills_update = _payload(capsys)
     assert skills_update["status"] == "degraded"
     assert skills_update["side_effects"]["filesystem"]["write_attempted"] is True
@@ -273,18 +273,24 @@ def test_v3_diagnose_smoke_regression_and_skills(monkeypatch, capsys):
 
 
 def test_v3_rejects_excluded_and_noncanonical_commands(capsys):
+    # Canonical v3 namespaces with removed leaves/aliases stay v3-family.
     cases = (
-        ["--schema-version", "3", "provider", "exa", "search", "q"],
-        ["--schema-version", "3", "experimental", "anysearch", "domains"],
-        ["--schema-version", "3", "doctor"],
-        ["--schema-version", "3", "model", "list"],
+        (["provider", "exa", "search", "q"], "3"),
+        (["doctor"], "3"),
+        (["model", "list"], "3"),
     )
-    for argv in cases:
+    for argv, schema in cases:
         assert main(argv) == 2
         payload = _payload(capsys)
-        assert payload["schema_version"] == "3"
+        assert payload["schema_version"] == schema
         assert payload["operation"] is None
         assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    # The experimental namespace is not part of the canonical tree at all; it
+    # falls back to the V2 root parser-error sentinel.
+    assert main(["experimental", "anysearch", "domains"]) == 2
+    payload = _payload(capsys)
+    assert payload["schema_version"] == "2"
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
 
 
 def test_v1_and_v3_regression_use_one_shared_owner_per_invocation(monkeypatch, capsys):
@@ -297,12 +303,17 @@ def test_v1_and_v3_regression_use_one_shared_owner_per_invocation(monkeypatch, c
         return {"ok": True, "exit_code": 0, "subprocess_started": True, "fallback": ""}
 
     monkeypatch.setattr(control_operations, "_execute_regression", fake_regression_result)
-    assert main(["regression"]) == 0
-    capsys.readouterr()
-    assert main(["--schema-version", "3", "dev", "regression"]) == 0
+    # Bare ``regression`` is a removed legacy spelling -> v3 family error.
+    assert main(["regression"]) == 2
+    payload = _payload(capsys)
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert payload["error"]["details"]["legacy_spelling"] == "regression"
+    assert calls == []
+    # The canonical v3 leaf runs the one shared owner once.
+    assert main(["dev", "regression"]) == 0
     payload = _payload(capsys)
     assert payload["operation"] == "dev.regression"
-    assert calls == ["regression", "regression"]
+    assert calls == ["regression"]
 
 
 def test_v3_rejects_root_trace_before_owner(monkeypatch, capsys):
@@ -313,7 +324,7 @@ def test_v3_rejects_root_trace_before_owner(monkeypatch, capsys):
         "config_list",
         lambda **_: (_ for _ in ()).throw(AssertionError("owner called")),
     )
-    code = main(["--schema-version", "3", "--trace", "config", "list"])
+    code = main(["--trace", "config", "list"])
     assert code == 2
     payload = _payload(capsys)
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
@@ -329,7 +340,7 @@ def test_v3_packaged_regression_fallback_works_inside_event_loop(monkeypatch, ca
 
     monkeypatch.setattr(control_operations, "_regression_test_files_available", lambda _root: False)
     monkeypatch.setattr(operations_service, "_execute_smoke", fake_smoke)
-    assert main(["--schema-version", "3", "dev", "regression"]) == 0
+    assert main(["dev", "regression"]) == 0
     payload = _payload(capsys)
     assert payload["operation"] == "dev.regression"
     assert payload["status"] == "complete"
@@ -358,26 +369,26 @@ def test_v3_dev_regression_format_owner_once_and_strict_rejection(monkeypatch, c
 
     monkeypatch.setattr(control_operations, "_execute_regression", fake_regression)
 
-    assert main(["--schema-version", "3", "dev", "regression", "--format", "markdown"]) == 0
+    assert main(["dev", "regression", "--format", "markdown"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("# V3 Regression")
     assert '"schema_version"' not in out
     assert calls == ["regression"]
 
-    assert main(["--schema-version", "3", "dev", "regression", "--format", "content"]) == 0
+    assert main(["dev", "regression", "--format", "content"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("dev.regression COMPLETE:")
     assert calls == ["regression", "regression"]
 
-    assert main(["--schema-version", "3", "dev", "regression", "--format", "json"]) == 0
+    assert main(["dev", "regression", "--format", "json"]) == 0
     payload = _payload(capsys)
     assert payload["operation"] == "dev.regression"
     assert calls == ["regression", "regression", "regression"]
 
     # --output / --force remain strictly rejected without running the owner.
     for argv in (
-        ["--schema-version", "3", "dev", "regression", "--output", "out.md"],
-        ["--schema-version", "3", "dev", "regression", "--force"],
+        ["dev", "regression", "--output", "out.md"],
+        ["dev", "regression", "--force"],
     ):
         assert main(argv) == 2
         payload = _payload(capsys)
@@ -386,7 +397,7 @@ def test_v3_dev_regression_format_owner_once_and_strict_rejection(monkeypatch, c
     assert calls == ["regression", "regression", "regression"]
 
     # An invalid format value is rejected before any owner execution.
-    assert main(["--schema-version", "3", "dev", "regression", "--format", "yaml"]) == 2
+    assert main(["dev", "regression", "--format", "yaml"]) == 2
     payload = _payload(capsys)
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
     assert "yaml" in payload["error"]["message"]
@@ -401,7 +412,7 @@ def test_v3_internal_error_does_not_claim_writes_or_leak_secrets(monkeypatch, ca
         raise RuntimeError(f"boom-{value}")
 
     monkeypatch.setattr(control_operations, "run_config_set", boom)
-    code = main(["--schema-version", "3", "config", "set", "XAI_API_KEY", "secret-token-xyz"])
+    code = main(["config", "set", "XAI_API_KEY", "secret-token-xyz"])
     assert code == 5
     payload = _payload(capsys)
     assert payload["error"]["code"] == "INTERNAL_ERROR"
@@ -422,7 +433,7 @@ def test_v3_config_atomic_write_failure_reports_attempt_without_commit(monkeypat
 
     # operations_service.config_set catches ConfigStorageError from config.set_config_value.
     monkeypatch.setattr(operations_service.config, "set_config_value", boom)
-    code = main(["--schema-version", "3", "config", "set", "XAI_API_KEY", "raw-secret"])
+    code = main(["config", "set", "XAI_API_KEY", "raw-secret"])
     assert code == 3
     payload = _payload(capsys)
     assert payload["error"]["code"] == "CONFIGURATION_ERROR"

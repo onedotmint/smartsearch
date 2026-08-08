@@ -3,25 +3,20 @@
 ## Deep Research Skill Contract
 
 This contract keeps Deep Research capability-based and evidence-first:
-`smart-search deep` only plans, `smart-search research` executes live work, and
-claim-level conclusions require fetched evidence. The internal `CapabilityPlan`
-binds command capabilities and request budgets, while `EvidenceBundle` keeps
-discovery candidates separate from fetched/read evidence. Evidence paths come
-from an explicit `--evidence-dir` or the CLI's platform temporary directory;
-the omitted-directory planner default is
-`tempfile.gettempdir()/smart-search-evidence/<timestamp>-<slug>`. The live
-executor persists artifacts only for an explicit directory or when
-`SMART_SEARCH_PERSIST_EVIDENCE=true` is set.
-Preserve the planned `steps[].command --output` value and matching
-`steps[].output_path`.
+`smart-search research plan` plans offline, `smart-search research run` executes
+the staged evidence workflow, and claim-level conclusions require fetched
+evidence. The typed plan binds executable operations and request budgets, while
+the workflow keeps discovery candidates separate from fetched/read evidence.
+The plan is an offline artifact only: it never embeds shell commands, output
+paths, or an evidence directory, and the workflow records logical artifacts
+without projecting files.
 
 ## Table of Contents
 
 - Trigger and boundary
 - Offline planner and live executor
 - Planner shape
-- Required field semantics
-- Step contract
+- Operation contract
 - Capability boundaries
 - Live executor output
 - Closeout lessons
@@ -37,144 +32,99 @@ Deep Research does not change default `smart-search search` behavior and does no
 
 ## Offline Planner And Live Executor
 
-- `smart-search deep` is the public offline planner command and a public planner entrypoint, not an executor. It does not call providers, run `doctor`, or fetch pages by default.
-- `smart-search research` is the public live executor command and public live executor entrypoint. It executes plan -> discover -> fetch/read -> gap check -> evidence-only synthesis.
-- Before manual execution, run `smart-search deep "question" --format json` and use the returned `research_plan` as your planning artifact.
-- Use `smart-search research "question" --format json` when the user wants the CLI to run live Deep Research end to end instead of only planning.
+- `smart-search research plan "question"` is the public offline planner command and a public planner entrypoint, not an executor. It does not call providers, run `doctor`, or fetch pages by default. It returns the typed plan inside a plan-only workflow result (operation `research.run`, empty execution collections).
+- `smart-search research run "question"` is the public live executor command and public live executor entrypoint. It executes plan -> discover -> fetch/read -> gap check and returns the strict workflow result; the host agent writes the final answer.
+- Before manual execution, run `smart-search research plan "question" --format json` and use the returned `plan` as your planning artifact.
+- Use `smart-search research run "question" --format json` when the user wants the CLI to run live Deep Research end to end instead of only planning.
 
 Default orchestration:
 
 1. Run `smart-search doctor status --format json` as the local preflight when configuration is uncertain. Use `doctor probe` only for an explicit live aggregate check.
-2. Call `smart-search deep "question" --format json` to create an offline `research_plan`.
-3. Inspect `intent_signals`, `decomposition`, and `capability_plan`; do not choose fixed topic recipe ids.
-4. Execute planned `smart-search search ... --validation balanced --extra-sources 1..3` steps for broad discovery and read routing metadata.
-5. Execute planned `smart-search search` steps for intent-matched discovery (docs/API, Chinese/current, or official-domain routes are selected internally by capability), or planned `map` steps when site structure is needed.
-6. Use `fetch` on key URLs before making claim-level statements.
-7. Run `gap_check`: if an important claim lacks fetched evidence, fetch another source or mark the claim/source as unverified.
+2. Call `smart-search research plan "question" --format json` to create the offline typed plan.
+3. Inspect the ordered `operations` list (`id`, `operation`, `input`, `constraints`, `depends_on`); do not choose fixed topic recipe ids.
+4. Execute the planned discovery operations as `smart-search search "query" --format json` steps (docs/API, Chinese/current, or official-domain routes are selected internally by capability), or planned `map` steps (`smart-search map "url" --format json`) when site structure is needed.
+5. Use `smart-search fetch "url" --format json` on key URLs before making claim-level statements.
+6. Run `gap_check`: if an important claim lacks fetched evidence, fetch another source or mark the claim/source as unverified.
 
-Default evidence policy is `fetch_before_claim`: key claims in the final answer must be supported by fetched page text. Treat `primary_sources` and `extra_sources` as discovery candidates until the relevant URL has been fetched. Final answers should include fetched evidence, unverified candidate sources, and key commands used.
+Default evidence policy is `fetch_before_claim`: key claims in the final answer must be supported by fetched page text. Treat `evidence.candidates` as discovery candidates until the relevant URL has been fetched. Final answers should include fetched evidence, unverified candidate sources, and key commands used.
 
 ## Planner Shape
 
-Use this shape as the planning artifact:
+`research plan` returns a plan-only Workflow result whose `plan` member is the
+typed plan. It carries exactly:
 
 ```json
 {
-  "mode": "deep_research",
-  "query_mode": "deep",
-  "question": "user question",
-  "trigger_source": "explicit_cli",
-  "difficulty": "standard|high",
-  "intent_signals": {
-    "recency_requirement": "none|recent|current",
-    "docs_api_intent": false,
-    "locale_domain_scope": "global|china|known_domains|mixed",
-    "known_url": false,
-    "source_authority_need": "normal|high",
-    "claim_risk": "low|medium|high",
-    "cross_validation_need": "normal|high",
-    "breadth_depth_budget": "quick|standard|deep"
-  },
-  "decomposition": [
+  "schema_version": "research-plan-1",
+  "operations": [
     {
-      "id": "sq1",
-      "question": "subquestion",
-      "reason": "why this subquestion is needed",
-      "required_capabilities": ["broad_discovery"]
+      "id": "source-discovery-1",
+      "operation": "source_discovery",
+      "input": {
+        "query": "user question"
+      },
+      "constraints": {
+        "max_results": 3
+      },
+      "depends_on": []
     }
-  ],
-  "capability_plan": [
-    {
-      "capability": "broad_discovery",
-      "tools": ["search"],
-      "reason": "Find the initial answer shape and candidate sources."
-    }
-  ],
-  "preflight": {
-    "tool": "doctor",
-    "command": "smart-search doctor status --format json",
-    "when": "configuration or availability is uncertain"
-  },
-  "evidence_policy": "fetch_before_claim",
-  "steps": [
-    {
-      "id": "s1",
-      "subquestion_id": "sq1",
-      "tool": "search",
-      "purpose": "broad discovery",
-      "command": "smart-search search \"query\" --validation balanced --extra-sources 1 --format json --output \"<evidence-dir>/YYYYMMDD-HHMM-topic/01-search.json\"",
-      "output_path": "<evidence-dir>/YYYYMMDD-HHMM-topic/01-search.json"
-    }
-  ],
-  "gap_check": {
-    "required": true,
-    "rule": "fetch missing evidence for key claims or downgrade them to unverified candidates"
-  },
-  "final_answer_policy": "cite fetched evidence, list unverified candidates, and include key commands",
-  "usage_boundary": {
-    "search": "smart-search search runs live fast/broad search immediately.",
-    "deep": "smart-search deep is an offline planner; it does not execute provider calls or fetch pages.",
-    "execution": "An AI agent or user executes the listed steps with existing CLI commands, then performs gap_check."
-  }
+  ]
 }
 ```
 
-## Required Field Semantics
+- `operations` is an ordered executable plan. Each operation has `id` (unique within the plan), `operation` (one of the executable workflow operations such as `source_discovery`, `docs_discovery`, `content_fetch`, or `site_discovery`), `input` (the query or candidate references), `constraints` (bounded request budgets such as `max_results` or `max_items`), and `depends_on` (ids of operations that must complete first).
+- The plan never contains shell commands, output paths, provider raw payloads, `final_answer`, `content` answers, or synthesis flags. `--evidence-dir`, `--output`, `--force`, `--fallback`, and `--synthesize` are rejected by the workflow family before any owner work.
+- The workflow result envelope is the same for plan and run: `schema_version`, `ok`, `status`, `command`, `operation`, `plan`, `stages`, `evidence`, `citations`, `gaps`, `attempts`, `artifacts`, `error`, and `meta`. `research plan` returns it with empty `stages`/`evidence`/`citations`/`gaps`/`attempts`/`artifacts`.
 
-- `mode`: always `deep_research`.
-- `query_mode`: always `deep`.
-- `question`: the user's research question.
-- `trigger_source`: usually `explicit_cli`.
-- `difficulty`: `standard` or `high`.
-- `intent_signals`: dimensional signals such as `recency_requirement`, `docs_api_intent`, `locale_domain_scope`, `known_url`, `source_authority_need`, `claim_risk`, `cross_validation_need`, and `breadth_depth_budget`.
-- `decomposition`: subquestions for complex research, each with `id`, `question`, `reason`, and `required_capabilities`.
-- `capability_plan`: the selected capability needs and the CLI tools chosen for each need.
-- `evidence_policy`: default `fetch_before_claim`.
-- `preflight`: `doctor` guidance. `deep` does not execute this by default.
-- `steps`: ordered CLI command steps.
-- `gap_check`: how the agent verifies that key claims have fetched evidence or downgrades unsupported claims to unverified candidates.
-- `final_answer_policy`: how to cite fetched evidence and list unverified candidates.
-- `usage_boundary`: user-facing distinction between fast live `search`, offline `deep` planning, and later step execution.
-- `allowed_tools`, `evidence_dir`, and `elapsed_ms` may appear in planner output and should be preserved when saving evidence.
-- `evidence_dir`: the explicit `--evidence-dir` value, or a generated `smart-search-evidence` directory under `tempfile.gettempdir()` when omitted.
+## Operation Contract
 
-`smart-search deep` is offline by default: `preflight.executed_by_deep_command=false`, no provider calls are made, and live research only happens when an AI agent or user executes `steps[].command` or calls `smart-search research`.
+Planned operations map to existing CLI commands only:
 
-## Step Contract
+- `source_discovery` / `docs_discovery` -> `smart-search search "query" --format json`
+- `content_fetch` -> `smart-search fetch "url" --format json`
+- `site_discovery` -> `smart-search map "url" --format json`
 
-Allowed `tool` values are `search`, `fetch`, and `map`; these are the only valid `steps[].tool` values and map to existing CLI commands only. `doctor` is a `preflight` action, not a `steps[]` item. Simple plans may have one subquestion; complex plans should use 2-6 subquestions unless the user explicitly asks for exhaustive coverage.
-
-Each `steps[]` item must include `id`, `subquestion_id`, `tool`, `purpose`, `command`, and `output_path`. `steps[].command` and `steps[].output_path` are one contract: the `--output` path embedded in the executable command must match `output_path`, otherwise the AI agent cannot reliably find saved evidence.
-
-Prefer PowerShell-safe quoted commands in generated plans because Windows users often copy planned steps directly from Markdown or JSON output. Avoid hard-coding operating-system-specific roots in reusable examples; use `--evidence-dir PATH` or the CLI-generated `evidence_dir`. Windows paths such as `C:\tmp\smart-search-evidence\...` are explicit examples only, not the runtime default.
+`doctor status` is a preflight action, not a planned operation. Simple plans
+may have a single discovery plus fetches; complex plans use staged discovery
+with dependencies and bounded fetch batches. The `depends_on` links must stay
+valid: a fetch must depend on the discovery operation whose candidate
+references it feeds. The `depends_on` links must stay valid and each retained
+operation must keep its dependencies within the same plan.
 
 ## Capability Boundaries
 
-- `search`: broad discovery and synthesis through `main_search`; use returned `routing_decision`, `provider_attempts`, `fallback_used`, and `source_warning` as orchestration signals, not as claim proof. Provider selection inside `search` is internal and intent-driven (for example `docs_search` providers for library/API intent and `web_search` providers for Chinese/current topics).
-- `search --extra-sources N`: Tavily/Firecrawl horizontal candidate collection for breadth. Treat those candidates as discovery until fetched.
+- `search`: broad discovery and synthesis through the generic evidence command; use returned `routing`, `attempts`, and `degradation` as orchestration signals, not as claim proof. Provider selection inside `search` is internal and intent-driven (for example `docs_search` providers for library/API intent and `web_search` providers for Chinese/current topics).
 - `fetch`: page-content evidence. Key claims require fetched page text under `fetch_before_claim`.
 - `map`: site structure exploration before many fetches from one site; not claim evidence by itself.
+- The canonical V2 commands accept only `--format json|markdown|content`; V1 options such as `--extra-sources`, `--timeout`, `--validation`, and `--output` are rejected before any provider work.
 
 ## Live Executor Output
 
-Prefer the Agent-facing evidence-first namespace:
+Use the Agent-facing workflow command:
 
 ```powershell
-smart-search research run "question" --budget deep --fallback auto --evidence-dir "<evidence-dir>" --format json --output "research.json"
+smart-search research run "question" --budget deep --format json
 ```
 
-`research run` reuses the established staged executor but defaults to evidence-only mode: admitted evidence, citations, gaps, and attempts are returned while `final_answer` and `content` stay empty (`response_mode=evidence`, `synthesis_enabled=false`). The host agent writes the final prose. Opt in to SmartSearch synthesis only with `--synthesize`.
+`research run` returns the strict workflow result: plan, stages, admitted
+evidence, citations, gaps, attempts, and logical artifact records while no
+answer is synthesized. The host agent writes the final prose. `--synthesize`,
+`--output`, `--force`, `--fallback`, and `--evidence-dir` are rejected by the
+workflow family before any owner work. Bare `research`, `rs`, `deep`, and `dr`
+are removed spellings and fail with the workflow family's strict error.
 
-Bare compatibility form (still synthesizes by default):
+Dynamic routing may reorder providers only inside the same capability. Every
+attempt must record capability, provider, status, error type, latency, and
+result count.
 
-```powershell
-smart-search research "question" --budget deep --fallback auto --evidence-dir "<evidence-dir>" --format json --output "research.json"
-smart-search research run "question" --synthesize --format json
-```
-
-`research --fallback auto` permits same-capability fallback inside selected routes. `research --fallback off` tries only the first selected provider in each capability route and is for debugging or provider comparison. Dynamic routing may reorder providers only inside the same capability. Every attempt must record capability, provider, status, error type, latency, and result count.
-
-Research output includes `final_answer`, `content`, `citations`, `evidence_items`, `fetched_evidence`, `discovery_candidates`, `evidence_bundle`, `gap_check`, `provider_attempts`, `fallback_used`, `degraded`, `synthesis_error`, `response_mode`, `synthesis_enabled`, `artifacts_persisted`, `route_policy_version`, and `evidence_dir`. When synthesis runs, it is evidence-only: it may cite fetched/read evidence, but it must not cite unfetched discovery candidates as proof. If synthesis fails, preserve the evidence and citations, report `synthesis_error`, and return degraded gaps. Intentional evidence-only mode does not invent a budget-exhaustion synthesis gap. If providers are exhausted or evidence cannot close, return the degraded gaps rather than inventing missing claims.
+`research run` output has the exact workflow shape: `schema_version`, `ok`,
+`status`, `command`, `operation`, `plan`, `stages`, `evidence`, `citations`,
+`gaps`, `attempts`, `artifacts`, `error`, and `meta`. It never includes
+`final_answer`, `content` answers, synthesis fields, shell commands, or output
+paths. Citations reference admitted fetched evidence only; discovery
+candidates are never cited as proof. If providers are exhausted or evidence
+cannot close, the workflow returns structured gaps rather than inventing
+missing claims.
 
 Research provider advantage routing:
 
@@ -191,21 +141,21 @@ Safe research overrides are `SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS` and `SMA
 
 ## Closeout Lessons
 
-- Budget limits must not break evidence policy. Even `--budget quick` plans must retain at least one `fetch` step when claim-level conclusions are expected, and retained steps must keep valid `subquestion_id` links.
+- Budget limits must not break evidence policy. Even `--budget quick` plans must retain at least one `content_fetch` operation when claim-level conclusions are expected, and retained operations must keep valid `depends_on` links.
 - If a smoke issue is found, fix the affected docs/code/tests and rerun the affected smoke until it passes or is proven to be an external provider blocker.
 - Final answers assembled from discovery-only output should list unverified candidates rather than presenting them as supported claims.
 
 ## Smoke Coverage
 
-Deep Research smoke matrix for workflow maintenance is mock-full plus live-limited. Mock-full coverage should cover trigger phrases, normal search requests that should not trigger Deep Research, required `research_plan` fields, allowed tool whitelist, `fetch_before_claim`, evidence output paths, capability boundaries, `intent_signals`, `capability_plan`, `gap_check`, simple current prompts such as `深度搜索一下最近的比特币行情`, docs/API prompts, claim-verification prompts, user-provided URL fetch-first flows, missing-provider failure guidance, research provider advantage routing, same-capability research fallback, and the rule that fixed topic recipe ids are not required schema.
+Deep Research smoke matrix for workflow maintenance is mock-full plus live-limited. Mock-full coverage should cover trigger phrases, normal search requests that should not trigger Deep Research, required `research plan` fields, the executable operation whitelist, `fetch_before_claim`, capability boundaries, simple current prompts such as `深度搜索一下最近的比特币行情`, docs/API prompts, claim-verification prompts, user-provided URL fetch-first flows, missing-provider failure guidance, research provider advantage routing, same-capability research fallback, and the rule that fixed topic recipe ids are not required schema.
 
-Live-limited coverage should run `doctor`, one broad `search`, and one `fetch` only when real keys are available and the user expects live checks. Add one small `research` smoke when configured keys make it stable.
+Live-limited coverage should run `doctor status`, one broad `search`, and one `fetch` only when real keys are available and the user expects live checks. Add one small `research run` smoke when configured keys make it stable.
 
 Standard user-facing Deep Research tests:
 
 ```powershell
-smart-search deep "深度搜索一下最近的比特币行情" --format json
-smart-search deep "OpenAI Responses API web_search 和 Chat Completions 联网搜索怎么选" --budget deep --format json
-smart-search deep "帮我核验这个说法是真是假：某某工具已经完全替代 Tavily 做 AI 搜索了" --format json
-smart-search deep "https://example.com/source" --format json
+smart-search research plan "深度搜索一下最近的比特币行情" --format json
+smart-search research plan "OpenAI Responses API web_search 和 Chat Completions 联网搜索怎么选" --budget deep --format json
+smart-search research plan "帮我核验这个说法是真是假：某某工具已经完全替代 Tavily 做 AI 搜索了" --format json
+smart-search research plan "https://example.com/source" --format json
 ```

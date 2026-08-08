@@ -27,27 +27,25 @@ Unsupported key claims must be fetched or downgraded to unverified candidates. T
 
 Search and research results may contain:
 
-- `primary_sources`: the main discovery candidates;
-- `extra_sources`: supplementary discovery candidates;
-- `fetched_evidence`: page text or reader output used for claims;
-- `citations`: references generated from fetched evidence;
-- `gaps`: claims or subquestions that remain unsupported;
-- `source_warning`: warnings about incomplete or low-confidence source coverage;
-- `provider_attempts`, `providers_used`, and `fallback_used`: provider execution metadata.
+- `evidence.candidates`: discovery candidates (`id`, `resource`, `provider`, `title`, `snippet`) that are not yet proof;
+- `evidence.items`: fetched/read page text used for claims (`id`, `resource`, `provider`, `title`, `content`);
+- `evidence.citations`: references generated from fetched evidence;
+- `evidence.gaps`: claims or subquestions that remain unsupported;
+- `routing`, `attempts`, and `degradation`: provider execution metadata (capability routing, per-attempt provider/status/error, and degradation codes).
 
-`primary_sources` and `extra_sources` are candidates until their URLs are fetched. A broad answer is not a substitute for fetching the source that supports a high-risk claim.
+Discovery candidates are candidates until their URLs are fetched. A broad answer is not a substitute for fetching the source that supports a high-risk claim.
 
 ## Persistent evidence
 
-The planner may display a platform temporary `evidence_dir`. Runtime artifacts are persisted only when `--evidence-dir` is explicit or `SMART_SEARCH_PERSIST_EVIDENCE=true` is set. Use a stable, user-controlled directory when evidence must survive the process:
+The strict V2/V3/Workflow families reject `--output`, `--force`, and `--evidence-dir` before any owner work; the research workflow records logical artifacts only. Persist evidence by capturing stdout JSON with shell redirection:
 
 ```sh
-smart-search search "Reuters Iran Hormuz latest" --format json --output ./evidence/01-search.json
-smart-search fetch "https://example.com/source" --format markdown --output ./evidence/02-fetch.md
+smart-search search "Reuters Iran Hormuz latest" --format json > ./evidence/01-search.json
+smart-search fetch "https://example.com/source" --format markdown > ./evidence/02-fetch.md
 ```
 
 The runtime cache never stores synthesis answers, credentials, prompts, errors, empty results, or research artifacts. It may cache cleaned successful source/content results when explicitly enabled; caching does not change freshness or evidence requirements.
 
 ## Degraded results
 
-When provider or synthesis failures prevent complete coverage, keep the fetched evidence and report the missing support. `research run` may finish with `degraded=true` or explicit gaps while intentionally leaving answer fields empty. Bare `research` and `research run --synthesize` may also report `synthesis_error`. Neither path may invent evidence, treat a discovery snippet as a citation, or silently call another capability as a substitute.
+When provider or synthesis failures prevent complete coverage, keep the fetched evidence and report the missing support. `research run` may finish with `degraded` status or explicit gaps while intentionally leaving answer fields empty. Bare `research`, `rs`, `deep`, and `dr` are removed spellings that fail with the workflow family's strict error, and `research run --synthesize` is rejected before any owner work. Neither path may invent evidence, treat a discovery snippet as a citation, or silently call another capability as a substitute.

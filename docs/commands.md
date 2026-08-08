@@ -1,6 +1,6 @@
 # Command reference
 
-The CLI accepts a command followed by a query, URL, or command-specific arguments. Command aliases are shown in the second column.
+The CLI accepts a command followed by a query, URL, or command-specific arguments. Routing is canonical command-domain based: evidence commands use the V2 envelope, retained control-plane commands use the V3 envelope, and `research plan` / `research run` use the Research Workflow envelope. The `--schema-version` selector, legacy aliases, and removed commands fail with the replacement family's strict `INVALID_ARGUMENT` error and are never reinterpreted.
 
 ## Common output options
 
@@ -18,51 +18,49 @@ Most commands accept:
 | `--fetch-prompt-file PATH` | Override the fetch prompt for this call |
 | `--research-prompt-file PATH` | Override the research prompt for this call |
 
-Remote prompt URLs are rejected. Local prompt overrides apply only to the current command.
+Remote prompt URLs are rejected. Local prompt overrides apply only to the current command. The strict V2/V3/Workflow families accept `--format` but reject `--output`, `--force`, and prompt overrides before any owner work.
 
-## Opt-in schema version 2
+## V2 evidence Core API
 
-Root-global flags (before the subcommand):
+Root flags:
 
 | Option | Meaning |
 | --- | --- |
-| `--schema-version 1\|2\|3` | Select the result schema. Default remains `1`. |
 | `--fail-on-degraded` | v2 and v3 only: exit `6` for degraded envelopes without changing JSON. |
 | `--trace` | v2 only: attach redacted non-stable `meta.trace` events. |
 
-Supported v2 Core commands:
+Supported V2 Core commands:
 
 ```sh
-smart-search --schema-version 2 search QUERY
-smart-search --schema-version 2 fetch URL
-smart-search --schema-version 2 capabilities
+smart-search search QUERY
+smart-search fetch URL
+smart-search capabilities
 ```
 
-Advanced v2 command:
+Advanced V2 command:
 
 ```sh
-smart-search --schema-version 2 map URL
+smart-search map URL
 ```
 
 Rules:
 
-- v2 output defaults to JSON, the only stable machine contract. `--format markdown|content` selects one non-stable human presentation document of the same validated envelope.
-- v2 `search` has no `response_mode`; any `--response-mode` fails before network I/O.
-- v2 `search` is evidence-first discovery (candidates + routing/attempts). It never routes through legacy `main_search`.
-- v2 `capabilities` uses envelope operation `capability_status` with empty evidence/attempts/routing capability arrays and no Provider calls.
-- Only the root-global flag placement is supported: `smart-search --schema-version 2 <command>`.
-- Apart from the explicit `--format json|markdown|content` selection, v2 rejects v1 command options before configuration or Provider work; `map` remains Advanced and accepts only its URL in this release.
-- Existing v1 command semantics, JSON wrapper, and Skill workflows are unchanged.
+- V2 output defaults to JSON, the only stable machine contract. `--format markdown|content` selects one non-stable human presentation document of the same validated envelope.
+- V2 `search` has no `response_mode`; any `--response-mode` fails before network I/O.
+- V2 `search` is evidence-first discovery (candidates + routing/attempts). It never routes through legacy `main_search`.
+- V2 `capabilities` uses envelope operation `capability_status` with empty evidence/attempts/routing capability arrays and no Provider calls.
+- V2 rejects v1 command options (`--output`, `--force`, `--platform`, `--model`, `--extra-sources`, `--profile`, `--response-mode`, `--validation`, `--fallback`, `--providers`, `--stream`/`--no-stream`, `--timeout`, and prompt-file overrides) before configuration or Provider work.
+- The `--schema-version` selector is removed; the command domain alone decides the contract.
 
-## Opt-in schema version 3 control-plane API
+## Control-plane V3 JSON API
 
-V3 is a separate, additive JSON contract for stable control-plane operations. It is **not** an evidence envelope and is not the Agent Core default. Select it only with the root-global flag:
+V3 is a separate JSON contract for stable control-plane operations. It is **not** an evidence envelope:
 
 ```sh
-smart-search --schema-version 3 config list
-smart-search --schema-version 3 provider status
-smart-search --schema-version 3 doctor status
-smart-search --schema-version 3 dev smoke --mock
+smart-search config list
+smart-search provider status
+smart-search doctor status
+smart-search dev smoke --mock
 ```
 
 V3 accepts these canonical namespace leaves only:
@@ -84,171 +82,145 @@ side_effects, error, meta
 - `status` is `complete`, `degraded`, or `failed`. Empty successful lists and successful no-op removals are `complete`; `degraded` means the requested operation completed with observable partial outcomes; `failed` includes a structured error.
 - `network` reports declared policy/scope and actual `attempted` state. `side_effects` separately reports config/filesystem reads and write attempt/commit state plus subprocess start. Do not infer I/O from status.
 - V3 error codes are `INVALID_ARGUMENT`, `CONFIGURATION_ERROR`, `AUTHENTICATION_FAILED`, `UPSTREAM_TIMEOUT`, `PROVIDER_UNAVAILABLE`, `FILE_SYSTEM_ERROR`, `SUBPROCESS_FAILED`, and `INTERNAL_ERROR`. `--fail-on-degraded` changes only the process exit to `6`.
-- V3 output defaults to JSON, the only stable machine contract. `--format markdown|content` selects one non-stable human presentation document of the same validated envelope. V3 rejects `--output`, `--force`, prompt overrides, `--trace`, aliases, Core evidence commands, exact Provider direct commands, and all `experimental` leaves before an owner runs.
+- V3 output defaults to JSON, the only stable machine contract. `--format markdown|content` selects one non-stable human presentation document of the same validated envelope. V3 rejects `--output`, `--force`, prompt overrides, `--trace`, aliases, evidence commands, exact Provider direct commands, and all `experimental` leaves before an owner runs.
 - Values, error details, URLs, and route credentials are recursively redacted. V3 does not expose v2 `evidence`, `routing`, capability-attempt fields, or trace types.
 
-V1 remains the default compatibility renderer and v2 remains the evidence-first Agent Core API. Existing scripts receive no new shape unless they explicitly select `--schema-version 3`. Rollback removes the v3 parser/dispatcher and this section only; it does not modify v1/v2 behavior or persisted configuration.
+Removed legacy control spellings (`model *`, bare `smoke`, `doctor`, `diagnose`, `regression`, `skills *`, `route`, `route-calibrate`, `setup`, and aliases such as `cfg`, `mdl`, `sm`, `d`, `diag`, `reg`, `skill`) fail with the V3 family's strict `INVALID_ARGUMENT` envelope and name the canonical replacement.
+
+## Research Workflow
+
+```sh
+smart-search research plan QUERY [--budget quick|standard|deep]
+smart-search research run QUERY [--budget quick|standard|deep] [--profile fast|balanced|deep]
+```
+
+`research plan` builds the typed plan offline and returns a plan-only workflow result (operation `research.run`, empty execution collections). `research run` executes the staged evidence workflow: discovery, bounded fetches, evidence admission, citations, gaps, attempts, and logical artifact records. The host agent writes the final answer from admitted evidence.
+
+Every result has exactly these top-level fields:
+
+```text
+schema_version, ok, status, command, operation, plan, stages,
+evidence, citations, gaps, attempts, artifacts, error, meta
+```
+
+The workflow family forbids `content`, `final_answer`, synthesis controls, shell commands, output paths, and raw Provider payloads. Bare `research`, `rs`, `deep`, and `dr` are removed spellings that fail with the workflow family's strict `INVALID_ARGUMENT` envelope.
 
 ## Command discovery
 
-Root `smart-search --help` intentionally advertises only `search`, `fetch`, `capabilities`, and `setup`. `map` is Advanced; provider, developer, and legacy-compatible entries remain callable but are not root-help commands. Run `smart-search --help-all` for the deterministic complete command inventory.
+Root `smart-search --help` intentionally advertises only `search`, `fetch`, and `capabilities`. Run `smart-search --help-all` for the deterministic complete canonical inventory (V2 evidence, V3 control plane, and Research Workflow). Removed commands and aliases are never advertised.
 
 ## Core commands
 
-| Command | Alias | Use |
-| --- | --- | --- |
-| `search QUERY` | `s` | Fast live search and broad synthesis |
-| `route QUERY` | `rt` | Explain required capabilities without running search/fetch providers |
-| `fetch URL` | `f` | Fetch one known URL |
-| `map URL` | `m` | Discover a site's structure |
-| `deep QUERY` | `dr` | Create an offline Deep Research plan |
-| `research QUERY` | `rs` | Execute live staged research |
-| `doctor` | `d` | Show masked configuration and connection checks |
-| `diagnose openai-compatible` | `diag` | Diagnose OpenAI-compatible search hangs and timeouts |
-| `capabilities` | - | Report configured capabilities and fallback metadata |
-| `setup` | `init` | Save local provider configuration and optionally install skills |
-| `config` | `cfg` | Read or update local configuration |
-| `model` | `mdl` | Manage ordered main-search model routes |
-| `skills` | `skill` | Inspect or update installed managed skill files |
-| `smoke` | `sm` | Run provider routing smoke checks |
-| `regression` | `reg` | Run offline CLI regression checks |
-| `route-calibrate` | `route-cal`, `rcal` | Evaluate embedding router thresholds |
+| Command | Use |
+| --- | --- |
+| `search QUERY` | Fast live search and broad discovery (V2 evidence envelope) |
+| `fetch URL` | Fetch one known URL (V2 evidence envelope) |
+| `map URL` | Discover a site's structure (V2 advanced) |
+| `capabilities` | Report configured capabilities and fallback metadata (V2 local) |
+| `research plan QUERY` | Create an offline Deep Research plan (Workflow) |
+| `research run QUERY` | Execute live staged evidence research (Workflow) |
+| `config path\|list\|set\|unset` | Read or update local configuration (V3) |
+| `provider list\|status\|probe` | Provider catalog and one explicit probe (V3) |
+| `provider routes current\|list\|add\|remove` | Manage ordered main-search routes (V3) |
+| `doctor status\|probe` | Local readiness or explicit live aggregate check (V3) |
+| `dev route-explain`, `dev route-calibrate`, `dev diagnose openai-compatible`, `dev smoke`, `dev regression`, `dev skills status\|update` | Developer diagnostics (V3) |
 
 ### Search
 
 ```sh
 smart-search search "OpenAI Responses API changes" --format json
-smart-search search "query" --validation balanced --extra-sources 3 --timeout 90 --format json --output result.json
-smart-search search "query" --response-mode evidence --format markdown
-smart-search search "query" --stream --format json
-smart-search search "query" --no-stream --format json
+smart-search search "query" --format markdown
+smart-search search "query" --format content
 ```
 
-`search` is the fast live entrypoint. `--response-mode` accepts `evidence`, `concise`, or `synthesized`; `--validation` accepts `fast`, `balanced`, or `strict`. `--fallback` accepts `auto` or `off`.
-
-### Route
-
-```sh
-smart-search route "React useEffect API docs" --router-mode rules --format markdown
-smart-search route "verify this URL https://example.com/source" --router-mode rules --format json
-```
-
-`--router-mode` accepts `hybrid`, `rules`, or `off`. Route does not run search, docs, fetch, or vertical provider calls. In `hybrid`, configured embedding and classifier endpoints may be called; use `rules` for a local-only diagnostic.
+`search` is the fast live entrypoint and accepts only `--format json|markdown|content` (plus the root `--trace` / `--fail-on-degraded` flags). V1-era options (`--validation`, `--fallback`, `--stream`, `--no-stream`, `--timeout`, `--extra-sources`, `--platform`, `--model`, `--providers`, `--profile`, `--response-mode`, `--output`, `--force`) are rejected before network I/O with the V2 strict `INVALID_ARGUMENT` error. V2 search returns discovery candidates and never synthesizes an answer.
 
 ### Fetch and map
 
 ```sh
-smart-search fetch "https://example.com/source" --format markdown --output evidence.md
-smart-search map "https://docs.example.com" --instructions "Find API reference pages" --max-depth 1 --limit 50 --format json
+smart-search fetch "https://example.com/source" --format markdown
+smart-search map "https://docs.example.com" --format json
 ```
 
-`fetch` is the page-level evidence boundary. `map` returns site or documentation structure candidates and does not replace fetching the pages that support claims.
+`fetch` is the page-level evidence boundary. `map` returns site or documentation structure candidates and does not replace fetching the pages that support claims. `fetch` and `map` accept only `--format json|markdown|content`; `--output`, `--force`, and the V1 `map` options (`--instructions`, `--max-depth`, `--max-breadth`, `--limit`, `--timeout`) are rejected before any owner work.
 
-### Deep Research
+### Research Workflow
 
 ```sh
-smart-search deep "Deep research recent Bitcoin market movement" --budget standard --format json
 smart-search research plan "Deep research recent Bitcoin market movement" --budget standard --format json
-smart-search research run "Deep research recent Bitcoin market movement" --budget deep --fallback auto --format json
-smart-search research run "Deep research recent Bitcoin market movement" --synthesize --format json
-smart-search research "Deep research recent Bitcoin market movement" --budget deep --fallback auto --format markdown
+smart-search research run "Deep research recent Bitcoin market movement" --budget deep --format json
 ```
 
-`deep --budget` accepts `quick`, `standard`, or `deep` and remains offline. `research plan` is the collision-safe namespace for the same offline planner. `research run` is the Agent-facing staged executor: it reuses the established research pipeline but defaults to evidence-only mode (`final_answer` and `content` are empty, `response_mode="evidence"`, `synthesis_enabled=false`). Pass `--synthesize` only when the host wants the existing evidence-only synthesizer. Bare `research QUERY` remains the legacy synthesized live executor. `research --fallback auto` permits same-capability fallback; `--fallback off` uses only the first eligible provider inside each capability. Phase 5 does not add a strict v2 research envelope.
+`research plan` is the collision-safe offline planner. `research run` is the Agent-facing staged executor. Bare `research QUERY` is a removed legacy spelling; use `research run` instead.
 
-### Compatibility namespaces
-
-Namespace leaves preserve the existing v1 renderer, JSON envelope, redaction, file-output behavior, and exit codes by default. The explicit `--schema-version 3` control-plane allowlist above is the only exception; namespace names still have no aliases and legacy commands and aliases remain supported under v1.
-
-| Namespace path | Command / handler | Network behavior |
-| --- | --- | --- |
-| `research plan QUERY` | `deep` | Offline planning |
-| `research run QUERY` | `research-run` over the research executor | Live staged evidence workflow; synthesis opt-in |
-| `doctor probe` | `doctor` | Live aggregate diagnostic |
-| `doctor status` | `doctor-status` | Local readiness only; no provider client or probe |
-| `provider list` / `provider status` | Local provider catalog | Local only; no provider client or probe |
-| `provider probe PROVIDER` | `provider-probe` | One explicit provider/family probe; no fallback |
-| `provider routes current\|list\|add\|remove` | `model` | Local config |
-| `dev route-explain`, `dev route-calibrate`, `dev diagnose openai-compatible`, `dev smoke`, `dev regression`, `dev skills status\|update` | Matching legacy command | Diagnostic, local, or explicit network behavior |
-
-Examples:
+### Config
 
 ```sh
-smart-search research plan "Compare two current API designs" --budget standard --format json
-smart-search research run "Compare two current API designs" --format json
-smart-search doctor status --format json
-smart-search doctor probe --format markdown
+smart-search config path --format json
+smart-search config list --format json
+smart-search config set XAI_API_KEY "value" --format json
+smart-search config unset XAI_API_KEY --format json
+```
+
+Config reads and writes are local and atomic. Writes never expose raw values, and environment-controlled credentials are never copied into the file. Legacy main-search keys (`XAI_*`, `OPENAI_COMPATIBLE_*`) remain readable through the persisted-data upgrade readers.
+
+### Provider catalog, probes, and routes
+
+```sh
 smart-search provider list --format json
 smart-search provider status --format json
 smart-search provider probe exa --format json
 smart-search provider routes current --format json
-smart-search dev route-explain "React useEffect docs" --router-mode rules --format json
+smart-search provider routes list --format json
+smart-search provider routes add --id primary --provider openai-compatible --api-url "https://relay-a.example/v1" --api-key "key-a" --model "model-a"
+smart-search provider routes remove primary --format json
 ```
 
-`doctor status` reports local configuration and evidence-path readiness (`local_only=true`). Bare `doctor` and `doctor probe` remain the live aggregate diagnostic. `provider probe PROVIDER` validates the id against the runtime registry, checks local eligibility first, and then runs only that provider's smallest supported connection operation.
+`provider probe PROVIDER` validates the id against the runtime registry, checks local eligibility first, and then runs only that provider's smallest supported connection operation. `provider list` and `provider status` are local-only metadata and eligibility views.
+
+On the first local `provider routes add`, saved legacy `XAI_*` and `OPENAI_COMPATIBLE_*` main-search settings are retained as `legacy-xai-responses` and `legacy-openai-compatible` routes before the new route. This migration never copies environment-controlled legacy settings into the local file.
+
+### Doctor and developer diagnostics
+
+```sh
+smart-search doctor status --format json
+smart-search doctor probe --format markdown
+smart-search dev route-explain "React useEffect docs" --router-mode rules --format json
+smart-search dev route-calibrate --models "a,b" --format json
+smart-search dev diagnose openai-compatible --format markdown
+smart-search dev smoke --mock --format json
+smart-search dev regression
+smart-search dev skills status --targets codex --format json
+smart-search dev skills update --targets codex --format json
+```
+
+`doctor status` reports local configuration and evidence-path readiness (`local_only=true`). `doctor probe` is the live aggregate diagnostic. Bare `doctor` and `smoke` are removed spellings; use `doctor probe` and `dev smoke`.
 
 ## Ordered model routes
 
-Model routes are tried in the order shown by `model list`. A failed timeout, network request, rate-limit, provider, parse, protocol, or empty-result attempt advances to the next route. Local configuration, parameter, and exhausted-budget errors stop the request.
+Model routes are tried in the order shown by `provider routes list`. A failed timeout, network request, rate-limit, provider, parse, protocol, or empty-result attempt advances to the next route. Local configuration, parameter, and exhausted-budget errors stop the request.
 
-Use the CLI to append a route without editing JSON:
-
-```sh
-smart-search model add --id primary --provider openai-compatible --api-url "https://relay-a.example/v1" --api-key "key-a" --model "model-a"
-smart-search model add --id backup --provider openai-compatible --api-url "https://relay-b.example/v1" --api-key "key-b" --model "model-b" --stream
-smart-search model list --format markdown
-smart-search model current --format json
-smart-search model remove backup
-```
-
-The same list can be edited directly in the local file reported by `smart-search config path`:
-
-```json
-{
-  "SMART_SEARCH_MODEL_ROUTES": [
-    {
-      "id": "primary",
-      "provider": "openai-compatible",
-      "api_url": "https://relay-a.example/v1",
-      "api_key": "key-a",
-      "model": "model-a"
-    },
-    {
-      "id": "backup",
-      "provider": "openai-compatible",
-      "api_url": "https://relay-b.example/v1",
-      "api_key": "key-b",
-      "model": "model-b",
-      "stream": true
-    }
-  ]
-}
-```
-
-Supported providers are `openai-compatible` and `xai-responses`. xAI routes may set `tools` to `web_search`, `x_search`, or both. OpenAI-compatible routes may set `stream` and same-endpoint `fallback_models`. `model list`, `model current`, `config list`, and `doctor` mask route API keys.
-
-On the first local `model add`, saved legacy `XAI_*` and `OPENAI_COMPATIBLE_*` main-search settings are retained as `legacy-xai-responses` and `legacy-openai-compatible` routes before the new route. This migration never copies environment-controlled legacy settings into the local file. When a legacy provider is controlled by the environment, define the complete `SMART_SEARCH_MODEL_ROUTES` array in the environment instead.
+Supported providers are `openai-compatible` and `xai-responses`. xAI routes may set `tools` to `web_search`, `x_search`, or both. OpenAI-compatible routes may set `stream` and same-endpoint `fallback_models`. `provider routes list`, `config list`, and `doctor` mask route API keys.
 
 ## Provider capability routing
 
-Provider selection is internal to the generic `search`, `fetch`, and `map` commands; there are no provider-branded public commands. Configured `docs_search` (Context7/Exa), `web_search` (Zhipu REST/MCP, Tavily, Firecrawl), `web_fetch` (Tavily, Jina, Zhipu MCP Reader, Firecrawl), and `vertical_search` (AnySearch) providers are chosen by capability and intent. Exact-provider leaves such as `exa-search`, `zhipu-search`, `context7-library`, `anysearch-search`, and the `provider exa|context7|zhipu` / `experimental` namespaces are removed; their spellings are rejected at parse time without any provider call.
+Provider selection is internal to the generic `search`, `fetch`, and `map` commands; there are no provider-branded public commands. Configured `docs_search` (Context7/Exa), `web_search` (Zhipu REST/MCP, Tavily, Firecrawl), `web_fetch` (Tavily, Jina, Zhipu MCP Reader, Firecrawl), and `vertical_search` (AnySearch) providers are chosen by capability and intent. Exact-provider leaves and the `provider exa|context7|zhipu` / `experimental` namespaces are removed; their spellings fail with the strict family error before any provider call.
 
 Provider configuration and capability boundaries are documented in [Providers](providers.md).
 
 ## Operational commands
 
 ```sh
-smart-search doctor --format markdown
-smart-search diagnose openai-compatible --format markdown
+smart-search doctor status --format json
+smart-search doctor probe --format markdown
 smart-search capabilities --format json
 smart-search config path --format json
 smart-search config list --format json
-smart-search model list --format markdown
-smart-search model current --format json
-smart-search skills status --targets codex --format json
-smart-search skills update --targets codex --format json
-smart-search smoke --mock --format json
-smart-search regression
+smart-search provider routes list --format markdown
+smart-search provider routes current --format json
+smart-search dev skills status --targets codex --format json
+smart-search dev smoke --mock --format json
+smart-search dev regression
 ```
 
-Use `doctor` as preflight. It does not prove that every possible provider path will succeed. Use mock smoke and regression for deterministic checks; live smoke requires intentional credentials and network access.
+Use `doctor status` as preflight. It does not prove that every possible provider path will succeed. Use mock smoke and regression for deterministic checks; live smoke requires intentional credentials and network access.

@@ -886,20 +886,20 @@ def test_v3_markdown_and_content_are_one_stdout_document(monkeypatch, tmp_path):
     monkeypatch.setattr(control_operations, "run_config_list", fake_list)
     monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(tmp_path))
 
-    code, out, err = _run_main(["--schema-version", "3", "config", "list", "--format", "markdown"])
+    code, out, err = _run_main(["config", "list", "--format", "markdown"])
     assert code == 0, err
     assert sum(1 for line in out.splitlines() if line.startswith("# V3 Config List")) == 1
     assert "Status: COMPLETE" in out
     assert out.count('"schema_version"') == 0
     assert out.count("Status:") == 1
 
-    code, out, err = _run_main(["--schema-version", "3", "config", "list", "--format", "content"])
+    code, out, err = _run_main(["config", "list", "--format", "content"])
     assert code == 0, err
     assert out.startswith("config.list COMPLETE:")
     assert out.count("\n") == 1
 
     # JSON default stays the direct serializer document
-    code, out, err = _run_main(["--schema-version", "3", "config", "list"])
+    code, out, err = _run_main(["config", "list"])
     assert code == 0, err
     payload = json.loads(out)
     assert payload["operation"] == "config.list"
@@ -917,8 +917,8 @@ def test_v3_output_and_force_are_strictly_rejected(monkeypatch, tmp_path):
     monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(tmp_path))
 
     for argv in (
-        ["--schema-version", "3", "config", "list", "--output", "out.md"],
-        ["--schema-version", "3", "config", "list", "--force"],
+        ["config", "list", "--output", "out.md"],
+        ["config", "list", "--force"],
     ):
         code, out, err = _run_main(argv)
         assert code == 2, (argv, out, err)
@@ -960,14 +960,14 @@ def test_v3_diagnose_default_stays_json_despite_parser_default(monkeypatch, caps
         }
 
     monkeypatch.setattr(operations_service, "_execute_diagnose_openai_compatible", fake_diagnose)
-    code, out, err = _run_main(["--schema-version", "3", "dev", "diagnose", "openai-compatible"])
+    code, out, err = _run_main(["dev", "diagnose", "openai-compatible"])
     assert code == 3
     payload = json.loads(out)
     assert payload["operation"] == "dev.diagnose.openai-compatible"
     assert payload["error"]["code"] == "CONFIGURATION_ERROR"
 
     code, out, err = _run_main([
-        "--schema-version", "3", "dev", "diagnose", "openai-compatible", "--format", "markdown",
+        "dev", "diagnose", "openai-compatible", "--format", "markdown",
     ])
     assert code == 3
     assert out.count("# V3 Diagnose OpenAI-Compatible") == 1
@@ -977,7 +977,7 @@ def test_v3_diagnose_default_stays_json_despite_parser_default(monkeypatch, caps
     # Every V3 operation, including diagnose, accepts explicit content even
     # though the shared v1 parser historically listed only json|markdown.
     code, out, err = _run_main([
-        "--schema-version", "3", "dev", "diagnose", "openai-compatible", "--format", "content",
+        "dev", "diagnose", "openai-compatible", "--format", "content",
     ])
     assert code == 3
     assert out.startswith("dev.diagnose.openai-compatible FAILED:")
@@ -986,19 +986,17 @@ def test_v3_diagnose_default_stays_json_despite_parser_default(monkeypatch, caps
     assert out.count("\n") == 1
 
 
-def test_diagnose_parser_accepts_content_for_v1_and_v3_spellings():
-    """The shared parser choice is the minimal parity change: both diagnose
-    spellings accept json|markdown|content while the v1 default stays
-    markdown and the typed v3 route keeps JSON as its contract default."""
+def test_diagnose_parser_accepts_content_for_canonical_spelling():
+    """The canonical ``dev diagnose openai-compatible`` leaf accepts
+    json|markdown|content while the typed v3 route keeps JSON as its
+    contract default. The legacy bare ``diagnose`` spelling is removed and
+    fails with the v3 family error instead of parsing."""
     from smart_search.cli_parser import build_parser
 
     parser = build_parser(raise_on_error=False)
-    args = parser.parse_args(["diagnose", "openai-compatible", "--format", "content"])
-    assert args.format == "content"
     args = parser.parse_args(["dev", "diagnose", "openai-compatible", "--format", "content"])
     assert args.format == "content"
-    # v1 default is unchanged (markdown); the typed family overrides via argv.
-    args = parser.parse_args(["diagnose", "openai-compatible"])
+    args = parser.parse_args(["dev", "diagnose", "openai-compatible"])
     assert args.format == "markdown"
 
 
@@ -1044,13 +1042,13 @@ def test_v3_dev_regression_format_views_are_one_stdout_document(monkeypatch):
 
     monkeypatch.setattr(control_operations, "run_dev_regression", fake_regression)
 
-    code, out, err = _run_main(["--schema-version", "3", "dev", "regression", "--format", "markdown"])
+    code, out, err = _run_main(["dev", "regression", "--format", "markdown"])
     assert code == 0, err
     assert out.count("# V3 Regression") == 1
     assert "Status: COMPLETE" in out
     assert out.count('"schema_version"') == 0
 
-    code, out, err = _run_main(["--schema-version", "3", "dev", "regression", "--format", "content"])
+    code, out, err = _run_main(["dev", "regression", "--format", "content"])
     assert code == 0, err
     assert out.startswith("dev.regression COMPLETE:")
     assert out.count("\n") == 1
@@ -1058,8 +1056,8 @@ def test_v3_dev_regression_format_views_are_one_stdout_document(monkeypatch):
 
     # Explicit json and omitted format both produce the serializer document.
     for argv in (
-        ["--schema-version", "3", "dev", "regression"],
-        ["--schema-version", "3", "dev", "regression", "--format", "json"],
+        ["dev", "regression"],
+        ["dev", "regression", "--format", "json"],
     ):
         code, out, err = _run_main(argv)
         assert code == 0, err
@@ -1142,7 +1140,7 @@ def test_v2_cli_json_output_is_exactly_the_serializer_document(monkeypatch):
         return envelope
 
     monkeypatch.setattr(api_v2, "_composite_search", fake_composite)
-    code, out, err = _run_main(["--schema-version", "2", "search", "q", "--format", "json"])
+    code, out, err = _run_main(["search", "q", "--format", "json"])
     assert code == 0, err
     expected = json.dumps(serialize_result(envelope), ensure_ascii=False, indent=2) + "\n"
     assert out == expected

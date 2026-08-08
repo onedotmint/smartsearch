@@ -9,19 +9,19 @@
 
 ## Regression
 
-Run `smart-search regression` before considering CLI or skill changes complete.
+Run `smart-search dev regression` before considering CLI or skill changes complete.
 
 - In a source checkout, it runs offline pytest coverage for CLI, service, smoke, provider, and skill contract behavior.
 - In npm / mise packaged installs, repository test files are not bundled; since v0.1.8 it falls back to built-in mock smoke regression so users can still verify installed CLI health.
 - For release validation, use a source checkout for full pytest-backed regression and use packaged-install regression only as an install-health check.
 - Provider architecture changes must be verified as distributable CLI behavior, not as behavior that only works because one developer machine has a specific wrapper, shell profile, or local config file.
-- After provider-routing changes, run source-checkout regression plus `smart-search smoke --mock --format json`. If live keys were used, run a targeted secret scan for exact key substrings before committing.
+- After provider-routing changes, run source-checkout regression plus `smart-search dev smoke --mock --format json`. If live keys were used, run a targeted secret scan for exact key substrings before committing.
 
 ## Smoke Matrix
 
 - Deep Research smoke coverage is mock-full plus live-limited.
-- Mock-full coverage should cover trigger phrases, normal search requests that should not trigger Deep Research, required `research_plan` fields, allowed tool whitelist, `fetch_before_claim`, evidence paths, capability boundaries, `intent_signals`, `capability_plan`, `gap_check`, simple current prompts such as `深度搜索一下最近的比特币行情`, docs/API prompts, claim-verification prompts, user-provided URL fetch-first flows, missing-provider failure guidance, research provider advantage routing, same-capability research fallback, and the rule that fixed topic recipe ids are not required schema.
-- Live-limited coverage should run `doctor`, one broad `search`, and one `fetch` when real keys are available and live checks are expected; add one small `research` smoke when configured keys make it stable.
+- Mock-full coverage should cover trigger phrases, normal search requests that should not trigger Deep Research, required `research plan` fields, the executable operation whitelist, `fetch_before_claim`, capability boundaries, simple current prompts such as `深度搜索一下最近的比特币行情`, docs/API prompts, claim-verification prompts, user-provided URL fetch-first flows, missing-provider failure guidance, research provider advantage routing, same-capability research fallback, and the rule that fixed topic recipe ids are not required schema.
+- Live-limited coverage should run `doctor status`, one broad `search`, and one `fetch` when real keys are available and live checks are expected; add one small `research run` smoke when configured keys make it stable.
 - If a smoke issue is found, fix the affected docs/code/tests and rerun the affected smoke until it passes or is proven to be an external provider blocker.
 
 ## Release Lanes
@@ -39,5 +39,5 @@ Run `smart-search regression` before considering CLI or skill changes complete.
 - Backfill jobs can publish npm successfully even if GitHub release creation fails because the workflow token cannot access the release API. In that case, leave npm intact and create the missing GitHub prerelease with authenticated local `gh release create ... --prerelease --latest=false`.
 - If concurrent backfill jobs hit npm `E409`, re-dispatch only the affected versions serially after checking whether the version already appeared in the registry.
 - Finish with a diff-style gap check: expected beta version list minus npm versions equals empty, and expected `vX.Y.Z-beta.N` list minus GitHub prereleases equals empty.
-- Local verification after a test release must use an exact install target, such as `mise use -g "npm:@onedotmint/smart-search@0.1.10-beta.3" -y --pin`, followed by `mise reshim`, `where.exe smart-search`, `smart-search --version`, packaged `smart-search regression`, and `smart-search smoke --mock --format json`.
-- Also pipe a non-ASCII JSON command such as `smart-search deep "深度搜索一下最近的比特币行情" --format json | ConvertFrom-Json` to verify the Windows npm/mise wrapper is emitting UTF-8 JSON, not locale-encoded bytes.
+- Local verification after a test release must use an exact install target, such as `mise use -g "npm:@onedotmint/smart-search@0.1.10-beta.3" -y --pin`, followed by `mise reshim`, `where.exe smart-search`, `smart-search --version`, packaged `smart-search dev regression`, and `smart-search dev smoke --mock --format json`.
+- Also pipe a non-ASCII JSON command such as `smart-search research plan "深度搜索一下最近的比特币行情" --format json | ConvertFrom-Json` to verify the Windows npm/mise wrapper is emitting UTF-8 JSON, not locale-encoded bytes.

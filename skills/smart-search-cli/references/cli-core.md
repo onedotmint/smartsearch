@@ -14,62 +14,48 @@
 - `smart-search` is the primary CLI and should resolve from the user's PATH.
 - `smart-search --version`, `smart-search --v`, and `smart-search -v` print the installed version and exit with code `0`.
 - This bundled skill is maintained with the `smartsearch` repository.
-- Private API keys should be saved with `smart-search setup` or `smart-search config set`; environment variables remain supported for CI and advanced users.
+- Private API keys should be saved with `smart-search config set`; environment variables remain supported for CI and advanced users.
 - Do not depend on MCP inline `env` values or committed API-key environment variables for CLI use.
 - On Windows with mise, the managed package name is `npm:@onedotmint/smart-search`; the executable remains `smart-search`. Diagnose mise managed installs with `mise ls "npm:@onedotmint/smart-search"` and `mise which smart-search`.
-- The root `smart-search --help` lists only `search`, `fetch`, `capabilities`, and `setup`. Run `smart-search --help-all` for complete namespace and legacy discovery; provider-specific, diagnostic, calibration, smoke, regression, and model commands remain callable.
+- The root `smart-search --help` lists only `search`, `fetch`, and `capabilities`. Run `smart-search --help-all` for the complete canonical inventory (V2 evidence, V3 control plane, and Research Workflow). Removed commands and aliases are never advertised and fail with the replacement family's strict error.
 
 ## Commands
 
-- `smart-search search QUERY [--platform NAME] [--model ID] [--extra-sources N] [--profile fast|balanced|deep] [--response-mode evidence|concise|synthesized] [--validation fast|balanced|strict] [--fallback auto|off] [--providers auto|CSV] [--stream|--no-stream] [--timeout SECONDS] [--prompt-dir PATH] [--search-prompt-file PATH] [--fetch-prompt-file PATH] [--research-prompt-file PATH] [--format json|markdown|content] [--output PATH] [--force]`
-- `smart-search route QUERY [--validation fast|balanced|strict] [--router-mode hybrid|rules|off] [--format json|markdown|content] [--output PATH]`
-- `smart-search fetch URL [--prompt-dir PATH] [--search-prompt-file PATH] [--fetch-prompt-file PATH] [--research-prompt-file PATH] [--format json|markdown|content] [--output PATH] [--force]`
-- `smart-search deep QUERY [--budget quick|standard|deep] [--evidence-dir PATH] [--format json|markdown|content] [--output PATH]`
-- `smart-search research QUERY [--budget quick|standard|deep] [--profile fast|balanced|deep] [--evidence-dir PATH] [--fallback auto|off] [--prompt-dir PATH] [--search-prompt-file PATH] [--fetch-prompt-file PATH] [--research-prompt-file PATH] [--format json|markdown|content] [--output PATH] [--force]`
-- `smart-search capabilities [--format json|markdown|content] [--output PATH] [--force]`
-- `smart-search route-calibrate [--models CSV] [--format json|markdown|content] [--output PATH]`
-- `smart-search map URL [--instructions TEXT] [--max-depth N] [--max-breadth N] [--limit N] [--timeout SECONDS] [--format json|markdown|content] [--output PATH]`
-- `smart-search doctor [--format json|markdown|content] [--output PATH]`
-- `smart-search diagnose openai-compatible [--timeout SECONDS] [--format json|markdown|content] [--output PATH]`
-- `smart-search setup [--lang zh|en] [--advanced] [--non-interactive] [--skip-skills] [--install-skills CSV] [--skills-root PATH] [--minimum-profile lite|standard|full|off] [--format json|markdown|content] [--output PATH]`
-- `smart-search config path|list|set|unset ... [--format json|markdown|content] [--output PATH]`
-- `smart-search model current|list [--format json|markdown|content] [--output PATH]`
-- `smart-search model add --id ID [--provider xai-responses|openai-compatible] --api-url URL --api-key KEY --model MODEL [--tools CSV] [--fallback-models CSV] [--stream|--no-stream] [--format json|markdown|content] [--output PATH]`
-- `smart-search model remove ID [--format json|markdown|content] [--output PATH]`
-- `smart-search regression`
-- `smart-search research plan QUERY [--budget quick|standard|deep] [--evidence-dir PATH] [--format json|markdown|content] [--output PATH]` is the namespace-compatible offline plan entry and projects as legacy `deep`.
-- `smart-search research run QUERY [--budget quick|standard|deep] [--profile fast|balanced|deep] [--evidence-dir PATH] [--fallback auto|off] [--synthesize] [--format json|markdown|content] [--output PATH]` is the Agent-facing staged evidence executor (`command=research-run`). Default is evidence-only; `--synthesize` opts into evidence-only synthesis.
-- `smart-search doctor probe [--format json|markdown|content] [--output PATH]` is the explicit live aggregate diagnostic and projects as legacy `doctor`.
-- `smart-search doctor status [--format json|markdown|content] [--output PATH]` is local readiness only (`command=doctor-status`, no Provider client or probe).
-- `smart-search provider list|status [--format json|markdown|content] [--output PATH]` is local-only metadata/eligibility inspection with no Provider client or probe.
-- `smart-search provider probe PROVIDER [--format json|markdown|content] [--output PATH]` probes exactly one named provider/family (`command=provider-probe`).
-- `smart-search provider routes current|list|add|remove ...` preserves the matching legacy `model` behavior.
-- `smart-search dev route-explain|route-calibrate|diagnose|smoke|regression|skills ...` are namespace-compatible developer entries with no new aliases.
-- Agent default Core path: `smart-search --schema-version 2 capabilities|search|fetch` (JSON-default evidence-first envelope; JSON is the only stable machine contract).
+- `smart-search search QUERY [--format json|markdown|content]` (V2 evidence envelope; V1 options `--platform`, `--model`, `--extra-sources`, `--profile`, `--response-mode`, `--validation`, `--fallback`, `--providers`, `--stream`/`--no-stream`, `--timeout`, `--output`, `--force`, and prompt-file overrides are rejected before owner work)
+- `smart-search fetch URL [--format json|markdown|content]` (V2 evidence envelope)
+- `smart-search map URL [--format json|markdown|content]` (V2 advanced)
+- `smart-search capabilities [--format json|markdown|content]` (V2 local meta operation)
+- `smart-search research plan QUERY [--budget quick|standard|deep] [--format json|markdown|content]` is the offline plan member of the workflow family (plan-only result, operation `research.run`).
+- `smart-search research run QUERY [--budget quick|standard|deep] [--profile fast|balanced|deep] [--format json|markdown|content]` is the Agent-facing staged evidence workflow (operation `research.run`). `--synthesize` is rejected; the host agent writes the final answer.
+- `smart-search config path|list|set|unset ... [--format json|markdown|content]` (V3 control plane)
+- `smart-search provider list|status [--format json|markdown|content]` (V3 local metadata/eligibility, no Provider client or probe)
+- `smart-search provider probe PROVIDER [--format json|markdown|content]` (V3 explicit single-provider probe)
+- `smart-search provider routes current|list|add|remove ...` (V3 ordered model-route management; legacy `model *` spellings are removed)
+- `smart-search doctor status [--format json|markdown|content]` (V3 local readiness only, no Provider client or probe)
+- `smart-search doctor probe [--format json|markdown|content]` (V3 explicit live aggregate diagnostic)
+- `smart-search dev route-explain|route-calibrate|diagnose openai-compatible|smoke|regression|skills status|update ...` (V3 developer diagnostics; bare `smoke`, `diagnose`, `regression`, `skills`, `route`, and `route-calibrate` are removed)
+- Agent default Core path: `smart-search capabilities|search|fetch` (JSON-default evidence-first envelope; JSON is the only stable machine contract).
 
 ## Aliases
 
-Top-level aliases normalize to the same service behavior as their full command: `search`/`s`, `route`/`rt`, `fetch`/`f`, `map`/`m`, `deep`/`dr`, `research`/`rs`, `route-calibrate`/`route-cal`/`rcal`, `doctor`/`d`, `diagnose`/`diag`, `setup`/`init`, `config`/`cfg`, `model`/`mdl`, `smoke`/`sm`, and `regression`/`reg`.
-
-Nested aliases: `config path`/`cfg p`, `config list`/`cfg ls`/`cfg l`, `config set`/`cfg s`, `config unset`/`cfg rm`/`cfg u`, `model current`/`mdl cur`/`mdl c`, `model list`/`mdl ls`/`mdl l`, `model add`/`mdl a`, and `model remove`/`mdl rm`/`mdl r`.
+All aliases are removed. Old spellings (`s`, `rt`, `f`, `m`, `dr`, `rs`, `route-cal`, `rcal`, `d`, `diag`, `init`, `cfg`, `mdl`, `sm`, `reg`, and the nested aliases such as `cfg p`, `mdl list`, `skill st`) fail with the replacement family's strict `INVALID_ARGUMENT` error that names the canonical replacement.
 
 ## Output Format Expectations
 
 - `--format json` is the stable machine-readable contract for agents and scripts. JSON output remains parseable and uses readable non-ASCII text when the terminal encoding supports it.
-- JSON results add `schema_version: "1"`, `command`, `data`, and `meta` while retaining legacy flat fields. Failed results keep the legacy top-level `error` string and expose structured `data.error`, `error_detail`, and `error_code` values.
-- `--output` never overwrites an existing file unless `--force` is supplied. Output files are written atomically with restrictive permissions where the platform supports them.
-- `--format markdown` is the human-readable report format. `route --format markdown`, `route-calibrate --format markdown`, `doctor --format markdown`, and `diagnose openai-compatible --format markdown` must render useful reports rather than raw JSON dumps.
-- `--format content` prints only the `content` field for content-bearing commands such as `search`, `fetch`, and `research`. Commands without a `content` field, including `route`, `route-calibrate`, `doctor`, `smoke`, `config`, and `model`, must print a compact non-empty text summary.
-- Successful search output includes `ok`, `query`, `primary_api_mode`, `content`, `sources`, `sources_count`, `primary_sources`, `primary_sources_count`, `extra_sources`, `extra_sources_count`, `source_warning`, `routing_decision`, `providers_used`, `provider_attempts`, `fallback_used`, `validation_level`, `capability_execution_plan`, `evidence_bundle`, `discovery_candidates`, `fetched_evidence`, `evidence_items`, `citations`, `gaps`, `degraded`, `request_count`, `cache_hit`, `inflight_joined`, `remote_router_calls`, `retry_count`, `budget_exhausted`, `stage_elapsed_ms`, and `elapsed_ms`.
-- Route diagnostic output includes `ok`, `query`, `executed_search=false`, `provider_selection=not_executed`, backward-compatible fields `docs_intent`, `zh_current_intent`, `web_current_intent`, `fetch_intent`, `supplemental_paths`, and unified intent-router fields `intent_router_mode`, `required_capabilities`, `intent_signals`, `confidence`, `router_engines_used`, `degraded`, `degraded_reason`, `reasons`, `embedding_model`, `embedding_threshold`, `embedding_margin`, `embedding_threshold_source`, and `embedding_margin_source`. `smart-search route` must not call search/docs/fetch providers.
-- Route calibration output includes `ok`, `metric`, `primary_metric=semantic_macro_f1`, `full_route_metric_role=validation`, `models`, `model_results`, `dataset_size`, `dataset_counts`, `capabilities`, `recommended_model`, `recommended_threshold`, `recommended_margin`, and `failed_models`.
-- Fetch output includes `ok`, `url`, `provider`, `content`, `provider_attempts`, `fallback_used`, `capability_execution_plan`, `evidence_bundle`, `discovery_candidates`, `fetched_evidence`, `evidence_items`, `citations`, `gaps`, `degraded`, `request_count`, `cache_hit`, `inflight_joined`, `remote_router_calls`, `retry_count`, `budget_exhausted`, `stage_elapsed_ms`, and `elapsed_ms`.
-- Map output includes `ok`, `base_url`, `results`, `response_time`, `url`, and `elapsed_ms`.
-- Deep planner output includes `ok`, `mode`, `query_mode`, `question`, `trigger_source`, `difficulty`, `intent_signals`, `decomposition`, `capability_plan`, `evidence_policy`, `preflight`, `steps`, `gap_check`, `final_answer_policy`, `usage_boundary`, `allowed_tools`, `evidence_dir`, and `elapsed_ms`.
-- Research executor output includes `ok`, `mode=deep_research_execution`, `query_mode=research`, `question`, `budget`, `research_plan`, `capability_execution_plan`, `routing_decision`, `stage_results`, `discovery_sources`, `discovery_candidates`, `final_answer`, `content`, `citations`, `evidence_items`, `fetched_evidence`, `evidence_bundle`, `gap_check`, `gaps`, `provider_attempts`, `providers_used`, `fallback_used`, `degraded`, `synthesis_error`, `response_mode`, `synthesis_enabled`, `artifacts_persisted`, `route_policy_version`, `evidence_dir`, `minimum_profile_ok`, `capability_status`, `request_count`, `cache_hit`, `inflight_joined`, `remote_router_calls`, `retry_count`, `budget_exhausted`, `stage_elapsed_ms`, and `elapsed_ms`. `evidence_bundle` keeps discovery candidates separate from fetched/read evidence; synthesis consumes only the latter. `research run` defaults to `response_mode=evidence` with empty `final_answer`/`content`; bare `research` remains synthesized.
+- Evidence commands emit the V2 envelope, control-plane commands emit the V3 envelope, and research plan/run emit the Workflow envelope. Each family rejects unknown fields and exposes exactly one structured error.
+- The strict V2/V3/Workflow families reject `--output` and `--force` before any owner work.
+- `--format markdown` is the human-readable report format. `dev route-explain --format markdown`, `dev route-calibrate --format markdown`, `doctor probe --format markdown`, and `dev diagnose openai-compatible --format markdown` must render useful reports rather than raw JSON dumps.
+- `--format content` prints only the `content` field for content-bearing commands such as `search`, `fetch`, and `research`. Commands without a `content` field, including `dev route-explain`, `dev route-calibrate`, `doctor`, `dev smoke`, `config`, and `provider`, must print a compact non-empty text summary.
+- Search, fetch, and map output uses the V2 envelope: `schema_version`, `ok`, `status`, `command`, `operation`, `result` (`total`, `items`), `evidence` (`candidates`, `items`, `citations`, `gaps`), `routing` (`requested_capabilities`, `executed_capabilities`, `policy_version`, `reason_codes`), `attempts` (`capability`, `provider`, `status`, `error_code`, `elapsed_ms`, `result_count`), `degradation`, `error`, and `meta`. Evidence candidates are `{id, resource, provider, title, snippet}` and admitted items are `{id, resource, provider, title, content}`.
+- Route diagnostic output includes `query`, `executed_search`, `provider_selection`, `intent_router_mode`, `required_capabilities`, `intent_signals`, `confidence`, `router_engines_used`, `reasons`, `validation_level`, `missing_capabilities`, and `supplemental_paths` inside the V3 `result`. `smart-search dev route-explain` must not call search/docs/fetch providers.
+- Route calibration output includes `metric`, `primary_metric=semantic_macro_f1`, `full_route_metric_role=validation`, `models`, `model_results`, `dataset_size`, `dataset_counts`, `capabilities`, `labels`, `embedding_model`, `default_threshold`, `default_margin`, `recommended_model`, `recommended_threshold`, `recommended_margin`, and `failed_models` inside the V3 `result`.
+- Map output includes the V2 envelope with `result.total`/`result.items` ids plus site structure in `evidence.candidates`.
+- `research plan` output is the plan-only Workflow result: `schema_version`, `ok`, `status`, `command`, `operation=research.run`, `plan`, `stages`, `evidence`, `citations`, `gaps`, `attempts`, `artifacts`, `error`, and `meta`. The `plan` member carries exactly `schema_version` and an ordered `operations` list (`id`, `operation`, `input`, `constraints`, `depends_on`); it never embeds shell commands, output paths, or an evidence directory. `research plan` runs no provider calls.
+- `research run` output is the executed Workflow result with the same envelope: `plan`, `stages`, `evidence`, `citations`, `gaps`, `attempts`, and `artifacts` are populated, while no answer text exists (`final_answer`/`content`/synthesis fields are not part of the workflow contract). The host agent writes the final prose from admitted evidence. Bare `research`, `rs`, `deep`, and `dr` are removed spellings and fail with the workflow family's strict error.
 - Runtime caching is disabled by default. When enabled, only cleaned successful search/fetch results are cached in process memory; synthesis answers, errors, empty results, prompts, credentials, and research artifacts are excluded.
-- Diagnostic output masks keys and reports config paths, Windows legacy config metadata, provider timeout values, `capability_status`, `minimum_profile_ok`, `intent_router_status`, `main_search_connection_tests`, and provider connectivity checks. OpenAI-compatible health must be validated through `/chat/completions`; `/models` is supplementary metadata.
-- Smoke output includes `ok`, `mode`, `failed_cases`, `cases`, `provider_attempts`, and `elapsed_ms`. Live smoke may include `degraded_cases` when a provider fails but a same-capability fallback remains available.
+- `doctor status` result includes `local_only`, `config_file`, `config_dir`, `config_dir_source`, `config_status`, `config_storage_ok`, `config_parameter_errors`, `minimum_profile`, `minimum_profile_ok`, `minimum_profile_missing`, `minimum_profile_missing_required`, `core_evidence_path`, `core_evidence_ready`, `capability_status` (per-capability `configured`, `fallback_chain`, `provider_status` with provider eligibility), and `intent_router_status`. Diagnostic output masks keys and never prints secrets. OpenAI-compatible health must be validated through `/chat/completions`; `/models` is supplementary metadata.
+- Smoke output includes `mode`, `case_count`, `cases`, `failed_cases`, `degraded_cases`, `providers_used`, and `fallback_used`. Live smoke may include `degraded_cases` when a provider fails but a same-capability fallback remains available.
 
 ## Exit Codes
 

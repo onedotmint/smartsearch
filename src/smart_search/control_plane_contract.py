@@ -176,12 +176,6 @@ def operation_for_argv(argv: list[str] | None) -> V3OperationDescriptor | None:
     index = 0
     while index < len(args):
         token = args[index]
-        if token in {"--schema-version", "-schema-version"}:
-            index += 2
-            continue
-        if token.startswith("--schema-version="):
-            index += 1
-            continue
         if token in {"--fail-on-degraded", "--trace"}:
             index += 1
             continue
@@ -605,6 +599,7 @@ def parser_error_result(
     command: str | None,
     operation: str | None,
     message: str,
+    details: Mapping[str, Any] | None = None,
 ) -> V3Envelope:
     descriptor = V3_OPERATION_BY_ID.get(operation or "")
     return V3Envelope(
@@ -623,7 +618,7 @@ def parser_error_result(
             V3ErrorCode.INVALID_ARGUMENT,
             message or "invalid control-plane arguments",
             ERROR_RETRYABILITY[V3ErrorCode.INVALID_ARGUMENT],
-            {},
+            dict(details or {}),
         ),
         meta=V3Meta(),
     )

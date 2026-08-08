@@ -29,7 +29,7 @@ from .control_plane_contract import (
 )
 
 
-_COMMON_OPTIONS = frozenset({"schema-version", "fail-on-degraded", "format"})
+_COMMON_OPTIONS = frozenset({"fail-on-degraded", "format"})
 
 
 def _json_stdout(payload: dict[str, Any]) -> None:
@@ -44,8 +44,9 @@ def emit_parser_error(
     command: str | None,
     operation: str | None,
     message: str,
+    details: dict[str, str] | None = None,
 ) -> int:
-    envelope = parser_error_result(command, operation, message)
+    envelope = parser_error_result(command, operation, message, details)
     payload = serialize_result(envelope)
     _json_stdout(payload)
     return exit_code_for(payload)
@@ -79,10 +80,7 @@ def _raw_command_label(argv: list[str] | None, args: Any) -> str | None:
     raw = list(argv or ())
     while index < len(raw):
         token = raw[index]
-        if token in {"--schema-version", "-schema-version"}:
-            index += 2
-            continue
-        if token.startswith("--schema-version=") or token in {"--fail-on-degraded", "--trace"}:
+        if token in {"--fail-on-degraded", "--trace"}:
             index += 1
             continue
         if token.startswith("-") and token not in {"--"}:
@@ -108,7 +106,7 @@ def _reject(args: Any, argv: list[str] | None) -> tuple[V3OperationDescriptor | 
     descriptor = operation_for_argv(argv)
     if descriptor is None:
         command = _raw_command_label(argv, args)
-        return None, f"command {command!r} is not supported under --schema-version 3"
+        return None, f"command {command!r} is not a v3 control-plane command"
 
     options = _argv_options(argv)
     supplied = set(options)

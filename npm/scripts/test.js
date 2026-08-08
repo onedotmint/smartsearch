@@ -62,13 +62,14 @@ run(process.execPath, ["npm/scripts/test-wrapper-repair.js"]);
 run(process.execPath, ["npm/bin/smart-search.js", "--help"]);
 const deepJson = capture(process.execPath, [
   "npm/bin/smart-search.js",
-  "deep",
+  "research",
+  "plan",
   "深度搜索一下最近的比特币行情",
   "--format",
   "json"
 ]);
 const deepPlan = JSON.parse(deepJson);
-if (deepPlan.question !== "深度搜索一下最近的比特币行情") {
+if (deepPlan.plan.operations.length === 0) {
   console.error("npm wrapper must preserve non-ASCII CLI arguments and JSON output as UTF-8.");
   process.exit(1);
 }

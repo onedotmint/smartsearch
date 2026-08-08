@@ -27,14 +27,15 @@ On Windows, use `py -3` when `python` is not available.
 
 ## Configure one usable path
 
-The interactive wizard is the normal path:
+Configure keys through the config command (no interactive wizard):
 
 ```sh
-smart-search setup
+smart-search config set XAI_API_KEY "your-xai-key"
+smart-search config list --format json
 smart-search doctor status --format json
 ```
 
-`doctor status` is local readiness only: configuration storage, capability eligibility, Core evidence path, and minimum-profile health. It does not probe providers. Use `doctor` / `doctor probe` only when you intentionally want a live aggregate connectivity check. A command checks only the capabilities it needs. The historical `standard` profile is fail-closed for the full diagnostic and still expects one `main_search`, one `docs_search`, and one `web_fetch` provider, while evidence-first workflows prioritize source/docs discovery plus content fetch.
+`doctor status` is local readiness only: configuration storage, capability eligibility, Core evidence path, and minimum-profile health. It does not probe providers. Use `doctor probe` only when you intentionally want a live aggregate connectivity check. A command checks only the capabilities it needs. The historical `standard` profile is fail-closed for the full diagnostic and still expects one `main_search`, one `docs_search`, and one `web_fetch` provider, while evidence-first workflows prioritize source/docs discovery plus content fetch.
 
 The configuration file is stored in the platform config directory:
 
@@ -44,14 +45,13 @@ The configuration file is stored in the platform config directory:
 
 Use an explicit config directory in CI, containers, and tests. Smart Search does not silently write credentials into the current repository when the configured directory cannot be protected.
 
-For a scripted setup, pass only the keys needed by the target environment:
+For a scripted setup, set only the keys needed by the target environment:
 
 ```sh
-smart-search setup --non-interactive \
-  --xai-api-key "your-xai-key" \
-  --xai-model "grok-4-fast" \
-  --exa-key "your-exa-key" \
-  --jina-key "your-jina-key"
+smart-search config set XAI_API_KEY "your-xai-key"
+smart-search config set XAI_MODEL "grok-4-fast"
+smart-search config set EXA_API_KEY "your-exa-key"
+smart-search config set JINA_API_KEY "your-jina-key"
 ```
 
 See [Providers](providers.md) for the full capability and key matrix.
@@ -61,34 +61,49 @@ See [Providers](providers.md) for the full capability and key matrix.
 Agent default evidence path:
 
 ```sh
-smart-search --schema-version 2 capabilities
-smart-search --schema-version 2 search "latest Python release"
-smart-search --schema-version 2 fetch "https://www.python.org/downloads/"
+smart-search capabilities
+smart-search search "latest Python release"
+smart-search fetch "https://www.python.org/downloads/"
 ```
 
-v2 search returns discovery candidates only. Host agents write the final answer from fetched evidence items.
+v2 search returns discovery candidates only. Host agents write the final answer from fetched evidence items. The canonical V2 surface accepts only `--format json|markdown|content`; V1-era options such as `--output`, `--force`, `--extra-sources`, `--timeout`, and `--stream` are rejected before any provider work.
 
-Compatibility v1 search remains available:
-
-```sh
-smart-search search "latest Python release" --format json
-```
-
-Use `--format markdown` for a report or `--format content` for a compact terminal result. Add `--extra-sources 2` when you want more discovery candidates, not when you need proof for a claim.
-
-A successful v1 JSON response keeps the stable envelope:
+A successful v2 search keeps the exact V2 envelope:
 
 ```json
 {
-  "schema_version": "1",
+  "schema_version": "2",
+  "ok": true,
   "command": "search",
-  "data": {
-    "content": "provider answer",
-    "sources": []
+  "operation": "source_discovery",
+  "result": {
+    "total": 1,
+    "items": [
+      {"id": "candidate-id"}
+    ]
   },
+  "evidence": {
+    "candidates": [
+      {"id": "candidate-id", "resource": "https://example.com", "provider": "tavily", "title": "Example", "snippet": "..."}
+    ],
+    "items": [],
+    "citations": [],
+    "gaps": []
+  },
+  "routing": {
+    "requested_capabilities": ["source_discovery"],
+    "executed_capabilities": [],
+    "policy_version": "v2-parser-1",
+    "reason_codes": []
+  },
+  "attempts": [],
+  "degradation": [],
+  "error": null,
   "meta": {
-    "providers_used": [],
-    "fallback_used": false
+    "request_id": "...",
+    "duration_ms": 0,
+    "warnings": [],
+    "deprecations": []
   }
 }
 ```
@@ -98,15 +113,15 @@ Provider content, source URLs, and observability counts are runtime values. Use 
 ## Fetch page evidence
 
 ```sh
-smart-search fetch "https://www.python.org/downloads/" --format markdown --output evidence.md
+smart-search fetch "https://www.python.org/downloads/" --format markdown
 ```
 
-Output files are not overwritten by default. Add `--force` only when replacing an existing file is intentional.
+The strict V2/V3/Workflow families reject `--output` and `--force` before any owner work. Save evidence by capturing stdout JSON with shell redirection instead.
 
 For a site structure rather than one page:
 
 ```sh
-smart-search map "https://docs.python.org/3/" --max-depth 1 --limit 20 --format json
+smart-search map "https://docs.python.org/3/" --format json
 ```
 
 ## Plan or execute Deep Research
@@ -114,7 +129,7 @@ smart-search map "https://docs.python.org/3/" --max-depth 1 --limit 20 --format 
 Use the offline planner when an agent or a person should inspect the plan first:
 
 ```sh
-smart-search deep "Compare two current API designs" --budget standard --format json
+smart-search research plan "Compare two current API designs" --budget standard --format json
 ```
 
 Use the Agent-facing staged executor when the host should receive admitted evidence and write the answer itself:
@@ -123,22 +138,17 @@ Use the Agent-facing staged executor when the host should receive admitted evide
 smart-search research run "Compare two current API designs" --budget deep --format json
 ```
 
-Use bare `research` or `research run --synthesize` when the CLI should also run evidence-only synthesis:
+Bare `research`, `rs`, `deep`, and `dr` are removed spellings and fail with the workflow family's strict error; the workflow never synthesizes an answer.
 
-```sh
-smart-search research "Compare two current API designs" --budget deep --format markdown
-```
-
-The distinction is intentional. `deep` / `research plan` are not executors; `research run` is the evidence-first live staged workflow, and bare `research` remains the synthesized compatibility path. See [Search vs Deep Research vs Research](concepts/search-vs-deep-vs-research.md).
+The distinction is intentional. `research plan` is the offline planner, not an executor; `research run` is the evidence-first live staged workflow, and the host agent writes the final answer. See [Search vs Deep Research vs Research](concepts/search-vs-deep-vs-research.md).
 
 ## Install the AI-agent skill
 
-Install managed skill files during setup or refresh them after an npm upgrade:
+Install managed skill files or refresh them after an npm upgrade:
 
 ```sh
-smart-search setup --non-interactive --install-skills codex,claude,cursor,hermes
-smart-search skills status --targets codex,claude,cursor,hermes --format json
-smart-search skills update --targets codex,claude,cursor,hermes --format json
+smart-search dev skills status --targets codex,claude,cursor,hermes --format json
+smart-search dev skills update --targets codex,claude,cursor,hermes --format json
 ```
 
 The skill installer writes only the managed `smart-search-cli` files under user-level tool directories. It does not create Trellis files, hooks, agents, commands, or provider configuration. Status values are `missing`, `up_to_date`, `stale`, `extra_files`, and `error`.

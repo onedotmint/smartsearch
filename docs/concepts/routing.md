@@ -5,11 +5,11 @@ Intent routing decides which capabilities a request needs before provider select
 ## Inspect a route
 
 ```sh
-smart-search route "React useEffect API docs" --format markdown
-smart-search route "请核验这个链接里的说法 https://example.com/source" --router-mode rules --format json
+smart-search dev route-explain "React useEffect API docs" --format markdown
+smart-search dev route-explain "请核验这个链接里的说法 https://example.com/source" --format json
 ```
 
-`smart-search route QUERY` never runs search, docs, fetch, or vertical provider APIs. The default `hybrid` mode may call configured remote embeddings and classifier endpoints to supplement local rules. Use `--router-mode rules` for a local-only check or `--router-mode off` to disable routing.
+`smart-search dev route-explain QUERY` never runs search, docs, fetch, or vertical provider APIs. The default `hybrid` mode may call configured remote embeddings and classifier endpoints to supplement local rules. `SMART_SEARCH_INTENT_ROUTER=rules` gives a local-only check and `off` disables routing.
 
 ## Routing stages
 
@@ -38,7 +38,7 @@ Classifier output cannot select providers. Unknown capabilities and provider nam
 
 ## Evidence-first projection
 
-Schema-v2 composite `search` uses a deterministic rules-only projection of the same local rule source. It always requests `source_discovery` and adds `docs_discovery` only when local rules select `docs_search`. This projection does not invoke embeddings, classifiers, Providers, implicit fetch, vertical search, or answer synthesis. Its output is capability routing metadata, not a reachability check or a replacement for the full `route` command.
+Schema-v2 composite `search` uses a deterministic rules-only projection of the same local rule source. It always requests `source_discovery` and adds `docs_discovery` only when local rules select `docs_search`. This projection does not invoke embeddings, classifiers, Providers, implicit fetch, vertical search, or answer synthesis. Its output is capability routing metadata, not a reachability check or a replacement for `dev route-explain`.
 
 Relevant settings:
 
@@ -62,13 +62,13 @@ Semantic routing adds a capability only when the top score reaches the threshold
 Embedding scores are model-specific. Run calibration after changing the model, endpoint, or real query set:
 
 ```sh
-smart-search route-calibrate --models "Qwen/Qwen3-Embedding-8B" --format markdown
+smart-search dev route-calibrate --models "Qwen/Qwen3-Embedding-8B" --format markdown
 ```
 
 Use the report's recommended `INTENT_EMBEDDING_THRESHOLD` and `INTENT_EMBEDDING_MARGIN`. Semantic-only Macro-F1 is the primary calibration metric; full-route Macro-F1 checks rules and classifier fallback behavior.
 
 ## Runtime observability
 
-`route`, `search`, `fetch`, and `research` expose routing metadata without exposing router keys. `search`, `fetch`, and `research` also report command-scoped `request_count`, `cache_hit`, `inflight_joined`, `remote_router_calls`, `retry_count`, `budget_exhausted`, and `stage_elapsed_ms` where applicable.
+`dev route-explain`, `search`, `fetch`, and `research` expose routing metadata without exposing router keys. `search`, `fetch`, and `research` also report command-scoped `request_count`, `cache_hit`, `inflight_joined`, `remote_router_calls`, `retry_count`, `budget_exhausted`, and `stage_elapsed_ms` where applicable.
 
 The cache is process-local and opt-in. See [Providers](../providers.md#runtime-cache) for its limits and configuration.

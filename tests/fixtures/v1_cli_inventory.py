@@ -140,30 +140,26 @@ def inventory_from_parser(parser=None) -> dict[str, Any]:
     """Build the live CLI inventory from parser registration facts."""
     parser = parser or build_parser()
     top = _command_subparsers(parser)
-    canonical: set[str] = set()
+    # The final canonical parser registers only canonical commands and no
+    # aliases: every registered top-level name is canonical.
+    canonical: set[str] = set(top.choices)
     aliases: dict[str, str] = {}
-    legacy_names = set(CANONICAL_TOP_LEVEL_COMMANDS).union(ALIAS_TO_CANONICAL)
-    for name, subparser in top.choices.items():
-        if name not in legacy_names:
-            continue
-        command = subparser.get_default("command")
-        if name == command:
-            canonical.add(name)
-        else:
-            aliases[name] = command
 
     nested: dict[str, dict[str, Any]] = {}
-    for parent, dest in (
-        ("config", "config_command"),
-        ("model", "model_command"),
-        ("skills", "skills_command"),
-    ):
-        parent_parser = top.choices[parent]
-        nested_action = next(action for action in parent_parser._actions if action.dest == dest)
+    for parent in ("config",):
+        parent_parser = top.choices.get(parent)
+        if parent_parser is None:
+            continue
+        nested_action = next(
+            (action for action in parent_parser._actions if action.dest == "config_command"),
+            None,
+        )
+        if nested_action is None:
+            continue
         nested_canonical: set[str] = set()
         nested_aliases: dict[str, str] = {}
         for name, subparser in nested_action.choices.items():
-            command = subparser.get_default(dest)
+            command = subparser.get_default("config_command")
             if name == command:
                 nested_canonical.add(name)
             else:

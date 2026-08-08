@@ -526,7 +526,8 @@ def test_model_command_supports_add_list_current_remove(monkeypatch):
     parser = cli.build_parser()
     add_args = parser.parse_args(
         [
-            "model",
+            "provider",
+            "routes",
             "add",
             "--id",
             "backup",
@@ -544,25 +545,42 @@ def test_model_command_supports_add_list_current_remove(monkeypatch):
     assert add_args.model_command == "add"
     assert add_args.route_id == "backup"
     assert add_args.stream is True
-    assert parser.parse_args(["model", "list"]).model_command == "list"
-    assert parser.parse_args(["model", "current"]).model_command == "current"
-    assert parser.parse_args(["model", "remove", "backup"]).model_command == "remove"
+    assert parser.parse_args(["provider", "routes", "list"]).model_command == "list"
+    assert parser.parse_args(["provider", "routes", "current"]).model_command == "current"
+    assert parser.parse_args(["provider", "routes", "remove", "backup"]).model_command == "remove"
 
 
 def test_model_add_dispatches_route_arguments(monkeypatch, capsys):
     captured = {}
 
-    def fake_model_add(*args, **kwargs):
-        captured["args"] = args
+    async def fake_routes_add(route_id, provider="openai-compatible", api_url="", api_key="", model="", **kwargs):
+        captured["args"] = (route_id, provider, api_url, api_key, model)
         captured["kwargs"] = kwargs
-        return {"ok": True, "routes": []}
+        from smart_search.control_operations import (
+            ControlMutationFacts,
+            ControlOperationOutcome,
+            ControlOperationStatus,
+            ControlSideEffectFacts,
+        )
+        from smart_search.execution_primitives import ExecutionMetadata
 
-    monkeypatch.setattr(cli.service, "model_add", fake_model_add)
+        return ControlOperationOutcome(
+            operation="provider.routes.add",
+            status=ControlOperationStatus.COMPLETE,
+            result={"action": "add", "route_count": 1, "routes": [], "current_route_id": "", "current_route": None, "current_model": "", "config_file": ""},
+            side_effects=ControlSideEffectFacts(config=ControlMutationFacts(read=True, write_attempted=True, write_committed=True)),
+            metadata=ExecutionMetadata("provider.routes.add", 0),
+        )
+
+    from smart_search import control_operations
+
+    monkeypatch.setattr(control_operations, "run_provider_routes_add", fake_routes_add)
 
     assert (
         cli.main(
             [
-                "model",
+                "provider",
+                "routes",
                 "add",
                 "--id",
                 "backup",

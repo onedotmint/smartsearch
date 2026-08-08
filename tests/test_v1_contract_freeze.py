@@ -51,77 +51,39 @@ PACKAGED_SKILL = REPO_ROOT / "src" / "smart_search" / "assets" / "skills" / "sma
 def test_cli_inventory_fixture_matches_parser_registration():
     live = inventory_from_parser(build_parser())
 
-    assert live["canonical_top_level"] == CANONICAL_TOP_LEVEL_COMMANDS
-    assert len(live["canonical_top_level"]) == 16
-    assert live["aliases"] == ALIAS_TO_CANONICAL
-    assert set(live["root_help"]) == set(ROOT_HELP_COMMANDS)
+    # The final canonical parser registers exactly the canonical tree with no
+    # aliases; the legacy inventory fixture is the historical baseline and its
+    # removed commands are covered by the reserved legacy spelling table.
+    assert set(live["canonical_top_level"]) == {
+        "search", "fetch", "map", "capabilities",
+        "research", "config", "provider", "doctor", "dev",
+    }
+    assert live["aliases"] == {}
     assert set(live["root_help"]) == set(PUBLIC_COMMANDS)
+    assert set(PUBLIC_COMMANDS) == {"search", "fetch", "capabilities"}
     assert set(ROOT_HELP_COMMANDS).issubset(set(CANONICAL_TOP_LEVEL_COMMANDS))
-
-    for parent, expected in NESTED_CANONICAL_SUBCOMMANDS.items():
-        assert live["nested"][parent]["canonical"] == expected
-        assert live["nested"][parent]["aliases"] == NESTED_ALIAS_TO_CANONICAL[parent]
+    assert live["nested"]["config"]["canonical"] == ("list", "path", "set", "unset")
+    assert live["nested"]["config"]["aliases"] == {}
 
 
-def test_cli_inventory_aliases_and_nested_commands_parse_to_canonical():
-    parser = build_parser()
+def test_cli_inventory_aliases_are_removed_spellings():
+    """Every historical alias and nested alias is now a reserved removed
+    spelling handled by the canonical domain classifier; argparse no longer
+    accepts them."""
+    from smart_search.cli_constants import RESERVED_LEGACY_SPELLINGS, classify_command_domain
 
+    parser = build_parser(raise_on_error=True)
     for alias, canonical in ALIAS_TO_CANONICAL.items():
-        if canonical in {"search", "route", "fetch", "map", "deep", "research"}:
-            argv = {
-                "search": [alias, "query"],
-                "route": [alias, "query"],
-                "fetch": [alias, "https://example.com"],
-                "map": [alias, "https://example.com"],
-                "deep": [alias, "query"],
-                "research": [alias, "query"],
-            }[canonical]
-        elif canonical in {"route-calibrate", "smoke", "doctor", "regression"}:
-            argv = [alias]
-        elif canonical == "diagnose":
-            argv = [alias, "openai-compatible"]
-        elif canonical == "model":
-            argv = [alias, "current"]
-        elif canonical == "skills":
-            argv = [alias, "status"]
-        elif canonical == "setup":
-            argv = [alias, "--non-interactive"]
-        elif canonical == "config":
-            argv = [alias, "list"]
-        else:
-            argv = [alias]
-
-        assert parser.parse_args(argv).command == canonical
+        # The alias must not parse as a top-level command anymore.
+        with pytest.raises(Exception):
+            parser.parse_args([alias, "query"])
+        classification = classify_command_domain([alias, "query"])
+        assert classification["family"] == "removed"
+        assert classification["legacy_spelling"].startswith(alias)
 
     for parent, aliases in NESTED_ALIAS_TO_CANONICAL.items():
-        dest = {
-            "config": "config_command",
-            "model": "model_command",
-            "skills": "skills_command",
-        }[parent]
-        for alias, canonical in aliases.items():
-            if parent == "config" and canonical == "set":
-                argv = [parent, alias, "XAI_MODEL", "grok"]
-            elif parent == "config" and canonical == "unset":
-                argv = [parent, alias, "XAI_MODEL"]
-            elif parent == "model" and canonical == "add":
-                argv = [
-                    parent,
-                    alias,
-                    "--id",
-                    "primary",
-                    "--api-url",
-                    "https://relay.example/v1",
-                    "--api-key",
-                    "secret",
-                    "--model",
-                    "model-a",
-                ]
-            elif parent == "model" and canonical == "remove":
-                argv = [parent, alias, "primary"]
-            else:
-                argv = [parent, alias]
-            assert getattr(parser.parse_args(argv), dest) == canonical
+        for alias, _canonical in aliases.items():
+            assert (parent, alias) in RESERVED_LEGACY_SPELLINGS
 
 
 def test_root_help_exposes_only_public_commands(capsys):
@@ -129,11 +91,10 @@ def test_root_help_exposes_only_public_commands(capsys):
         cli.main(["--help"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    for command in ROOT_HELP_COMMANDS:
+    # Root help shows the V2 evidence core only.
+    for command in ("search", "fetch", "capabilities"):
         assert command in out
-    hidden = sorted(set(CANONICAL_TOP_LEVEL_COMMANDS) - set(ROOT_HELP_COMMANDS))
-    for command in hidden:
-        # Root help must not advertise advanced commands as top-level choices.
+    for command in ("map", "research", "config", "provider", "doctor", "dev", "setup", "model", "smoke"):
         assert f"  {command} " not in out
         assert f"{{{command}" not in out
 
@@ -184,15 +145,17 @@ async def test_deep_and_research_compatibility_fields_are_frozen(monkeypatch, tm
     assert result["content"] == result["final_answer"]
 
 
-def test_v1_json_schema_constant_remains_one_while_parser_accepts_opt_in_v2():
-    """Phase 3 exposes root-global --schema-version 2; v1 JSON constant stays 1."""
+def test_v1_json_schema_constant_remains_one_while_parser_has_no_selector():
+    """The schema selector is fully removed: the parser registers no
+    ``--schema-version`` option and the v1 JSON constant stays the frozen
+    historical value (module-level contract)."""
     parser = build_parser()
-    args = parser.parse_args(["--schema-version", "2", "search", "query"])
-    assert args.schema_version == "2"
-    v1_args = parser.parse_args(["search", "query"])
-    assert v1_args.schema_version == "1"
+    assert not any(
+        "--schema-version" in action.option_strings for action in parser._actions
+    )
+    args = parser.parse_args(["search", "query"])
+    assert not hasattr(args, "schema_version")
     assert SCHEMA_VERSION == "1"
-    assert SCHEMA_VERSION != "2"
     # service facade still has no v2 exports
     for name in ("V2Envelope", "serialize_result", "api_v2", "v2_contract"):
         assert name not in service.__all__
@@ -216,24 +179,29 @@ def test_capabilities_success_and_configuration_json_fixture(monkeypatch, capsys
     secret = "cap-secret-should-not-leak"
     monkeypatch.setenv("OPENAI_COMPATIBLE_API_URL", "https://relay.example/v1")
     monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", secret)
+    monkeypatch.setenv("SMART_SEARCH_MINIMUM_PROFILE", "off")
 
     code = cli.main(["capabilities", "--format", "json"])
     assert code == cli.EXIT_OK
     payload = assert_single_json_document(capsys.readouterr().out)
-    assert_v1_envelope(payload, command="capabilities", ok=True)
-    assert_has_keys(payload["data"], CAPABILITIES_SUCCESS_KEYS)
-    assert payload["data"]["commands"]["capabilities"] is True
-    assert payload["data"]["output_formats"] == ["json", "markdown", "content"]
+    # capabilities is a canonical V2 leaf: strict evidence envelope.
+    assert payload["schema_version"] == "2"
+    assert payload["command"] == "capabilities"
+    assert payload["operation"] == "capability_status"
+    assert payload["ok"] is True
+    assert payload["error"] is None
+    assert payload["attempts"] == []
     assert_no_secret_leak(payload, [secret])
 
     monkeypatch.setenv("SMART_SEARCH_MINIMUM_PROFILE", "not-a-profile")
     code = cli.main(["capabilities", "--format", "json"])
-    assert code != cli.EXIT_OK
+    assert code == cli.EXIT_OK
     failed = assert_single_json_document(capsys.readouterr().out)
-    assert_v1_envelope(failed, command="capabilities", ok=False)
-    assert_structured_error(failed)
-    assert failed["error_type"] == "parameter_error"
-    assert failed["data"]["error_type"] == "parameter_error"
+    assert failed["schema_version"] == "2"
+    assert failed["operation"] == "capability_status"
+    assert failed["ok"] is True
+    # the envelope stays complete; the profile gap is a result fact
+    assert failed["result"]["capabilities"]["core_availability"]["source_discovery"] == []
 
 
 @pytest.mark.asyncio
@@ -542,137 +510,99 @@ def test_candidate_cannot_become_citation_without_fetched_content():
 def test_json_cli_stdout_is_single_document_and_redacts_secrets(monkeypatch, capsys):
     secret = "sk-live-json-secret"
 
-    async def fake_fetch(url):
-        return {
-            "ok": False,
-            "url": url,
-            "error_type": "network_error",
-            "error": f"Bearer {secret} upstream failed",
-            "OPENAI_COMPATIBLE_API_KEY": secret,
-            "provider_attempts": [
-                {
-                    "capability": "web_fetch",
-                    "provider": "tavily",
-                    "status": "error",
-                    "error_type": "auth_error",
-                    "error": f"token={secret}",
-                }
-            ],
-        }
+    # fetch is a canonical V2 evidence leaf: the strict envelope redacts
+    # secrets without ever touching the legacy service facade.
+    from smart_search import api_v2
+    from smart_search.evidence_operations import (
+        EvidenceOperationOutcome,
+        EvidenceOperationStatus,
+        EvidenceRouting,
+    )
+    from smart_search.execution_primitives import (
+        ExecutionAttempt,
+        ExecutionAttemptStatus,
+        ExecutionError,
+        ExecutionMetadata,
+    )
 
-    monkeypatch.setattr(cli.service, "fetch", fake_fetch)
+    async def fake_fetch(request):
+        return EvidenceOperationOutcome(
+            operation="content_fetch",
+            status=EvidenceOperationStatus.FAILED,
+            evidence_items=(),
+            attempts=(
+                ExecutionAttempt(
+                    capability="content_fetch",
+                    provider="tavily",
+                    status=ExecutionAttemptStatus.ERROR,
+                    error=ExecutionError("auth_error", f"token={secret}", False),
+                    elapsed_ms=1.0,
+                ),
+            ),
+            error=ExecutionError("auth_error", f"Bearer {secret} upstream failed", False),
+            routing=EvidenceRouting(("content_fetch",), ("content_fetch",), "v2", ("test",)),
+            metadata=ExecutionMetadata("cli-json", 1),
+        )
+
+    monkeypatch.setattr(api_v2, "content_fetch", fake_fetch)
     code = cli.main(["fetch", "https://example.com", "--format", "json"])
-    assert code == cli.EXIT_NETWORK_ERROR
+    assert code == cli.EXIT_RUNTIME_ERROR  # classified internal/error exit, never exit 0
     captured = capsys.readouterr()
     payload = assert_single_json_document(captured.out)
-    assert_v1_envelope(payload, command="fetch", ok=False)
-    assert_structured_error(payload)
+    assert payload["schema_version"] == "2"
+    assert payload["command"] == "fetch"
+    assert payload["ok"] is False
+    assert payload["error"]["code"] is not None
     assert_no_secret_leak(payload, [secret])
     assert secret not in captured.err
 
 
-@pytest.mark.parametrize(
-    ("command", "argv", "service_name", "result", "expected_exit"),
-    [
-        (
-            "search",
-            ["search", "query", "--response-mode", "evidence", "--format", "json"],
-            "search",
-            {
-                "ok": True,
-                "query": "query",
-                "content": "",
-                "sources": [],
-                "provider_attempts": [
-                    service_support._attempt("web_search", "tavily", "empty", 0.0, result_count=0)
-                ],
-            },
-            cli.EXIT_OK,
-        ),
-        (
-            "search",
-            ["search", "query", "--response-mode", "evidence", "--format", "json"],
-            "search",
-            {
-                "ok": True,
-                "query": "query",
-                "content": "",
-                "sources": [{"url": "https://recovered.example", "provider": "firecrawl"}],
-                "provider_attempts": [
-                    service_support._attempt(
-                        "web_search", "tavily", "error", 0.0, error_type="timeout", error="timed out"
-                    ),
-                    service_support._attempt("web_search", "firecrawl", "ok", 0.0, result_count=1),
-                ],
-                "fallback_used": True,
-            },
-            cli.EXIT_OK,
-        ),
-        (
-            "fetch",
-            ["fetch", "https://example.com", "--format", "json"],
-            "fetch",
-            {
-                "ok": False,
-                "url": "https://example.com",
-                "error_type": "network_error",
-                "error": "Bearer cli-freeze-secret unavailable",
-                "provider_attempts": [
-                    service_support._attempt(
-                        "web_fetch", "tavily", "error", 0.0, error_type="timeout", error="cli-freeze-secret"
-                    )
-                ],
-            },
-            cli.EXIT_NETWORK_ERROR,
-        ),
-        (
-            "map",
-            ["map", "https://example.com", "--format", "json"],
-            "map_site",
-            {"ok": True, "url": "https://example.com", "results": []},
-            cli.EXIT_OK,
-        ),
-        (
-            "map",
-            ["map", "https://example.com", "--format", "json"],
-            "map_site",
-            {
-                "ok": False,
-                "url": "https://example.com",
-                "error_type": "timeout",
-                "error": "map provider timed out",
-            },
-            cli.EXIT_RUNTIME_ERROR,
-        ),
-        (
-            "doctor",
-            ["doctor", "--format", "json"],
-            "doctor",
-            {
-                "ok": False,
-                "error_type": "config_error",
-                "error": "OPENAI_COMPATIBLE_API_KEY=cli-freeze-secret is missing",
-            },
-            cli.EXIT_CONFIG_ERROR,
-        ),
-    ],
-)
-def test_v1_command_json_cli_states_keep_single_document_exit_and_redaction(
-    monkeypatch, capsys, command, argv, service_name, result, expected_exit
+def test_canonical_command_cli_states_keep_single_document_exit_and_redaction(
+    monkeypatch, capsys
 ):
-    """Freeze CLI rendering/exit behavior without invoking providers or local credentials."""
-
-    async def fake_service(*args, **kwargs):
-        return result
-
+    """Every canonical family emits exactly one strict JSON document with
+    the family's envelope, exit mapping, and recursive redaction."""
+    # V2 evidence leaf: search rejects v1-only --response-mode before any
+    # owner work, and the failure is one redacted v2 document.
     monkeypatch.setenv("TAVILY_API_KEY", "cli-freeze-secret")
-    monkeypatch.setattr(cli.service, service_name, fake_service)
-    code = cli.main(argv)
+    code = cli.main(["search", "query", "--response-mode", "evidence", "--format", "json"])
     captured = capsys.readouterr()
     payload = assert_single_json_document(captured.out)
-    assert code == expected_exit
-    assert_v1_envelope(payload, command=command, ok=result["ok"])
-    if not result["ok"]:
-        assert_structured_error(payload)
+    assert code == cli.EXIT_PARAMETER_ERROR
+    assert payload["schema_version"] == "2"
+    assert payload["operation"] == "source_discovery"
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert_no_secret_leak(payload, ["cli-freeze-secret"])
+
+    # V3 control-plane leaf: a config parameter failure is one v3 document.
+    monkeypatch.setattr(
+        cli.service,
+        "config_set",
+        lambda **_: (_ for _ in ()).throw(AssertionError("legacy facade must not run")),
+    )
+    code = cli.main(["config", "set", "SMART_SEARCH_API_KEY", "cli-freeze-secret"])
+    captured = capsys.readouterr()
+    payload = assert_single_json_document(captured.out)
+    assert code == cli.EXIT_PARAMETER_ERROR
+    assert payload["schema_version"] == "3"
+    assert payload["operation"] == "config.set"
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
     assert_no_secret_leak(payload, ["cli-freeze-secret"])
     assert "cli-freeze-secret" not in captured.err
+
+    # Removed legacy spellings fail with the replacement family's strict
+    # envelope and never touch the legacy facade.
+    monkeypatch.setattr(
+        cli.service,
+        "current_model",
+        lambda: (_ for _ in ()).throw(AssertionError("legacy facade must not run")),
+    )
+    code = cli.main(["model", "current"])
+    captured = capsys.readouterr()
+    payload = assert_single_json_document(captured.out)
+    assert code == cli.EXIT_PARAMETER_ERROR
+    assert payload["schema_version"] == "3"
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert payload["error"]["details"]["legacy_spelling"] == "model current"
+    assert payload["error"]["details"]["replacement"] == "provider.routes.current"

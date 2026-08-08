@@ -1,7 +1,8 @@
 """Narrow strict research workflow CLI route.
 
-Routes only the canonical ``research run QUERY`` path to the strict typed
-Research Workflow owner (``research_workflow``) and its contract serializer
+Routes the canonical ``research plan QUERY`` and ``research run QUERY`` paths
+(and only those) to the strict typed Research Workflow owner
+(``research_workflow``) and its contract serializer
 (``research_workflow_contract``). ``--format json|markdown|content`` selects
 one stdout document after the workflow result is validated; JSON is the only
 stable machine contract and the presentation views are pure human renderings
@@ -10,9 +11,11 @@ input before any owner/provider/config work: invalid argv fails with a strict
 workflow INVALID_ARGUMENT result and never imports the legacy research
 service, providers, or configuration.
 
-The route is schema-neutral and does not participate in schema selection. The
-``--schema-version`` selector, the offline ``research plan`` planner, and the
-legacy bare ``research`` path are untouched.
+The route is schema-neutral and does not participate in schema selection.
+The ``--schema-version`` selector is removed from the CLI surface entirely;
+command domain alone decides the family. Missing-query diagnostics name the
+exact canonical spelling (``research plan`` or ``research run``) and keep the
+workflow strict INVALID_ARGUMENT envelope.
 """
 
 from __future__ import annotations
@@ -97,10 +100,19 @@ def _reject_invalid_options(args: Any, *, argv: list[str] | None) -> tuple[str, 
     return None
 
 
-def emit_parser_error(message: str, argument: str = "") -> int:
+def emit_parser_error(
+    message: str,
+    argument: str = "",
+    details: dict[str, str] | None = None,
+) -> int:
     """Emit exactly one strict workflow INVALID_ARGUMENT JSON result."""
-    details = {"argument": argument} if argument else None
-    result = workflow_parser_error_result(message, details)
+    if details is not None:
+        error_details: dict[str, object] = dict(details)
+    elif argument:
+        error_details = {"argument": argument}
+    else:
+        error_details = None
+    result = workflow_parser_error_result(message, error_details)
     _json_stdout(serialize_workflow(result))
     return EXIT_INVALID_ARGUMENT
 
@@ -140,6 +152,12 @@ def _internal_error_payload() -> dict[str, Any]:
 
 
 async def dispatch(args: Any, *, argv: list[str] | None = None) -> int:
+    # Canonical ``research plan QUERY`` is the offline plan member of the
+    # workflow family: it builds the typed plan and emits a plan-only workflow
+    # result (operation research.run, empty execution collections).
+    if getattr(args, "namespace_operation", None) == "research-plan":
+        return await _dispatch_plan(args, argv=argv)
+
     # Option and input validation happen before any owner/provider/config
     # import, so invalid argv can never reach the workflow owner or the legacy
     # research service.
@@ -150,17 +168,13 @@ async def dispatch(args: Any, *, argv: list[str] | None = None) -> int:
 
     query = getattr(args, "query", "")
     if not isinstance(query, str) or not query.strip():
-        return emit_parser_error("research.run requires a non-blank query")
+        return emit_parser_error("research run requires a non-blank query")
 
     try:
         from .research_service import build_research_workflow_plan
         from .research_workflow import WorkflowRequest, run_research_workflow
 
-        budget = {
-            "fast": "quick",
-            "balanced": "standard",
-            "deep": "deep",
-        }.get(getattr(args, "profile", ""), getattr(args, "budget", "deep") or "deep")
+        budget = _budget_from_args(args)
         plan = build_research_workflow_plan(query.strip(), budget=budget)
         request = WorkflowRequest(query=query.strip(), plan=plan)
         outcome = await run_research_workflow(request)
@@ -172,6 +186,18 @@ async def dispatch(args: Any, *, argv: list[str] | None = None) -> int:
             return emit_parser_error(str(exc))
         _json_stdout(_internal_error_payload())
         return EXIT_INTERNAL
+    return _emit_payload(args, payload)
+
+
+def _budget_from_args(args: Any) -> str:
+    return {
+        "fast": "quick",
+        "balanced": "standard",
+        "deep": "deep",
+    }.get(getattr(args, "profile", ""), getattr(args, "budget", "deep") or "deep")
+
+
+def _emit_payload(args: Any, payload: Mapping[str, Any]) -> int:
     fmt = getattr(args, "format", "json")
     if fmt == "json":
         _json_stdout(payload)
@@ -183,6 +209,54 @@ async def dispatch(args: Any, *, argv: list[str] | None = None) -> int:
 
         sys.stdout.write(render_workflow(payload, fmt))
     return exit_code_for(payload, fail_on_degraded=bool(getattr(args, "fail_on_degraded", False)))
+
+
+async def _dispatch_plan(args: Any, *, argv: list[str] | None = None) -> int:
+    """Emit a plan-only workflow result for canonical ``research plan QUERY``.
+
+    No owner, provider, config, or cache code runs: the typed plan is built
+    offline and the workflow result carries it with empty execution
+    collections (operation research.run, status complete).
+    """
+    rejected = _reject_invalid_options(args, argv=argv)
+    if rejected is not None:
+        message, argument = rejected
+        return emit_parser_error(message, argument)
+
+    query = getattr(args, "query", "")
+    if not isinstance(query, str) or not query.strip():
+        return emit_parser_error("research plan requires a non-blank query")
+
+    try:
+        from .research_plan import RESEARCH_PLAN_SCHEMA_VERSION, ResearchPlan
+        from .research_service import build_research_workflow_plan
+        from .research_workflow import WorkflowMeta, WorkflowOutcome, WorkflowStatus
+
+        budget = _budget_from_args(args)
+        plan = build_research_workflow_plan(query.strip(), budget=budget)
+        if not isinstance(plan, ResearchPlan):
+            plan = ResearchPlan(RESEARCH_PLAN_SCHEMA_VERSION, ())
+        outcome = WorkflowOutcome(
+            status=WorkflowStatus.COMPLETE,
+            plan=plan,
+            stages=(),
+            evidence=(),
+            citations=(),
+            gaps=(),
+            attempts=(),
+            artifacts=(),
+            error=None,
+            meta=WorkflowMeta("research-plan", 0),
+        )
+        payload = serialize_workflow(outcome)
+    except Exception as exc:  # noqa: BLE001 - classified below, never leaked
+        from .research_workflow import WorkflowDomainError
+
+        if isinstance(exc, WorkflowDomainError):
+            return emit_parser_error(str(exc))
+        _json_stdout(_internal_error_payload())
+        return EXIT_INTERNAL
+    return _emit_payload(args, payload)
 
 
 __all__ = ["dispatch", "emit_parser_error"]

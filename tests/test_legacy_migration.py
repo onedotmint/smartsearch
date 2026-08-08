@@ -24,7 +24,7 @@ import pytest
 
 import smart_search.control_operations as co
 import smart_search.service as service
-from smart_search.cli_constants import prescan_schema_version
+from smart_search.cli_constants import classify_command_domain
 from smart_search.cli_parser import build_parser
 from smart_search.config import config
 
@@ -527,19 +527,17 @@ def test_removed_selector_fixture_is_faithful_to_inventory() -> None:
         assert replacement == lm.SELECTOR_REPLACEMENT
         assert "omit selector" in replacement
         assert "canonical command domain" in replacement
-        # The frozen spelling must be prescan-recognized so later removal
-        # negative tests can rely on the same deterministic failure point.
+        # Every frozen selector spelling is detected as a removed spelling with
+        # the canonical selector replacement by the domain classifier.
         flag, sep, value = spelling.partition("=")
         if not sep:
             flag, _, value = spelling.partition(" ")
-        if value:
-            prescan = prescan_schema_version([flag, value, "search", "query"])
-            assert prescan["explicit"] is True
-            assert prescan["schema_version"] == value
-        else:
-            prescan = prescan_schema_version([flag, "1", "search", "query"])
-            assert prescan["explicit"] is True
-            assert prescan["schema_version"] == "1"
+        argv = [flag] + ([value] if value else ["1"]) + ["search", "query"]
+        classification = classify_command_domain(argv)
+        assert classification["family"] == "removed"
+        assert classification["error_family"] == "v2"
+        assert classification["legacy_spelling"].startswith(flag)
+        assert classification["replacement"] == lm.SELECTOR_REPLACEMENT
 
 
 def test_old_skill_instructions_fixture_is_faithful_to_inventory() -> None:

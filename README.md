@@ -11,12 +11,12 @@ CLI-first, skill-driven web research for AI agents and terminal users. `smart-se
 ```sh
 npm install -g @onedotmint/smart-search@latest
 smart-search --version
-smart-search setup
+smart-search config path --format json
 ```
 
 The npm package creates an isolated Python runtime during installation. Direct Python use is also supported; see [Getting started](docs/getting-started.md).
 
-Root help intentionally shows only `search`, `fetch`, `capabilities`, and `setup`. Use `smart-search --help-all` to discover Advanced, provider, developer, and legacy-compatible commands.
+Root help intentionally shows only the evidence core: `search`, `fetch`, and `capabilities`. Use `smart-search --help-all` to discover the complete canonical inventory (research workflow and V3 control-plane commands).
 
 Prerequisites:
 
@@ -53,71 +53,67 @@ $ smart-search --version
 smart-search 0.1.0
 ```
 
-Search responses use a versioned JSON envelope. Provider text and URLs vary; the stable shape is `schema_version`, `command`, `data`, and `meta`.
+Search responses use a strict versioned JSON envelope: evidence commands return the V2 envelope, control-plane commands return the V3 envelope, and `research run` returns the Research Workflow envelope. Provider text and URLs vary; the machine contract never changes.
 
-### Opt-in v2 Core JSON API
+### V2 evidence Core API
 
-The evidence-first Core API is the recommended Agent default. It is selected with a root-global flag:
+The evidence-first Core API is the recommended Agent default. The canonical command domain selects it; no selector flag exists:
 
 ```sh
-smart-search --schema-version 2 capabilities
-smart-search --schema-version 2 search "example query"
-smart-search --schema-version 2 fetch "https://example.com/page"
+smart-search capabilities
+smart-search search "example query"
+smart-search fetch "https://example.com/page"
 ```
 
-`map` is available as the Advanced `site_discovery` operation; see the command reference for its v2 invocation.
+`map` is available as the Advanced `site_discovery` operation.
 
-- v2 defaults to JSON, the only stable machine contract, and returns the Phase 2 envelope (`status`, `operation`, `evidence`, `routing`, `attempts`, ...). `--format markdown|content` renders a non-stable human view of the same validated envelope; JSON keeps no field-level compatibility promise for those views.
-- v2 `search` returns discovery candidates only; it never calls legacy `main_search` or accepts `--response-mode`.
+- V2 defaults to JSON, the only stable machine contract, and returns the strict envelope (`status`, `operation`, `evidence`, `routing`, `attempts`, ...). `--format markdown|content` renders a non-stable human view of the same validated envelope.
+- V2 `search` returns discovery candidates only; it never calls legacy `main_search` or accepts `--response-mode`.
 - Host agents write the final answer from fetched `evidence.items`; discovery candidates are not claim-level proof.
 - `capabilities` uses envelope-only meta operation `capability_status` (local inspection, no Provider network).
-- `--fail-on-degraded` is available for v2 and v3; `--trace` remains v2-only. Post-subcommand `--schema-version` placement is not supported.
+- `--fail-on-degraded` is available for v2 and v3; `--trace` remains v2-only.
 
-### Opt-in v3 control-plane JSON API
+### V3 control-plane JSON API
 
-V3 is a separate JSON family for stable local administration, explicit probes, developer diagnostics, filesystem work, and regression subprocesses. It is not an evidence envelope and is not the Agent default:
+V3 is a separate JSON family for stable local administration, explicit probes, developer diagnostics, filesystem work, and regression subprocesses. It is not an evidence envelope:
 
 ```sh
-smart-search --schema-version 3 config list
-smart-search --schema-version 3 provider status
-smart-search --schema-version 3 doctor status
-smart-search --schema-version 3 dev smoke --mock
+smart-search config list
+smart-search provider status
+smart-search doctor status
+smart-search dev smoke --mock
 ```
 
-V3 returns `complete` / `degraded` / `failed` plus explicit `network` and `side_effects` objects. It is root-global, JSON-default, and additive: v1 stays the default and v2 stays the evidence-first Core API. JSON is the only stable machine contract; `--format markdown|content` renders non-stable human views of the validated envelope. See the [command reference](docs/commands.md#opt-in-schema-version-3-control-plane-api) for its allowlist, errors, exits, and migration boundary.
+V3 returns `complete` / `degraded` / `failed` plus explicit `network` and `side_effects` objects. JSON is the only stable machine contract; `--format markdown|content` renders non-stable human views of the validated envelope. See the [command reference](docs/commands.md#control-plane-v3-json-api) for its allowlist, errors, exits, and migration boundary.
 
 ## Choose a workflow
 
 | Need | Command | Network behavior |
 | --- | --- | --- |
-| Evidence-first discovery and fetch (Agent default) | `smart-search --schema-version 2 search\|fetch\|capabilities` | Live discovery/fetch; capabilities is local |
-| Control-plane automation (opt-in) | `smart-search --schema-version 3 config\|provider\|doctor\|dev ...` | Explicit local, network, filesystem, and subprocess metadata |
-| Fast v1 answer and broad discovery | `smart-search search QUERY` | Live search with optional synthesis |
-| Explain the selected intent capabilities | `smart-search route QUERY` | No search/fetch provider call; hybrid may call configured router endpoints |
+| Evidence-first discovery and fetch (Agent default) | `smart-search search\|fetch\|capabilities` | Live discovery/fetch; capabilities is local |
+| Control-plane automation | `smart-search config\|provider\|doctor\|dev ...` | Explicit local, network, filesystem, and subprocess metadata |
 | Read one known page | `smart-search fetch URL` | Live page fetch |
-| Build a research plan | `smart-search deep QUERY` / `research plan QUERY` | Offline planner |
+| Build a research plan | `smart-search research plan QUERY` | Offline planner |
 | Run staged evidence research | `smart-search research run QUERY` | Live discovery, fetch, gaps; host writes the answer |
-| Run staged research with synthesis | `smart-search research run QUERY --synthesize` or bare `research` | Live discovery, fetch, and evidence-only synthesis |
 | Local readiness | `smart-search doctor status` | Local only; no provider probe |
-| Live aggregate connectivity | `smart-search doctor` / `doctor probe` | Masked diagnostics and provider checks |
+| Live aggregate connectivity | `smart-search doctor probe` | Masked diagnostics and provider checks |
 | One provider reachability check | `smart-search provider probe PROVIDER` | Exactly one provider/family |
 
-`deep` / `research plan` are offline planning. `research run` is the Agent-facing evidence workflow. Bare `research` remains the legacy synthesized executor.
+`research plan` is offline planning. `research run` is the Agent-facing evidence workflow. Legacy commands, aliases, and the `--schema-version` selector are removed and fail with the replacement family's strict error.
 
 ## Core examples
 
 ```sh
 # Agent default evidence path
-smart-search --schema-version 2 capabilities
-smart-search --schema-version 2 search "React useEffect cleanup docs"
-smart-search --schema-version 2 fetch "https://react.dev/reference/react/useEffect"
+smart-search capabilities
+smart-search search "React useEffect cleanup docs"
+smart-search fetch "https://react.dev/reference/react/useEffect"
 
 # Staged multi-source research without automatic synthesis
 smart-search research run "Compare two current API designs" --format json
 
-# Offline plan, then legacy synthesized live execution
+# Offline plan
 smart-search research plan "Compare two current API designs" --budget standard --format json
-smart-search research "Compare two current API designs" --budget deep --format markdown
 
 # Local readiness, then explicit live checks
 smart-search doctor status --format json
@@ -128,9 +124,6 @@ smart-search provider probe exa --format json
 smart-search provider status --format json
 smart-search provider routes list --format markdown
 
-# Compatibility entries remain valid
-smart-search deep "Compare two current API designs" --budget standard --format json
-smart-search model list --format markdown
 ```
 
 Use `--format json` for agents and scripts, `--format markdown` for reports, and `--format content` for compact terminal reading. See the [command reference](docs/commands.md) for flags and provider-specific commands.
@@ -157,14 +150,14 @@ The public AI-agent contract is maintained in the [repository skill directory](h
 
 ```sh
 smart-search doctor status --format json
-smart-search doctor --format markdown
+smart-search doctor probe --format markdown
 smart-search provider probe exa --format json
-smart-search diagnose openai-compatible --format markdown
-smart-search regression
-smart-search smoke --mock --format json
+smart-search dev diagnose openai-compatible --format markdown
+smart-search dev regression
+smart-search dev smoke --mock --format json
 ```
 
-`doctor status` is local readiness only. `doctor` / `doctor probe` are the live aggregate diagnostic. `provider probe PROVIDER` checks one named provider. `provider list` and `provider status` remain local-only metadata and eligibility views.
+`doctor status` is local readiness only. `doctor probe` is the live aggregate diagnostic. `provider probe PROVIDER` checks one named provider. `provider list` and `provider status` remain local-only metadata and eligibility views. Use the `dev` namespace for the developer diagnostics: `dev diagnose`, `dev smoke`, `dev regression`, and `dev skills`.
 
 ## Development
 

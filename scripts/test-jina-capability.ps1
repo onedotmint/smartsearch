@@ -162,7 +162,7 @@ if (-not $JinaApiKey) {
     $JinaApiKey = Get-SmartSearchConfigValue -Name "JINA_API_KEY"
 }
 if (-not $JinaApiKey) {
-    throw "JINA_API_KEY was not found. Pass -JinaApiKey or run 'smart-search setup --non-interactive --jina-key <key>' first."
+    throw "JINA_API_KEY was not found. Pass -JinaApiKey or run 'smart-search config set JINA_API_KEY <key>' first."
 }
 
 New-Item -ItemType Directory -Path $EvidenceDir -Force | Out-Null
@@ -211,15 +211,21 @@ try {
     Write-Host ""
 
     [Environment]::SetEnvironmentVariable("JINA_RESPOND_WITH", $null, "Process")
-    $doctor = Invoke-SmartSearchJson -Arguments @("doctor", "--format", "json")
+    $doctor = Invoke-SmartSearchJson -Arguments @("doctor", "status", "--format", "json")
     Save-JsonEvidence -Data $doctor -Path (Join-Path $EvidenceDir "00-doctor.json")
 
+    $jinaEntry = $null
+    if ($doctor.result -and $doctor.result.capability_status.web_fetch.provider_status) {
+        $jinaEntry = $doctor.result.capability_status.web_fetch.provider_status |
+            Where-Object { $_.provider -eq "jina" } | Select-Object -First 1
+    }
     $doctorSummary = [pscustomobject]@{
         ok = $doctor.ok
-        minimum_profile_ok = $doctor.minimum_profile_ok
-        web_fetch_configured = (($doctor.capability_status.web_fetch.configured | ForEach-Object { $_ }) -join ",")
-        jina_status = $doctor.jina_connection_test.status
-        missing = (($doctor.minimum_profile_missing | ForEach-Object { $_ }) -join ",")
+        minimum_profile_ok = $doctor.result.minimum_profile_ok
+        web_fetch_configured = (($doctor.result.capability_status.web_fetch.configured | ForEach-Object { $_ }) -join ",")
+        jina_configured = if ($jinaEntry) { $jinaEntry.configured } else { $false }
+        jina_eligible = if ($jinaEntry) { $jinaEntry.eligible } else { $false }
+        missing = (($doctor.result.minimum_profile_missing | ForEach-Object { $_ }) -join ",")
     }
     Write-Host "Doctor summary"
     $doctorSummary | Format-List
@@ -243,18 +249,25 @@ try {
             Write-Host ("Running [{0}] mode={1} url={2}" -f $caseIndex, $mode, $url)
             $result = Invoke-SmartSearchJson -Arguments @("fetch", $url, "--format", "json")
             Save-JsonEvidence -Data $result -Path $jsonPath
-            if ($result.content) {
-                $result.content | Set-Content -LiteralPath $contentPath -Encoding utf8
+            $content = ""
+            if ($result.evidence -and $result.evidence.items) {
+                $content = (($result.evidence.items | ForEach-Object { $_.content }) -join "`n")
+            }
+            if ($content) {
+                $content | Set-Content -LiteralPath $contentPath -Encoding utf8
             }
 
             $attempts = ""
-            if ($result.provider_attempts) {
-                $attempts = (($result.provider_attempts | ForEach-Object {
-                    "{0}:{1}:{2}" -f $_.provider, $_.status, $_.error_type
+            if ($result.attempts) {
+                $attempts = (($result.attempts | ForEach-Object {
+                    "{0}:{1}:{2}" -f $_.provider, $_.status, $_.error_code
                 }) -join ",")
             }
+            $providers = ""
+            if ($result.attempts) {
+                $providers = (($result.attempts | ForEach-Object { $_.provider } | Select-Object -Unique) -join ",")
+            }
 
-            $content = [string]$result.content
             $preview = $content
             if ($preview.Length -gt 260) {
                 $preview = $preview.Substring(0, 260)
@@ -265,12 +278,12 @@ try {
                 case = $caseIndex
                 mode = $mode
                 ok = $result.ok
-                provider = $result.provider
-                fallback = $result.fallback_used
+                provider = $providers
+                degraded = ($result.degradation.Count -gt 0)
                 content_len = $content.Length
                 attempts = $attempts
                 json = $jsonPath
-                content = $(if ($result.content) { $contentPath } else { "" })
+                content = $(if ($content) { $contentPath } else { "" })
                 preview = $preview
             })
         }
@@ -278,7 +291,7 @@ try {
 
     Write-Host ""
     Write-Host "Fetch summary"
-    $summaries | Format-Table case, mode, ok, provider, fallback, content_len, attempts -AutoSize
+    $summaries | Format-Table case, mode, ok, provider, degraded, content_len, attempts -AutoSize
 
     Write-Host ""
     Write-Host "Content preview"
@@ -292,7 +305,7 @@ try {
     Write-Host "Saved summary : $summaryPath"
     Write-Host "Saved details : $EvidenceDir"
     Write-Host ""
-    Write-Host "Expected: provider should be 'jina'. If another provider appears, rerun without -KeepOtherFetchProviders."
+    Write-Host "Expected: attempts should show provider 'jina' with ok=true. If another provider appears, rerun without -KeepOtherFetchProviders."
 }
 finally {
     foreach ($name in $savedEnv.Keys) {

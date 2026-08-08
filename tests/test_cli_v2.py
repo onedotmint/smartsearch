@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from smart_search.cli import main
-from smart_search.cli_constants import prescan_schema_version
+from smart_search.cli_constants import classify_command_domain
 from smart_search.v2_contract import V2_TOP_LEVEL_FIELDS
 
 ROOT = Path(__file__).parents[1]
@@ -26,15 +26,20 @@ def _run_main(argv: list[str], monkeypatch=None, env_updates: dict | None = None
     return code, stdout.getvalue(), stderr.getvalue()
 
 
-def test_prescan_root_global_only():
-    assert prescan_schema_version(["--schema-version", "2", "search", "q"])["v2"] is True
-    assert prescan_schema_version(["search", "q", "--schema-version", "2"])["v2"] is False
-    assert prescan_schema_version(["--schema-version=2", "fetch", "https://x"])["operation"] == "content_fetch"
-    assert prescan_schema_version(["--schema-version", "2", "capabilities"])["operation"] == "capability_status"
+def test_classifier_routes_evidence_commands_to_v2():
+    assert classify_command_domain(["search", "q"])["family"] == "v2"
+    assert classify_command_domain(["fetch", "https://x"])["family"] == "v2"
+    assert classify_command_domain(["map", "https://x"])["family"] == "v2"
+    assert classify_command_domain(["capabilities"])["family"] == "v2"
+    # selector spellings are removed and never select a family
+    removed = classify_command_domain(["--schema-version", "2", "search", "q"])
+    assert removed["family"] == "removed"
+    assert removed["error_family"] == "v2"
+    assert removed["legacy_spelling"] == "--schema-version 2"
 
 
 def test_v2_parser_error_is_single_json_document():
-    code, out, err = _run_main(["--schema-version", "2", "search"])
+    code, out, err = _run_main(["search"])
     assert code == 2
     payload = json.loads(out)
     assert tuple(payload) == V2_TOP_LEVEL_FIELDS
@@ -50,7 +55,7 @@ def test_v2_parser_error_is_single_json_document():
 
 def test_v2_response_mode_rejected_before_network(monkeypatch):
     code, out, err = _run_main([
-        "--schema-version", "2", "search", "q", "--response-mode", "synthesized",
+        "search", "q", "--response-mode", "synthesized",
     ])
     assert code == 2
     payload = json.loads(out)
@@ -88,17 +93,17 @@ def test_v2_presentation_formats_are_one_stdout_document(monkeypatch):
         )
 
     monkeypatch.setattr(api_v2, "_composite_search", fake_composite)
-    code, out, err = _run_main(["--schema-version", "2", "search", "q", "--format", "markdown"])
+    code, out, err = _run_main(["search", "q", "--format", "markdown"])
     assert code == 0, err
     assert out.count("# V2 Search") == 1
     assert "Status: COMPLETE" in out
     assert out.count('"schema_version"') == 0
 
-    code, out, err = _run_main(["--schema-version", "2", "search", "q", "--format", "content"])
+    code, out, err = _run_main(["search", "q", "--format", "content"])
     assert code == 0, err
     assert out.strip() == "s"
 
-    code, out, err = _run_main(["--schema-version", "2", "search", "q", "--format", "json"])
+    code, out, err = _run_main(["search", "q", "--format", "json"])
     assert code == 0, err
     assert json.loads(out)["status"] == "complete"
 
@@ -106,13 +111,13 @@ def test_v2_presentation_formats_are_one_stdout_document(monkeypatch):
 def test_v2_output_and_force_remain_rejected(monkeypatch):
     """The typed family never projects an output path; JSON contract rules."""
     code, out, err = _run_main([
-        "--schema-version", "2", "search", "q", "--output", "out.md",
+        "search", "q", "--output", "out.md",
     ])
     assert code == 2
     payload = json.loads(out)
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
     assert "output" in payload["error"]["message"]
-    code, out, err = _run_main(["--schema-version", "2", "search", "q", "--force"])
+    code, out, err = _run_main(["search", "q", "--force"])
     assert code == 2
     payload = json.loads(out)
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
@@ -122,7 +127,7 @@ def test_v2_output_and_force_remain_rejected(monkeypatch):
 def test_v2_capabilities_complete_shape(monkeypatch, tmp_path):
     monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("SMART_SEARCH_MINIMUM_PROFILE", "off")
-    code, out, err = _run_main(["--schema-version", "2", "capabilities"])
+    code, out, err = _run_main(["capabilities"])
     assert code == 0
     payload = json.loads(out)
     assert payload["operation"] == "capability_status"
@@ -139,7 +144,7 @@ def test_v2_parser_import_isolation_fresh_process():
     script = r"""
 import sys
 from smart_search.cli import main
-code = main(["--schema-version", "2", "search"])
+code = main(["search"])
 assert code == 2
 for name in (
     "smart_search.service",
@@ -163,20 +168,20 @@ print("ok")
     assert "ok" in result.stdout
 
 
-def test_v1_parser_error_still_uses_stderr():
+def test_v2_parser_error_is_stdout_json_not_stderr():
     import io
     import contextlib
 
     stdout = io.StringIO()
     stderr = io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        with pytest.raises(SystemExit) as exc:
-            main(["search"])
-    assert exc.value.code == 2
-    out = stdout.getvalue()
-    err = stderr.getvalue()
-    assert "schema_version" not in out or out == ""
-    assert "search" in err
+        code = main(["search"])
+    assert code == 2
+    payload = json.loads(stdout.getvalue())
+    assert payload["schema_version"] == "2"
+    assert payload["operation"] == "source_discovery"
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert stderr.getvalue() == ""
 
 
 def test_cli_and_facade_parity(monkeypatch):
@@ -220,7 +225,7 @@ def test_cli_and_facade_parity(monkeypatch):
     monkeypatch.setattr(api_v2, "_composite_search", fake_composite)
 
     facade = asyncio.run(api_v2.source_discovery(api_v2.SourceDiscoveryRequest("q")))
-    code, out, err = _run_main(["--schema-version", "2", "search", "q"])
+    code, out, err = _run_main(["search", "q"])
     if code != 0:
         raise AssertionError(f"code={code} out={out!r} err={err!r}")
     payload = json.loads(out)
@@ -231,7 +236,7 @@ def test_cli_and_facade_parity(monkeypatch):
 
 def test_v2_map_v1_only_options_and_invalid_request_are_json_failures(monkeypatch):
     code, out, err = _run_main([
-        "--schema-version", "2", "map", "https://example.com", "--max-depth", "2",
+        "map", "https://example.com", "--max-depth", "2",
     ])
     assert code == 2
     payload = json.loads(out)
@@ -239,7 +244,7 @@ def test_v2_map_v1_only_options_and_invalid_request_are_json_failures(monkeypatc
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
     assert "max-depth" in payload["error"]["message"]
 
-    code, out, err = _run_main(["--schema-version", "2", "search", "   "])
+    code, out, err = _run_main(["search", "   "])
     assert code == 2
     payload = json.loads(out)
     assert payload["operation"] == "source_discovery"
@@ -248,9 +253,9 @@ def test_v2_map_v1_only_options_and_invalid_request_are_json_failures(monkeypatc
 
 def test_v2_explicit_default_v1_options_are_rejected_by_presence():
     cases = (
-        (["--schema-version", "2", "map", "https://example.com", "--max-depth", "1"], "max-depth"),
-        (["--schema-version", "2", "search", "q", "--timeout", "90"], "timeout"),
-        (["--schema-version", "2", "search", "q", "--providers", "auto"], "providers"),
+        (["map", "https://example.com", "--max-depth", "1"], "max-depth"),
+        (["search", "q", "--timeout", "90"], "timeout"),
+        (["search", "q", "--providers", "auto"], "providers"),
     )
     for argv, option in cases:
         code, out, err = _run_main(argv)
@@ -293,7 +298,7 @@ def test_v2_option_detection_stops_at_argv_delimiter(monkeypatch):
 
     monkeypatch.setattr(api_v2, "_composite_search", fake_composite)
     code, out, err = _run_main([
-        "--schema-version", "2", "search", "--", "--response-mode",
+        "search", "--", "--response-mode",
     ])
     assert code == 0, err
     assert json.loads(out)["status"] == "complete"
@@ -306,7 +311,7 @@ def test_v2_internal_handler_failure_has_a_fixed_non_leaking_shape(monkeypatch):
         raise RuntimeError("Bearer private-token")
 
     monkeypatch.setattr(api_v2, "_composite_search", crash)
-    code, out, err = _run_main(["--schema-version", "2", "search", "q"])
+    code, out, err = _run_main(["search", "q"])
     assert code == 5
     payload = json.loads(out)
     assert payload["operation"] == "source_discovery"

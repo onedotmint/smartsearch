@@ -53,7 +53,7 @@ Normal commands validate only the capabilities they need. `fetch` needs `web_fet
 
 xAI uses the Responses API `/responses` route through `XAI_*`. OpenAI-compatible relays use Chat Completions `/chat/completions` through `OPENAI_COMPATIBLE_*`. Do not send xAI `web_search` or `x_search` tools, or legacy `search_parameters`, to the compatible route.
 
-`OPENAI_COMPATIBLE_STREAM=true`, `--stream`, and `--no-stream` are relay compatibility controls. They do not change xAI behavior, URL descriptions, or source ranking.
+`OPENAI_COMPATIBLE_STREAM=true` is the relay compatibility control for OpenAI-compatible main search and provider-side fetch. There is no `--stream` / `--no-stream` CLI option on the canonical V2 surface; those V1 options are rejected before any provider work. Streaming does not change xAI behavior, URL descriptions, or source ranking.
 
 For multiple independent endpoints, use the ordered `SMART_SEARCH_MODEL_ROUTES` array. Each entry owns its provider, API URL, API key, and model, so the next entry can use a different service or credential. The first entry is primary; later entries are tried only when the main-search request has a switchable upstream failure.
 
@@ -79,7 +79,7 @@ For multiple independent endpoints, use the ordered `SMART_SEARCH_MODEL_ROUTES` 
 }
 ```
 
-Use `smart-search model add` to append the same structure, `smart-search model list` or `smart-search model current` to inspect it, and `smart-search model remove ROUTE_ID` to delete an entry. Inspection output masks API keys and credentials embedded in API URLs, while retaining the endpoint host and path for diagnosis. Existing `XAI_*` and `OPENAI_COMPATIBLE_*` settings remain valid when `SMART_SEARCH_MODEL_ROUTES` is absent. The first local `model add` preserves saved legacy provider settings as `legacy-xai-responses` and `legacy-openai-compatible` routes before appending the new route. It does not copy environment-controlled legacy settings into the local config file; define `SMART_SEARCH_MODEL_ROUTES` in the environment for that setup.
+Use `smart-search provider routes add` to append the same structure, `smart-search provider routes list` or `smart-search provider routes current` to inspect it, and `smart-search provider routes remove ROUTE_ID` to delete an entry (the legacy `model *` spellings are removed). Inspection output masks API keys and credentials embedded in API URLs, while retaining the endpoint host and path for diagnosis. Existing `XAI_*` and `OPENAI_COMPATIBLE_*` settings remain valid when `SMART_SEARCH_MODEL_ROUTES` is absent. The first local `provider routes add` preserves saved legacy provider settings as `legacy-xai-responses` and `legacy-openai-compatible` routes before appending the new route. It does not copy environment-controlled legacy settings into the local config file; define `SMART_SEARCH_MODEL_ROUTES` in the environment for that setup.
 
 ### Zhipu REST and Coding Plan MCP
 
@@ -102,7 +102,8 @@ Jina Reader is `web_fetch` only. It is not a general search provider. `JINA_API_
 AnySearch is an experimental `vertical_search` provider selected internally for explicit vertical intent; it has no public command leaves.
 
 ```sh
-smart-search setup --non-interactive --anysearch-api-url "https://api.anysearch.com/mcp" --anysearch-key "your-anysearch-key"
+smart-search config set ANYSEARCH_API_URL "https://api.anysearch.com/mcp"
+smart-search config set ANYSEARCH_API_KEY "your-anysearch-key"
 ```
 
 At the adapter/API layer, a missing key means no `Authorization` header. A JSON-RPC 200 response with `result.isError=true` is a provider error, not successful evidence.
@@ -122,7 +123,7 @@ At the adapter/API layer, a missing key means no `Authorization` header. A JSON-
 | `INTENT_CLASSIFIER_MODEL` | Classifier model name |
 | `INTENT_ROUTER_TIMEOUT_SECONDS` | Remote router timeout; default `8` |
 
-Use `smart-search route` to inspect the result. Use `route-calibrate` after changing embedding models or endpoints. Details are in [Routing](concepts/routing.md).
+Use `smart-search dev route-explain "query" --format markdown` to inspect the routing decision. Use `smart-search dev route-calibrate --models "..." --format markdown` after changing embedding models or endpoints. Details are in [Routing](concepts/routing.md).
 
 ## Runtime cache
 
@@ -141,8 +142,8 @@ Only cleaned successful source/content results are cached. Synthesis answers, er
 ## Setup and inspection
 
 ```sh
-smart-search setup
-smart-search setup --non-interactive --zhipu-api-url "https://open.bigmodel.cn/api" --zhipu-search-engine "search_pro_sogou"
+smart-search config set ZHIPU_API_URL "https://open.bigmodel.cn/api"
+smart-search config set ZHIPU_SEARCH_ENGINE "search_pro_sogou"
 smart-search capabilities --format json
 smart-search config list --format json
 smart-search doctor status --format json

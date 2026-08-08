@@ -44,7 +44,7 @@ The regression suite checks the public README entrypoint, docs links, public/pac
 
 ### Versioned JSON contracts
 
-Keep the schema families independent during maintenance. Schema v1 remains the default compatibility renderer, v2 remains the evidence-first Core API, and v3 is an explicit control-plane API. V3 fixtures live in `tests/fixtures/control_plane_v3.py`; contract and CLI coverage lives in `tests/test_control_plane_v3_contract.py` and `tests/test_cli_v3.py`.
+Keep the schema families independent during maintenance. The canonical command domain alone decides the contract: evidence commands always use V2, retained control-plane leaves always use V3, and `research plan` / `research run` use the Research Workflow family. There is no schema v1 runtime path and no `--schema-version` selector. V3 fixtures live in `tests/fixtures/control_plane_v3.py`; contract and CLI coverage lives in `tests/test_control_plane_v3_contract.py` and `tests/test_cli_v3.py`.
 
 For a v3 change, verify the exact ten top-level fields, the operation allowlist, structured error/exit mapping, recursive redaction, and actual `network` / `side_effects` metadata. Run at least:
 
@@ -52,7 +52,7 @@ For a v3 change, verify the exact ten top-level fields, the operation allowlist,
 python -m pytest tests/test_control_plane_v3_contract.py tests/test_cli_v3.py tests/test_cli_v2.py tests/test_cli_namespace.py -q
 ```
 
-Do not add non-evidence operations to v2 or let v1 callers receive v3 JSON without `--schema-version 3`. Keep the public and packaged Skill on the existing v2 Core command boundary unless its own contract intentionally changes.
+Do not add non-evidence operations to v2 or let evidence commands receive V3 JSON. The canonical command domain alone decides the contract family: evidence commands use V2, retained control-plane leaves use V3, and research plan/run use the Workflow family. Keep the public and packaged Skill on the canonical command boundary unless its own contract intentionally changes.
 
 ## Documentation boundaries
 
@@ -93,7 +93,7 @@ Stable version bumps use a commit subject such as `chore(release): bump version 
 2. Check `gh release list --repo onedotmint/smartsearch --limit 100` before creating or editing a release.
 3. Keep beta releases on `next`; do not move `latest`.
 4. When npm returns `E409`, verify whether the exact version already exists before retrying; npm `E409` is not a reason to mutate a published version.
-5. Install the published version and run `smart-search --version`, `smart-search regression`, and `smart-search smoke --mock --format json`.
+5. Install the published version and run `smart-search --version`, `smart-search dev regression`, and `smart-search dev smoke --mock --format json`.
 6. For npm/mise wrapper validation on Windows, check the non-ASCII JSON path by piping the Chinese Deep Research JSON through `ConvertFrom-Json`.
 
 The release contract also covers `gh release create vX.Y.Z-beta.N`, `npm versions are immutable`, and the distinction between `latest` and `next`; keep these boundaries visible in release notes and tests.

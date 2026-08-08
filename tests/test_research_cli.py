@@ -1,11 +1,12 @@
 """Focused CLI boundary tests for the strict research workflow route.
 
-``research run QUERY --format json`` is the only canonical path that enters
-the strict typed Research Workflow owner and its contract serializer. These
-tests prove the one-JSON-document guarantee, the exact 14-field strict shape
-with no legacy answer/synthesis/shell/path/raw fields, the workflow exit
-mapping, pre-owner rejection of invalid options/input, and that the legacy
-bare ``research`` and offline ``research plan`` paths are untouched.
+``research plan QUERY`` and ``research run QUERY`` are the only canonical paths
+that enter the strict typed Research Workflow owner and its contract
+serializer. These tests prove the one-JSON-document guarantee, the exact
+14-field strict shape with no legacy answer/synthesis/shell/path/raw fields,
+the workflow exit mapping, pre-owner rejection of invalid options/input, and
+that each missing-query diagnostic names the exact canonical spelling while
+the legacy bare ``research`` remains a removed spelling.
 """
 
 from __future__ import annotations
@@ -321,13 +322,15 @@ def test_research_run_invalid_options_fail_before_owner(
 
 
 @pytest.mark.parametrize(
-    "argv",
+    "argv,expected",
     [
-        ["research", "run", "", "--format", "json"],
-        ["research", "run", "   ", "--format", "json"],
+        (["research", "run", "", "--format", "json"], "research run requires a non-blank query"),
+        (["research", "run", "   ", "--format", "json"], "research run requires a non-blank query"),
+        (["research", "plan", "", "--format", "json"], "research plan requires a non-blank query"),
+        (["research", "plan", "   ", "--format", "json"], "research plan requires a non-blank query"),
     ],
 )
-def test_research_run_blank_query_rejected(monkeypatch, capsys, argv):
+def test_research_blank_query_rejected(monkeypatch, capsys, argv, expected):
     for name in (
         "content_fetch",
         "source_discovery",
@@ -343,7 +346,40 @@ def test_research_run_blank_query_rejected(monkeypatch, capsys, argv):
     code = cli.main(argv)
     assert code == cli.EXIT_PARAMETER_ERROR
     payload = json.loads(capsys.readouterr().out)
-    _assert_strict_error(payload, message="non-blank query")
+    _assert_strict_error(payload, message=expected)
+
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (["research", "run"], "research run requires a non-blank query"),
+        (["research", "plan"], "research plan requires a non-blank query"),
+        (["research", "run", "--budget", "deep"], "research run requires a non-blank query"),
+        (["research", "plan", "--budget", "quick", "--format", "json"], "research plan requires a non-blank query"),
+    ],
+)
+def test_research_missing_query_diagnostic_names_command(monkeypatch, capsys, argv, expected):
+    """A leading ``plan``/``run`` selector without a query fails with the
+    workflow family's strict INVALID_ARGUMENT envelope and names the exact
+    canonical spelling, before any owner/provider/config work."""
+    for name in (
+        "content_fetch",
+        "source_discovery",
+        "docs_discovery",
+        "site_discovery",
+    ):
+
+        async def boom(*args, _name=name, **kwargs):
+            raise AssertionError(f"{_name} must not run on invalid input")
+
+        monkeypatch.setattr(evidence_operations, name, boom)
+
+    code = cli.main(argv)
+    assert code == cli.EXIT_PARAMETER_ERROR
+    payload = json.loads(capsys.readouterr().out)
+    _assert_strict_error(payload, message=expected)
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert payload["error"]["details"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -469,31 +505,56 @@ def test_legacy_bare_research_unchanged(monkeypatch, capsys):
     monkeypatch.setattr(cli_research, "dispatch", boom)
     monkeypatch.setattr(cli.service, "research", fake_research)
 
-    assert cli.main(["research", "topic", "--format", "json"]) == cli.EXIT_OK
+    # Bare ``research QUERY`` is a removed legacy workflow spelling: it fails
+    # with the workflow family's strict INVALID_ARGUMENT before any owner or
+    # service import, and is never reinterpreted as ``research run``.
+    assert cli.main(["research", "topic", "--format", "json"]) == cli.EXIT_PARAMETER_ERROR
     payload = json.loads(capsys.readouterr().out)
-    assert payload["query_mode"] == "research"
-    assert payload["content"] == "Evidence answer"
-    assert calls == [("topic", "deep")]
+    assert payload["operation"] == "research.run"
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert payload["error"]["details"]["legacy_spelling"] == "research"
+    assert calls == []
 
 
-def test_research_plan_offline_behavior_unchanged(monkeypatch, capsys):
+def test_research_plan_enters_workflow_family(monkeypatch, capsys):
+    """Canonical ``research plan QUERY`` routes to the workflow CLI adapter and
+    emits a plan-only workflow result (operation research.run, empty
+    execution collections) without running any stage or legacy service."""
     from smart_search import cli_research
-
-    async def boom(*args, **kwargs):
-        raise AssertionError("research plan must not enter the workflow route")
 
     calls: list[tuple[str, str]] = []
 
-    def fake_plan(query, budget="standard", evidence_dir=""):
-        calls.append((query, budget))
-        return {"ok": True, "mode": "deep_research", "query": query}
+    async def boom(*args, **kwargs):
+        raise AssertionError("plan route must not run stages or legacy service")
 
-    monkeypatch.setattr(cli_research, "dispatch", boom)
-    monkeypatch.setattr(cli.service, "build_deep_research_plan", fake_plan)
+    def fake_plan(query, budget="deep", evidence_dir=""):
+        calls.append((query, budget))
+        from smart_search.research_plan import ResearchPlanOperation, build_research_plan
+
+        return build_research_plan(
+            [
+                ResearchPlanOperation(
+                    id="fetch-1",
+                    operation="content_fetch",
+                    input={"resource": "https://example.com/page"},
+                    constraints={},
+                    depends_on=(),
+                )
+            ]
+        )
+
+    monkeypatch.setattr(cli.service, "build_deep_research_plan", boom)
+    from smart_search import research_service
+
+    monkeypatch.setattr(research_service, "build_research_workflow_plan", fake_plan)
 
     assert cli.main(["research", "plan", "topic", "--budget", "quick"]) == cli.EXIT_OK
     payload = json.loads(capsys.readouterr().out)
-    assert payload["mode"] == "deep_research"
+    assert payload["operation"] == "research.run"
+    assert payload["status"] == "complete"
+    assert payload["stages"] == []
+    assert payload["evidence"] == []
+    assert payload["plan"]["schema_version"] == "research-plan-1"
     assert calls == [("topic", "quick")]
 
 

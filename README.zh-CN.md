@@ -11,12 +11,12 @@
 ```sh
 npm install -g @onedotmint/smart-search@latest
 smart-search --version
-smart-search setup
+smart-search config path --format json
 ```
 
 npm 包会在安装时创建隔离的 Python 运行时。源码 checkout 也支持直接使用 Python，见[入门指南](docs/getting-started.md)。
 
-根级 `--help` 有意只显示 `search`、`fetch`、`capabilities` 和 `setup`。使用 `smart-search --help-all` 可发现 Advanced、provider、developer 和 legacy-compatible 命令。
+根级 `--help` 有意只显示证据核心命令 `search`、`fetch` 和 `capabilities`。使用 `smart-search --help-all` 可查看完整规范清单（research workflow 和 V3 控制面命令）。
 
 前置条件：
 
@@ -55,14 +55,14 @@ smart-search 0.1.0
 
 搜索响应使用带版本号的 JSON envelope。provider 返回的正文和 URL 会变化；稳定结构是 `schema_version`、`command`、`data` 和 `meta`。
 
-### 可选的 v2 Core JSON API
+### V2 Evidence Core JSON API
 
-Evidence-first Core API 是推荐的 Agent 默认路径，通过根级全局 flag 选择：
+证据优先的 Core API 是推荐的 Agent 默认路径，由规范命令域直接选择，无需 selector flag：
 
 ```sh
-smart-search --schema-version 2 capabilities
-smart-search --schema-version 2 search "示例查询"
-smart-search --schema-version 2 fetch "https://example.com/page"
+smart-search capabilities
+smart-search search "示例查询"
+smart-search fetch "https://example.com/page"
 ```
 
 `map` 作为 Advanced `site_discovery` operation 提供；v2 用法见命令参考。
@@ -71,53 +71,52 @@ smart-search --schema-version 2 fetch "https://example.com/page"
 - v2 `search` 只返回 discovery candidates；不会调用 legacy `main_search`，也不接受 `--response-mode`。
 - Host Agent 基于 fetched `evidence.items` 写最终回答；discovery candidates 不是 claim-level 证据。
 - `capabilities` 使用 envelope-only 元操作 `capability_status`（本地只读检查，不发 Provider 网络请求）。
-- `--fail-on-degraded` 可用于 v2 和 v3；`--trace` 仍仅用于 v2。不承诺 subcommand 之后的 `--schema-version` 位置。
+- `--fail-on-degraded` 可用于 v2 和 v3；`--trace` 仍仅用于 v2。
 
-### 可选的 v3 控制面 JSON API
+### V3 控制面 JSON API
 
-V3 是用于稳定本地管理、显式 probe、开发诊断、文件系统操作和 regression 子进程的独立 JSON family。它不是 evidence envelope，也不是 Agent 默认路径：
+V3 是用于稳定本地管理、显式 probe、开发诊断、文件系统操作和 regression 子进程的独立 JSON family。它不是 evidence envelope：
 
 ```sh
-smart-search --schema-version 3 config list
-smart-search --schema-version 3 provider status
-smart-search --schema-version 3 doctor status
-smart-search --schema-version 3 dev smoke --mock
+smart-search config list
+smart-search provider status
+smart-search doctor status
+smart-search dev smoke --mock
 ```
 
-V3 返回 `complete` / `degraded` / `failed`，并以独立的 `network` 与 `side_effects` 对象声明实际执行影响。它只接受根级全局入口，默认输出 JSON（唯一稳定机器契约），且是 additive 的：v1 仍为默认，v2 仍为 evidence-first Core API。`--format markdown|content` 渲染同一 validated envelope 的非稳定人类视图。完整 allowlist、错误、退出码和迁移边界见[命令参考](docs/commands.md#opt-in-schema-version-3-control-plane-api)。
+V3 返回 `complete` / `degraded` / `failed`，并以独立的 `network` 与 `side_effects` 对象声明实际执行影响。默认输出 JSON（唯一稳定机器契约）。`--format markdown|content` 渲染同一 validated envelope 的非稳定人类视图。完整 allowlist、错误、退出码和迁移边界见[命令参考](docs/commands.md#control-plane-v3-json-api)。
 
 ## 选择工作流
 
 | 需求 | 命令 | 网络行为 |
 | --- | --- | --- |
-| Evidence-first 发现与抓取（Agent 默认） | `smart-search --schema-version 2 search\|fetch\|capabilities` | 实时 discovery/fetch；capabilities 本地 |
-| 控制面自动化（显式 opt-in） | `smart-search --schema-version 3 config\|provider\|doctor\|dev ...` | 明确的本地、网络、文件系统和子进程元数据 |
-| 快速 v1 回答和广泛发现 | `smart-search search QUERY` | 实时搜索，可合成答案 |
-| 查看意图需要哪些 capability | `smart-search route QUERY` | 不调用搜索/fetch provider；`hybrid` 可能调用已配置的路由 endpoint |
+| Evidence-first 发现与抓取（Agent 默认） | `smart-search search\|fetch\|capabilities` | 实时 discovery/fetch；capabilities 本地 |
+| 控制面自动化 | `smart-search config\|provider\|doctor\|dev ...` | 明确的本地、网络、文件系统和子进程元数据 |
+
+
 | 阅读一个已知页面 | `smart-search fetch URL` | 实时抓取页面 |
-| 先生成调研计划 | `smart-search deep QUERY` / `research plan QUERY` | 离线规划 |
+| 先生成调研计划 | `smart-search research plan QUERY` | 离线规划 |
 | 分阶段证据调研 | `smart-search research run QUERY` | 实时发现、抓取、gap；由 Host 写答案 |
-| 分阶段调研并合成 | `smart-search research run QUERY --synthesize` 或裸 `research` | 实时发现、抓取与 evidence-only 合成 |
+
 | 本地 readiness | `smart-search doctor status` | 仅本地，不 probe |
-| 联网聚合连通性 | `smart-search doctor` / `doctor probe` | 脱敏诊断和 provider 检查 |
+| 联网聚合连通性 | `smart-search doctor probe` | 脱敏诊断和 provider 检查 |
 | 单 Provider 可达性 | `smart-search provider probe PROVIDER` | 只测一个 provider/family |
 
-`deep` / `research plan` 只做离线规划。`research run` 是面向 Agent 的证据工作流。裸 `research` 仍是兼容的合成执行路径。
+`research plan` 只做离线规划。`research run` 是面向 Agent 的证据工作流。旧命令、别名和 `--schema-version` selector 已移除，会以替换 family 的严格错误失败。
 
 ## 核心示例
 
 ```sh
 # Agent 默认证据路径
-smart-search --schema-version 2 capabilities
-smart-search --schema-version 2 search "React useEffect cleanup docs"
-smart-search --schema-version 2 fetch "https://react.dev/reference/react/useEffect"
+smart-search capabilities
+smart-search search "React useEffect cleanup docs"
+smart-search fetch "https://react.dev/reference/react/useEffect"
 
 # 分阶段多源调研，不自动合成答案
 smart-search research run "比较两个当前 API 设计" --format json
 
-# 先规划，再兼容合成执行
+# 先离线规划
 smart-search research plan "比较两个当前 API 设计" --budget standard --format json
-smart-search research "比较两个当前 API 设计" --budget deep --format markdown
 
 # 先本地 readiness，再显式联网检查
 smart-search doctor status --format json
@@ -128,14 +127,11 @@ smart-search provider probe exa --format json
 smart-search provider status --format json
 smart-search provider routes list --format markdown
 
-# 兼容入口仍可使用
-smart-search deep "比较两个当前 API 设计" --budget standard --format json
-smart-search model list --format markdown
 ```
 
 给 agent 和脚本用 `--format json`，给人读报告用 `--format markdown`，终端快速阅读用 `--format content`。参数和 provider 专用命令见[命令参考](docs/commands.md)。
 
-需要多个模型服务按顺序备用时，在配置文件中加入 `SMART_SEARCH_MODEL_ROUTES` JSON 数组，或用 `smart-search model add` 追加。`smart-search model list` 查看顺序和模型，`smart-search model current` 查看当前首选路由，`smart-search model remove ROUTE_ID` 删除路由。查看命令会遮蔽 API key，原有 `XAI_*` 和 `OPENAI_COMPATIBLE_*` 配置仍可继续使用。
+需要多个模型服务按顺序备用时，在配置文件中加入 `SMART_SEARCH_MODEL_ROUTES` JSON 数组，或用 `smart-search provider routes add` 追加。`smart-search provider routes list` 查看顺序和模型，`smart-search provider routes current` 查看当前首选路由，`smart-search provider routes remove ROUTE_ID` 删除路由。查看命令会遮蔽 API key，原有 `XAI_*` 和 `OPENAI_COMPATIBLE_*` 配置仍可继续使用。
 
 ## 证据边界
 
@@ -159,14 +155,14 @@ smart-search model list --format markdown
 
 ```sh
 smart-search doctor status --format json
-smart-search doctor --format markdown
+smart-search doctor probe --format markdown
 smart-search provider probe exa --format json
-smart-search diagnose openai-compatible --format markdown
-smart-search regression
-smart-search smoke --mock --format json
+smart-search dev diagnose openai-compatible --format markdown
+smart-search dev regression
+smart-search dev smoke --mock --format json
 ```
 
-`doctor status` 仅做本地 readiness。`doctor` / `doctor probe` 是联网聚合诊断。`provider probe PROVIDER` 检查一个指定 provider。`provider list` 和 `provider status` 仍是仅本地的元数据与资格视图。
+`doctor status` 仅做本地 readiness。`doctor probe` 是联网聚合诊断（裸 `doctor` 是已移除拼写）。`provider probe PROVIDER` 检查一个指定 provider。`provider list` 和 `provider status` 仍是仅本地的元数据与资格视图。
 
 ## 开发验证
 

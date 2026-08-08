@@ -628,9 +628,11 @@ def test_v1_service_facade_remains_free_of_v2_exports():
 
     parser = build_parser()
     help_text = parser.format_help()
-    assert "--schema-version" in help_text
-    args = parser.parse_args(["--schema-version", "2", "search", "query"])
-    assert args.schema_version == "2"
+    # The schema selector is fully removed from the parser surface.
+    assert "--schema-version" not in help_text
+    assert not any(
+        "--schema-version" in action.option_strings for action in parser._actions
+    )
     assert SCHEMA_VERSION == "1"
     assert V2_SCHEMA_VERSION == "2"
     for name in ("V2Envelope", "serialize_result", "parser_error_result", "v2_contract", "api_v2"):

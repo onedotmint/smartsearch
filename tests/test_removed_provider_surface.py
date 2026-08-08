@@ -192,18 +192,22 @@ def test_removed_spelling_parse_failure_is_isolated_and_writes_nothing() -> None
         ("experimental namespace", ["experimental", "zread", "read-file", "repo", "README.md"]),
     )
     script = """
+import io
 import json
 import os
 import sys
 import tempfile
+import contextlib
 
 config_dir = tempfile.mkdtemp(prefix="ss-removed-surface-")
 os.environ["SMART_SEARCH_CONFIG_DIR"] = config_dir
 os.environ.pop("SMART_SEARCH_HOME", None)
 
 from smart_search.cli import main
+buffer = io.StringIO()
 try:
-    code = main(sys.argv[1:])
+    with contextlib.redirect_stdout(buffer):
+        code = main(sys.argv[1:])
 except SystemExit as exc:
     code = int(exc.code or 0)
 assert code == 2, code
@@ -211,6 +215,11 @@ for name in ("smart_search.service", "smart_search.config", "smart_search.provid
              "smart_search.skill_installer", "httpx"):
     assert name not in sys.modules, name
 assert os.listdir(config_dir) == [], os.listdir(config_dir)
+# exactly one strict JSON document on stdout
+payload = json.loads(buffer.getvalue())
+assert payload["ok"] is False
+assert payload["status"] == "failed"
+assert payload["error"]["code"] == "INVALID_ARGUMENT"
 sys.stdout.write("ok")
 """
     for label, argv in cases:
@@ -227,12 +236,18 @@ sys.stdout.write("ok")
 
 @pytest.mark.parametrize(
     "argv",
-    [["--schema-version", "2", "exa-search", "query"], ["--schema-version", "3", "exa-search", "query"]],
+    [
+        ["exa-search", "query"],
+        ["--schema-version", "2", "exa-search", "query"],
+        ["--schema-version", "3", "exa-search", "query"],
+    ],
 )
 def test_removed_spelling_parser_error_is_one_json_document(argv, capsys) -> None:
+    # Unrecognized spellings always use the V2 root parser-error sentinel;
+    # selector spellings are removed and never change the family.
     assert cli.main(argv) == 2
     payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == argv[1]
+    assert payload["schema_version"] == "2"
     assert payload["ok"] is False
     assert payload["status"] == "failed"
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
