@@ -434,7 +434,9 @@ def _classify_canonical(argv: list[str]) -> dict[str, object]:
         # error, except when the exact spelling is itself a removed legacy
         # command (for example bare ``config`` or ``doctor``).
         hit = _match_reserved_spelling(tokens)
-        if hit is not None:
+        if hit is not None and (
+            len(tokens) == 1 or tokens[:2] in RESERVED_LEGACY_SPELLINGS
+        ):
             family, replacement = hit
             return {
                 "family": "removed",

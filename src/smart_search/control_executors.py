@@ -73,7 +73,7 @@ async def _test_primary_chat_completion(api_url: str, api_key: str, model: str) 
         if response.status_code != 200:
             return {
                 "status": "warning",
-                "message": f"HTTP {response.status_code}: {response.text[:100]}",
+                "message": f"HTTP {response.status_code}: 上游返回错误响应",
                 "response_time_ms": response_time,
                 "http_status": response.status_code,
                 "content_type": content_type,
@@ -194,7 +194,25 @@ async def _probe_openai_compatible_search_shape(
                     json=payload,
                 ) as response:
                     content_type = response.headers.get("content-type", "")
-                    response.raise_for_status()
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError:
+                        # A streaming response has not been read yet. Drain it
+                        # while its context is open so an unread body cannot turn
+                        # this diagnostic failure into ResponseNotRead later.
+                        try:
+                            await response.aread()
+                        except httpx.HTTPError:
+                            pass
+                        return _diagnose_check_result(
+                            name=name,
+                            status="warning",
+                            message=f"HTTP {response.status_code}: 上游返回错误响应",
+                            start=start,
+                            http_status=response.status_code,
+                            content_type=content_type,
+                            stream=True,
+                        )
                     has_content = False
                     async for line in response.aiter_lines():
                         stripped = line.strip()
@@ -256,13 +274,13 @@ async def _probe_openai_compatible_search_shape(
     except httpx.TimeoutException as e:
         return _diagnose_check_result(name=name, status="timeout", message=f"请求超时: {e}", start=start, stream=stream)
     except httpx.HTTPStatusError as e:
-        body = e.response.text[:200] if e.response is not None else str(e)
-        status_code = e.response.status_code if e.response is not None else None
-        content_type = e.response.headers.get("content-type", "") if e.response is not None else ""
+        response = e.response
+        status_code = response.status_code if response is not None else None
+        content_type = response.headers.get("content-type", "") if response is not None else ""
         return _diagnose_check_result(
             name=name,
             status="warning",
-            message=f"HTTP {status_code}: {body}",
+            message=f"HTTP {status_code}: 上游返回错误响应",
             start=start,
             http_status=status_code,
             content_type=content_type,

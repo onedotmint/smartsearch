@@ -1192,7 +1192,15 @@ def _execute_regression() -> dict[str, Any]:
             "failed_cases": list(data.get("failed_cases") or []),
         }
     cmd = [sys.executable, "-m", "pytest", *_REGRESSION_PATTERNS]
-    code = subprocess.call(cmd, cwd=str(root))
+    completed = subprocess.run(
+        cmd,
+        cwd=str(root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+    )
+    code = completed.returncode
     return {
         "ok": code == 0,
         "exit_code": code,

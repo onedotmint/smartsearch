@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -87,6 +90,53 @@ def test_v3_route_write_projects_masked_routes(monkeypatch, capsys):
     rendered = json.dumps(payload)
     assert "route-secret" not in rendered
     assert "user:pass" not in rendered
+
+
+def test_v3_route_list_double_sanitization_preserves_endpoint(monkeypatch, capsys):
+    """A second redaction pass over an already masked route URL keeps the
+    host, path and non-sensitive query visible while credentials stay hidden."""
+    from smart_search import control_operations
+    from smart_search.control_operations import (
+        ControlMutationFacts,
+        ControlNetworkFacts,
+        ControlOperationOutcome,
+        ControlOperationStatus,
+        ControlSideEffectFacts,
+    )
+    from smart_search.execution_primitives import ExecutionMetadata
+    from smart_search.security import redact_url_credentials
+
+    once_masked = redact_url_credentials(
+        "https://user:pass@relay.example/v1?api_key=route-secret&region=cn"
+    )
+    assert once_masked.startswith("https://[REDACTED]@relay.example")
+
+    async def fake_list():
+        return ControlOperationOutcome(
+            operation="provider.routes.list",
+            status=ControlOperationStatus.COMPLETE,
+            result={
+                "routes": [{
+                    "id": "primary", "provider": "openai-compatible",
+                    "api_url": once_masked, "model": "model-a",
+                }],
+                "route_count": 1,
+            },
+            network=ControlNetworkFacts(),
+            side_effects=ControlSideEffectFacts(config=ControlMutationFacts(read=True)),
+            metadata=ExecutionMetadata("provider.routes.list", 0),
+        )
+
+    monkeypatch.setattr(control_operations, "run_provider_routes_list", fake_list)
+    assert main(["provider", "routes", "list"]) == 0
+    payload = _payload(capsys)
+    url = payload["result"]["routes"][0]["api_url"]
+    assert url == once_masked
+    assert "relay.example" in url
+    assert "/v1" in url
+    assert "region=cn" in url
+    assert "user:pass" not in url
+    assert "route-secret" not in url
 
 
 def test_v3_provider_catalog_and_probe_metadata(monkeypatch, tmp_path, capsys):
@@ -293,6 +343,35 @@ def test_v3_rejects_excluded_and_noncanonical_commands(capsys):
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
 
 
+def test_v3_unknown_namespace_leaves_stay_v3_parse_errors(monkeypatch, capsys):
+    # Unknown leaves below a canonical V3 namespace are ordinary V3 parse
+    # errors; they must not be mislabelled as bare removed spellings.
+    for argv in (["config", "badleaf"], ["doctor", "badleaf"], ["provider", "badleaf"], ["dev", "badleaf"]):
+        assert main(argv) == 2
+        payload = _payload(capsys)
+        assert payload["schema_version"] == "3"
+        assert payload["operation"] is None
+        assert payload["error"]["code"] == "INVALID_ARGUMENT"
+        assert "legacy_spelling" not in payload["error"]["details"]
+        assert "removed" not in payload["error"]["message"]
+
+    # Defined nested legacy aliases and exact bare reserved spellings keep
+    # their replacement-family removal errors.
+    cases = (
+        (["config", "p"], "config p", "config.path"),
+        (["config", "ls"], "config ls", "config.list"),
+        (["config"], "config", "config path|list|set|unset"),
+        (["doctor"], "doctor", "doctor probe"),
+    )
+    for argv, spelling, replacement in cases:
+        assert main(argv) == 2
+        payload = _payload(capsys)
+        assert payload["schema_version"] == "3"
+        assert payload["error"]["code"] == "INVALID_ARGUMENT"
+        assert payload["error"]["details"]["legacy_spelling"] == spelling
+        assert payload["error"]["details"]["replacement"] == replacement
+
+
 def test_v1_and_v3_regression_use_one_shared_owner_per_invocation(monkeypatch, capsys):
     from smart_search import control_operations
 
@@ -349,6 +428,106 @@ def test_v3_packaged_regression_fallback_works_inside_event_loop(monkeypatch, ca
     assert payload["status"] == "complete"
     assert payload["result"]["fallback"] == "mock_smoke"
     assert payload["side_effects"]["subprocess"]["started"] is False
+
+
+def test_v3_regression_source_checkout_emits_single_json_document(monkeypatch, capsys):
+    """The source-checkout subprocess branch captures the pytest child
+    output, so the V3 CLI stdout is exactly one parseable JSON document with
+    no pytest progress text before it."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(kwargs)
+        assert kwargs.get("stdout") is subprocess.PIPE, "child stdout must be captured"
+        assert kwargs.get("stderr") is subprocess.PIPE, "child stderr must be captured"
+        return subprocess.CompletedProcess(
+            cmd, 1, stdout=".....F pytest progress text.....\n", stderr="teardown noise\n"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert main(["dev", "regression", "--format", "json"]) == 5
+    out = capsys.readouterr().out
+    payload = json.loads(out)  # raises if pytest text precedes the envelope
+    assert payload["schema_version"] == "3"
+    assert payload["operation"] == "dev.regression"
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "SUBPROCESS_FAILED"
+    assert payload["side_effects"]["subprocess"]["started"] is True
+    assert "pytest" not in out
+
+    def fake_run_ok(cmd, **kwargs):
+        assert kwargs.get("stdout") is subprocess.PIPE
+        assert kwargs.get("stderr") is subprocess.PIPE
+        return subprocess.CompletedProcess(cmd, 0, stdout="pytest dots\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run_ok)
+    assert main(["dev", "regression", "--format", "json"]) == 0
+    payload = _payload(capsys)
+    assert payload["status"] == "complete"
+    assert payload["error"] is None
+
+
+def _serve_stream_error(status: int, body: bytes) -> ThreadingHTTPServer:
+    """Process-local localhost server that fails every POST."""
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            try:
+                self.send_response(status)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                pass
+            finally:
+                self.close_connection = True
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_v3_diagnose_streamed_http_error_is_typed_provider_failure(monkeypatch, capsys):
+    """A localhost streamed 5xx produces a typed V3 provider/network failure
+    (exit 4, PROVIDER_UNAVAILABLE, truthful network facts) with no
+    INTERNAL_ERROR, no request secret, and no raw upstream payload."""
+    server = _serve_stream_error(503, b'{"error": "raw upstream secret"}')
+    try:
+        port = server.server_address[1]
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_URL", f"http://127.0.0.1:{port}")
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "sk-local-test-secret")
+        monkeypatch.setenv("OPENAI_COMPATIBLE_MODEL", "model-x")
+        assert main(["dev", "diagnose", "openai-compatible"]) == 4
+    finally:
+        server.shutdown()
+    payload = _payload(capsys)
+    assert payload["schema_version"] == "3"
+    assert payload["operation"] == "dev.diagnose.openai-compatible"
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "PROVIDER_UNAVAILABLE"
+    assert payload["error"]["code"] != "INTERNAL_ERROR"
+    assert payload["network"] == {
+        "policy": "explicit", "scope": "diagnostic",
+        "attempted": True, "targets": ["openai-compatible"],
+    }
+    rendered = json.dumps(payload)
+    assert "sk-local-test-secret" not in rendered
+    assert "raw upstream secret" not in rendered
+    assert "ResponseNotRead" not in rendered
+    assert "StreamClosed" not in rendered
+    stream_check = next(
+        check for check in payload["result"]["checks"] if check.get("stream") is True
+    )
+    assert stream_check["status"] == "warning"
+    assert stream_check["http_status"] == 503
+    assert stream_check["message"] == "HTTP 503: 上游返回错误响应"
+    assert "raw upstream secret" not in stream_check["message"]
 
 
 def test_v3_dev_regression_format_owner_once_and_strict_rejection(monkeypatch, capsys):

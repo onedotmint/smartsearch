@@ -55,8 +55,12 @@ def redact_url_credentials(value: str) -> str:
      * ================================================================================
     */
     """
+    # ``urlsplit`` treats the display-only ``[REDACTED]`` marker as an
+    # invalid bracketed host when it appears in userinfo. Substitute a
+    # parseable placeholder before splitting, then render the marker below.
+    parse_value = value.replace("://[REDACTED]@", "://redacted@")
     try:
-        parsed = urlsplit(value)
+        parsed = urlsplit(parse_value)
     except ValueError:
         return "[REDACTED]"
 

@@ -13,6 +13,9 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -1288,6 +1291,92 @@ def test_diagnose_request_failure_classified(monkeypatch):
     assert result.network.attempted is True
 
 
+def _serve_stream_error(status: int, body: bytes) -> ThreadingHTTPServer:
+    """Start a process-local localhost server that fails every POST.
+
+    The streamed probe reads the status line and closes the connection
+    without draining the body; the handler tolerates that write failure.
+    """
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self):
+            try:
+                self.send_response(status)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                pass
+            finally:
+                self.close_connection = True
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_diagnose_streamed_http_error_returns_typed_network_failure(monkeypatch):
+    """A streamed 4xx/5xx response must be consumed safely and reported as a
+    diagnostic check; ResponseNotRead/StreamClosed must never escape into a
+    V3 INTERNAL_ERROR, and request secrets must stay out of the checks.
+    Uses a real localhost socket because buffered mock transports do not
+    expose unread response bodies."""
+    server = _serve_stream_error(503, b'{"error": "upstream boom"}')
+    try:
+        port = server.server_address[1]
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_URL", f"http://127.0.0.1:{port}")
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "sk-local-test-secret")
+        monkeypatch.setenv("OPENAI_COMPATIBLE_MODEL", "model-x")
+        outcome = asyncio.run(co.run_dev_diagnose_openai_compatible(timeout_seconds=5))
+    finally:
+        server.shutdown()
+
+    assert outcome.status is ControlOperationStatus.FAILED
+    assert outcome.error is not None and outcome.error.type == "network_error"
+    assert outcome.network.attempted is True
+    assert outcome.network.targets == ("openai-compatible",)
+    rendered = json.dumps(outcome.result_dict)
+    assert "INTERNAL_ERROR" not in rendered
+    assert "sk-local-test-secret" not in rendered
+    assert "upstream boom" not in rendered
+    assert "ResponseNotRead" not in rendered
+    assert "StreamClosed" not in rendered
+    stream_check = next(check for check in outcome.result_dict["checks"] if check.get("stream") is True)
+    assert stream_check["status"] == "warning"
+    assert stream_check["http_status"] == 503
+    assert stream_check["message"] == "HTTP 503: 上游返回错误响应"
+    assert "upstream boom" not in stream_check["message"]
+
+
+def test_diagnose_streamed_http_4xx_and_5xx_share_fixed_redaction(monkeypatch):
+    """Both 4xx and 5xx streamed failures produce deterministic checks that
+    never echo the upstream raw payload."""
+    for status in (429, 503):
+        server = _serve_stream_error(status, b'{"error": "raw upstream secret"}')
+        try:
+            port = server.server_address[1]
+            monkeypatch.setenv("OPENAI_COMPATIBLE_API_URL", f"http://127.0.0.1:{port}")
+            monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "sk-local-test-secret")
+            monkeypatch.setenv("OPENAI_COMPATIBLE_MODEL", "model-x")
+            outcome = asyncio.run(co.run_dev_diagnose_openai_compatible(timeout_seconds=5))
+        finally:
+            server.shutdown()
+        rendered = json.dumps(outcome.result_dict)
+        assert outcome.status is ControlOperationStatus.FAILED
+        assert outcome.error.type == "network_error"
+        assert "sk-local-test-secret" not in rendered
+        assert "raw upstream secret" not in rendered
+        stream_check = next(check for check in outcome.result_dict["checks"] if check.get("stream") is True)
+        assert stream_check["http_status"] == status
+        assert "raw upstream secret" not in stream_check["message"]
+
+
 def test_smoke_mock_is_network_free(monkeypatch, no_network_spies):
     async def fake_smoke(mode="mock"):
         return {
@@ -1447,6 +1536,57 @@ def test_regression_mock_fallback_failure_config_error(monkeypatch):
     assert result.status is ControlOperationStatus.FAILED
     assert result.error.type == "config_error"
     assert result.side_effects.subprocess_started is False
+
+
+def test_regression_source_checkout_process_captures_child_output(monkeypatch):
+    """The real source-checkout regression branch captures the pytest child
+    stdout/stderr instead of inheriting the parent streams, so pytest text
+    never reaches the V3 CLI stdout and never becomes a result field."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(kwargs)
+        assert kwargs.get("stdout") is subprocess.PIPE, "child stdout must be captured"
+        assert kwargs.get("stderr") is subprocess.PIPE, "child stderr must be captured"
+        assert kwargs.get("errors") == "replace", "captured output must not change subprocess classification"
+        return subprocess.CompletedProcess(
+            cmd,
+            1,
+            stdout=".....F pytest progress text.....\n",
+            stderr="warnings and teardown noise\n",
+        )
+
+    monkeypatch.setattr(co.subprocess, "run", fake_run)
+    data = co._execute_regression()
+    assert calls
+    assert calls[0]["cwd"] == str(Path(co.__file__).resolve().parents[2])
+    assert data == {
+        "ok": False,
+        "exit_code": 1,
+        "subprocess_started": True,
+        "fallback": "",
+        "test_files": list(co._REGRESSION_PATTERNS),
+    }
+    assert "pytest" not in json.dumps(data)
+
+    outcome = asyncio.run(co.run_dev_regression())
+    assert outcome.status is ControlOperationStatus.FAILED
+    assert outcome.error is not None and outcome.error.type == "subprocess_error"
+    assert outcome.side_effects.subprocess_started is True
+    assert "pytest" not in json.dumps(outcome.result_dict)
+
+    def fake_run_ok(cmd, **kwargs):
+        assert kwargs.get("stdout") is subprocess.PIPE
+        assert kwargs.get("stderr") is subprocess.PIPE
+        assert kwargs.get("errors") == "replace"
+        return subprocess.CompletedProcess(cmd, 0, stdout="pytest dots\n", stderr="")
+
+    monkeypatch.setattr(co.subprocess, "run", fake_run_ok)
+    data = co._execute_regression()
+    assert data["ok"] is True and data["exit_code"] == 0
+    outcome = asyncio.run(co.run_dev_regression())
+    assert outcome.status is ControlOperationStatus.COMPLETE
+    assert "pytest" not in json.dumps(outcome.result_dict)
 
 
 # ---------------------------------------------------------------------------

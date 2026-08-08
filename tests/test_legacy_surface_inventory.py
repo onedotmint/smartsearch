@@ -327,6 +327,39 @@ def test_v3_retained_operations_are_not_remove_targets() -> None:
         assert operation not in remove_surfaces
 
 
+def test_canonical_v3_namespace_unknown_leaves_are_v3_parse_errors() -> None:
+    """Unknown leaves below a canonical V3 namespace remain ordinary V3
+    parse errors; only the exact bare reserved spelling or a defined nested
+    legacy alias keeps its replacement-family removal error."""
+    for argv in (["config", "badleaf"], ["doctor", "badleaf"], ["provider", "badleaf"], ["dev", "badleaf"]):
+        classification = classify_command_domain(argv)
+        assert classification["family"] == "v3"
+        assert classification["command"] == argv[0]
+        assert classification["operation"] is None
+
+    # Defined nested legacy aliases stay replacement-family removal errors.
+    for argv, replacement in (
+        (["config", "p"], "config.path"),
+        (["config", "ls"], "config.list"),
+        (["config", "rm"], "config.unset"),
+    ):
+        classification = classify_command_domain(argv)
+        assert classification["family"] == "removed"
+        assert classification["error_family"] == "v3"
+        assert classification["legacy_spelling"] == " ".join(argv)
+        assert classification["replacement"] == replacement
+
+    # Exact bare reserved spellings keep their one-token removal records.
+    for argv, replacement in (
+        (["config"], "config path|list|set|unset"),
+        (["doctor"], "doctor probe"),
+    ):
+        classification = classify_command_domain(argv)
+        assert classification["family"] == "removed"
+        assert classification["legacy_spelling"] == argv[0]
+        assert classification["replacement"] == replacement
+
+
 def test_live_parser_and_namespace_scans_reconcile_to_inventory() -> None:
     commands = _top_level_canonical_commands()
     exact = _exact_provider_commands(commands)

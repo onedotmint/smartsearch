@@ -105,3 +105,21 @@ def test_redact_url_credentials_masks_semicolon_query_and_fragment_parameters():
     assert "semicolon-secret" not in sanitize_text(f"request failed: {raw_url}")
     assert "fragment-secret" not in sanitize_text(f"request failed: {raw_url}")
     logger.info("步骤4结束：分号查询参数和 URL fragment 脱敏验证完成")
+
+
+def test_redact_url_credentials_is_idempotent_for_masked_userinfo():
+    raw_url = "https://user:password@relay.example/v1?api_key=query-secret&region=cn"
+    once = redact_url_credentials(raw_url)
+    assert once == "https://[REDACTED]@relay.example/v1?api_key=%5BREDACTED%5D&region=cn"
+
+    assert redact_url_credentials(once) == once
+    assert sanitize_text(f"request failed: {raw_url}") == f"request failed: {once}"
+    assert sanitize_text(f"request failed: {once}") == f"request failed: {once}"
+
+    with_fragment = redact_url_credentials(
+        "https://user:pass@relay.example/v1?region=cn#access_token=fragment-secret;state=ready"
+    )
+    assert redact_url_credentials(with_fragment) == with_fragment
+    assert "relay.example" in with_fragment and "state=ready" in with_fragment
+    assert "fragment-secret" not in with_fragment
+    assert redact_url_credentials("https://user:password@[invalid-host") == "[REDACTED]"
