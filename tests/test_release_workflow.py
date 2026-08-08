@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -115,6 +116,7 @@ def test_release_docs_explain_beta_lane_and_npm_immutability():
         "npm `E409`",
         "machine-readable gap check",
         "mise use -g",
+        "NPM_TOKEN",
         "non-ASCII JSON",
         "ConvertFrom-Json",
     ]
@@ -154,3 +156,106 @@ def test_current_stable_release_notes_describe_user_visible_changes():
     ]
     for marker in required_markers:
         assert marker in notes
+
+
+def test_publish_workflow_trigger_checkout_and_version_resolution():
+    """The workflow runs on main pushes and v* tags, accepts an explicit
+    dispatch target ref, checks out that exact ref, and resolves the publish
+    version through the version scripts (never a hard-coded dev build)."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "on:\n  push:\n    branches:\n      - main\n    tags:\n      - \"v*\"" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert 'target_ref:\n        description: "Commit SHA, branch, or tag to publish from"' in workflow
+    assert "actions/checkout@v6" in workflow
+    assert "ref: ${{ github.event.inputs.target_ref || github.ref }}" in workflow
+    assert 'node-version: "24"' in workflow
+    assert 'python-version: "3.12"' in workflow
+
+    # Version resolution: dispatch exact version, tag-derived version, and the
+    # prerelease resolver for main pushes; the resolved version is captured.
+    assert 'version="${DISPATCH_VERSION}"' in workflow
+    assert 'version="${GITHUB_REF_NAME#v}"' in workflow
+    assert 'version="$(node npm/scripts/resolve-prerelease-version.js' in workflow
+    assert 'node npm/scripts/set-package-version.js "$version"' in workflow
+    assert 'echo "version=$version" >> "$GITHUB_OUTPUT"' in workflow
+    assert 'echo "tag=$tag" >> "$GITHUB_OUTPUT"' in workflow
+
+
+def test_publish_workflow_exact_version_duplicate_guard():
+    """A version that already exists on npm must be skipped, never republished
+    or mutated; the publish step only runs for versions verified as absent."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'npm view "${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }}' in workflow
+    assert 'echo "published=true" >> "$GITHUB_OUTPUT"' in workflow
+    assert 'echo "published=false" >> "$GITHUB_OUTPUT"' in workflow
+    assert "already exists; skipping publish" in workflow
+    # The publish step runs only after the exact-version check proves the
+    # version absent; the skip step runs only when it is already published.
+    assert (
+        "if: steps.stable-bump.outputs.skip != 'true' "
+        "&& steps.npm-version.outputs.published != 'true'" in workflow
+    )
+    assert (
+        "if: steps.stable-bump.outputs.skip != 'true' "
+        "&& steps.npm-version.outputs.published == 'true'" in workflow
+    )
+
+
+def test_publish_workflow_token_and_provenance_wiring_without_credential_output():
+    """npm authentication uses a granular access token wired through
+    NODE_AUTH_TOKEN with the matching setup-node registry-url, provenance uses
+    the OIDC id-token permission, and the workflow never prints or writes a
+    credential anywhere. A verification command that could publish or disclose
+    a credential must fail this static contract."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    # OIDC and GitHub token permissions for provenance and release creation.
+    assert "permissions:" in workflow
+    assert "contents: write" in workflow
+    assert "id-token: write" in workflow
+
+    # npm registry wiring: setup-node registry-url + publish-time token.
+    assert 'registry-url: "https://registry.npmjs.org"' in workflow
+    assert "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}" in workflow
+    assert workflow.count("NODE_AUTH_TOKEN") == 1, "token must be wired exactly once"
+    assert "--provenance" in workflow
+
+    # No credential disclosure anywhere in the workflow.
+    assert "echo \"${{ secrets" not in workflow
+    assert "printenv" not in workflow
+    assert "cat ~/.npmrc" not in workflow
+    assert "cat $HOME/.npmrc" not in workflow
+    # The token is wired in the same step as the npm publish command (env
+    # block directly above it), never in a step that could print its value.
+    after_token = workflow.split("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}")[1]
+    assert "run: npm publish" in after_token.split("- name:")[0]
+    # NPM_TOKEN is the only secret the workflow references, and it is never
+    # rendered into output or passed to a command that prints its value.
+    secret_refs = sorted(
+        {token for token in re.findall(r"secrets\.[A-Z0-9_]+", workflow)}
+    )
+    assert secret_refs == ["secrets.NPM_TOKEN"], secret_refs
+
+
+def test_publish_workflow_release_side_effect_controls():
+    """GitHub release creation is explicit and skippable, prerelease versions
+    are never marked latest, and the stable bump commit skips the whole
+    publish-and-release path (the matching v* tag owns it)."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "Detect stable release bump commit" in workflow
+    assert r"chore\(release\)" in workflow
+    assert "stable-bump.outputs.skip != 'true'" in workflow
+    assert 'CREATE_GITHUB_RELEASE: ${{ github.event.inputs.create_github_release }}' in workflow
+    assert "Skipping GitHub release because create_github_release=false." in workflow
+    assert "gh release create" in workflow
+    assert "gh release edit" in workflow
+    assert "--prerelease" in workflow
+    assert 'notes_file=".github/releases/v${version}.md"' in workflow
+    assert 'notes_footer="$(printf' in workflow
+    assert "GH_TOKEN: ${{ github.token }}" in workflow
+    # Prerelease versions must never use the latest dist-tag.
+    assert "Refusing to publish prerelease version" in workflow
+    assert 'if [[ "$tag" == "latest" && "$version" == *-* ]]' in workflow

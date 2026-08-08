@@ -83,6 +83,8 @@ npm versions are immutable. Old `*-dev.*` packages cannot be renamed in place; p
 
 Stable and prerelease releases can be dispatched manually with `workflow_dispatch`, `target_ref`, `version`, and `npm_tag`. The workflow rejects a prerelease sent to `latest`, checks whether the exact npm version already exists, and can skip GitHub release creation with `create_github_release=false`.
 
+npm publish authentication uses a granular access token stored as the repository secret `NPM_TOKEN`; the workflow wires it as `NODE_AUTH_TOKEN` for the publish step and never prints it. `--provenance` uses the OIDC `id-token` permission. Without the `NPM_TOKEN` secret in repository settings, publishing fails authentication; the secret must exist before the first publish.
+
 Stable release notes live in `.github/releases/vX.Y.Z.md`. The workflow appends npm package, dist-tag, and workflow-run metadata. Keep the release note focused on user-visible changes and include a machine-readable gap check when the release changes a structured contract.
 
 Stable version bumps use a commit subject such as `chore(release): bump version to X.Y.Z`. Use `mise use -g` only for a deliberate local runtime selection; it is not part of the npm publish contract.

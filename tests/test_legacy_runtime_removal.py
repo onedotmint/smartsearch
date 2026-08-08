@@ -213,6 +213,7 @@ sys.stdout.write("ok")
         ("legacy alias", ["cfg", "list"]),
         ("legacy model command", ["model", "current"]),
         ("bare smoke", ["smoke", "--mock"]),
+        ("bare regression", ["regression"]),
         ("bare research", ["research", "topic"]),
         ("schema selector", ["--schema-version", "2", "search", "query"]),
         ("schema selector equals", ["--schema-version=3", "config", "list"]),
@@ -364,6 +365,7 @@ def test_help_all_advertises_only_canonical_surface() -> None:
     for spelling in ("cfg", "mdl", "setup"):
         assert spelling not in text
     assert not re.search(r"(?<!dev )\bsmoke\b", text)
+    assert not re.search(r"(?<!dev )\bregression\b", text)
     for command in ("search", "fetch", "map", "capabilities", "research plan", "research run"):
         assert command in text
     for command in ("config ", "provider ", "doctor ", "dev "):

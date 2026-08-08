@@ -120,6 +120,10 @@ jobs:
 
       - name: Publish to npm
         if: steps.stable-bump.outputs.skip != 'true' && steps.npm-version.outputs.published != 'true'
+        env:
+          # Granular access token for registry.npmjs.org; setup-node's
+          # registry-url writes the matching .npmrc auth line. Never echo it.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance --tag "${{ steps.release.outputs.tag }}"
 
       - name: Skip existing npm version
