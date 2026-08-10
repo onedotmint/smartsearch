@@ -173,7 +173,7 @@ and `provider probe PROVIDER` for one named provider. Never treat configured or
 eligible as proof of reachability. Never print credentials.
 
 Built-in prompts are used by default. A local UTF-8 Prompt file may be selected
-with the command-line Prompt options or these environment/configuration keys:
+with these environment/configuration keys:
 
 ```text
 SMART_SEARCH_PROMPT_DIR
@@ -182,8 +182,11 @@ SMART_SEARCH_FETCH_PROMPT_FILE
 SMART_SEARCH_RESEARCH_PROMPT_FILE
 ```
 
-The precedence is explicit command-line path, environment/configured path, user
-Prompt directory, then the built-in Prompt. Remote Prompt URLs are not supported.
+CLI prompt-file overrides (`--prompt-dir`, `--search-prompt-file`,
+`--fetch-prompt-file`, `--research-prompt-file`) are rejected by the strict
+V2/V3/Workflow families before any owner work. The precedence is
+environment/configured path, user Prompt directory, then the built-in Prompt.
+Remote Prompt URLs are rejected.
 
 ## Client References
 

@@ -50,7 +50,7 @@ The first local check has deterministic output:
 
 ```text
 $ smart-search --version
-smart-search 0.1.0
+smart-search 0.2.0
 ```
 
 Search responses use a strict versioned JSON envelope: evidence commands return the V2 envelope, control-plane commands return the V3 envelope, and `research run` returns the Research Workflow envelope. Provider text and URLs vary; the machine contract never changes.

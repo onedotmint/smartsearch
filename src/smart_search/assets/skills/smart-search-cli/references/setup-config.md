@@ -48,8 +48,6 @@
 - Skill installation installs the bundled `smart-search-cli` skill into selected AI-tool skill directories and must not run `trellis init`, create hooks, create agents, create commands, or modify other skills.
 - Targets are user-level/global directories under the current user's home directory, for example Codex `~/.codex/skills/`, Claude Code `~/.claude/skills/`, Cursor `~/.cursor/skills/`, GitHub Copilot `~/.copilot/skills/`, and Hermes Agent `~/.hermes/skills/`.
 - Skill targets are `codex`, `claude`, `cursor`, `opencode`, `copilot`, `gemini`, `kiro`, `qoder`, `codebuddy`, `droid`, `pi`, `kilo`, `antigravity`, `windsurf`, and `hermes`.
-- `--skip-skills` disables skill installation.
-- `--install-skills codex,claude,cursor,hermes` selects targets explicitly.
 - `--skills-root PATH` is an advanced override for the user-level install root used in portable installs or tests. Normal users should omit it.
 - `smart-search dev skills status --targets codex,claude,cursor,hermes --format json` compares bundled skill files with installed user-level skill directories. Status values are `missing`, `up_to_date`, `stale`, `extra_files`, and `error`. It reports target paths, bundled file count, installed file count, hashes, hash match flags, missing files, stale files, and extra files. It must not write or delete files.
 - `smart-search dev skills update --targets codex,claude,cursor,hermes --format json` overwrites the managed bundled `smart-search-cli` files for selected targets. `smart-search dev skills update --all --format json` selects every target id.
@@ -68,7 +66,7 @@
 - Use `smart-search config set JINA_API_KEY "key"` to let Jina satisfy `web_fetch`; `JINA_RESPOND_WITH=readerlm-v2` also requires `JINA_API_KEY`.
 - Use `smart-search config set ZHIPU_MCP_API_KEY "key"` only when the user explicitly wants Coding Plan Remote MCP quota.
 - Use `smart-search config set OPENAI_COMPATIBLE_STREAM "true"` only when an OpenAI-compatible relay benefits from SSE streaming for long requests. Default remains false.
-- Use `smart-search config set OPENAI_COMPATIBLE_FALLBACK_MODELS "model-a,model-b"` to save ordered OpenAI-compatible backup models for primary model instability. `--fallback off` and `search --model MODEL` disable this model fallback for one invocation.
+- Use `smart-search config set OPENAI_COMPATIBLE_FALLBACK_MODELS "model-a,model-b"` to save ordered OpenAI-compatible backup models for primary model instability. Routes carry their own `fallback_models` (set with `provider routes add --fallback-models`); a route without them disables model fallback for that route.
 - Use `smart-search config set ANYSEARCH_API_URL "https://api.anysearch.com/mcp"` and `ANYSEARCH_API_KEY` only for experimental AnySearch acceptance; do not add it to the normal minimum-profile setup.
 - `TAVILY_API_URL` defaults to `https://api.tavily.com` and only affects Tavily REST calls. It does not proxy Zhipu.
 - `TAVILY_ENABLED` defaults to `true`. Set it to `false` to keep Tavily visible as disabled in diagnostics while excluding it from search, fetch, and map calls.

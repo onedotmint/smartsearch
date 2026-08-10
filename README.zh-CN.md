@@ -50,10 +50,10 @@ smart-search fetch "https://www.python.org/downloads/" --format markdown
 
 ```text
 $ smart-search --version
-smart-search 0.1.0
+smart-search 0.2.0
 ```
 
-搜索响应使用带版本号的 JSON envelope。provider 返回的正文和 URL 会变化；稳定结构是 `schema_version`、`command`、`data` 和 `meta`。
+搜索响应使用带版本号的 JSON envelope：证据命令返回 V2 envelope，控制面命令返回 V3 envelope，`research run` 返回 Research Workflow envelope。provider 返回的正文和 URL 会变化；机器契约保持不变。
 
 ### V2 Evidence Core JSON API
 
@@ -67,7 +67,7 @@ smart-search fetch "https://example.com/page"
 
 `map` 作为 Advanced `site_discovery` operation 提供；v2 用法见命令参考。
 
-- v2 默认输出 JSON——唯一稳定的机器契约——并返回 Phase 2 envelope（`status`、`operation`、`evidence`、`routing`、`attempts` 等）。`--format markdown|content` 渲染同一 validated envelope 的非稳定人类视图；这些视图不提供字段级机器兼容承诺。
+- v2 默认输出 JSON——唯一稳定的机器契约——并返回严格版本化 envelope（`status`、`operation`、`evidence`、`routing`、`attempts` 等）。`--format markdown|content` 渲染同一 validated envelope 的非稳定人类视图；这些视图不提供字段级机器兼容承诺。
 - v2 `search` 只返回 discovery candidates；不会调用 legacy `main_search`，也不接受 `--response-mode`。
 - Host Agent 基于 fetched `evidence.items` 写最终回答；discovery candidates 不是 claim-level 证据。
 - `capabilities` 使用 envelope-only 元操作 `capability_status`（本地只读检查，不发 Provider 网络请求）。

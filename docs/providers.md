@@ -41,7 +41,7 @@ The default `SMART_SEARCH_MINIMUM_PROFILE=standard` is fail-closed for profile d
 The explicit modes are:
 
 - `standard`: require `main_search`, `docs_search`, and `web_fetch`;
-- `lite`: allow source-only compatibility `search --response-mode evidence` when a main, web, or docs search provider exists;
+- `lite`: relax the profile gate to source/search availability (any `main_search`, `web_search`, or `docs_search` provider); command preflight stays capability-scoped;
 - `full`: require the standard three capabilities plus `site_map`;
 - `off`: disable the minimum-profile gate for local experiments.
 
@@ -151,4 +151,4 @@ smart-search doctor probe --format markdown
 smart-search provider probe exa --format json
 ```
 
-`doctor status` reports local configuration and evidence-path readiness without creating a Provider client or probe. `doctor` / `doctor probe` are explicit live aggregate diagnostics, while `provider probe PROVIDER` tests exactly one named provider or main-route family without fallback. Use `setup` for normal configuration. Use environment variables for CI and advanced deployments. Do not copy provider keys into issue reports or documentation.
+`doctor status` reports local configuration and evidence-path readiness without creating a Provider client or probe. `doctor` / `doctor probe` are explicit live aggregate diagnostics, while `provider probe PROVIDER` tests exactly one named provider or main-route family without fallback. Use `smart-search config set` for normal configuration. Use environment variables for CI and advanced deployments. Do not copy provider keys into issue reports or documentation.

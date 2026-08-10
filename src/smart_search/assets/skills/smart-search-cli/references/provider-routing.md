@@ -113,9 +113,7 @@ OpenAI-compatible streaming:
 
 Exa domain filters:
 
-- `--include-domains` and `--exclude-domains` accept comma-separated or whitespace-separated domains.
-- Both `--include-domains docs.python.org,developer.mozilla.org` and `--include-domains docs.python.org developer.mozilla.org` normalize to the same Exa domain list.
-- This normalization is intentional for Windows PowerShell, where an unquoted comma expression can be forwarded through `.ps1` wrappers as a space-separated value.
+- `--include-domains` and `--exclude-domains` are not part of the canonical CLI surface; the strict V2/V3/Workflow families reject them before any owner work.
 
 ## Provider Output Details
 

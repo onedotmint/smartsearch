@@ -4,7 +4,7 @@ The CLI accepts a command followed by a query, URL, or command-specific argument
 
 ## Common output options
 
-Most commands accept:
+The strict V2/V3/Workflow families accept only `--format json|markdown|content`. The parser also recognizes these legacy options, which are rejected before any owner work:
 
 | Option | Meaning |
 | --- | --- |
@@ -18,7 +18,7 @@ Most commands accept:
 | `--fetch-prompt-file PATH` | Override the fetch prompt for this call |
 | `--research-prompt-file PATH` | Override the research prompt for this call |
 
-Remote prompt URLs are rejected. Local prompt overrides apply only to the current command. The strict V2/V3/Workflow families accept `--format` but reject `--output`, `--force`, and prompt overrides before any owner work.
+Remote prompt URLs are rejected. The rejected options never reach owner work; JSON remains the only stable machine contract.
 
 ## V2 evidence Core API
 
