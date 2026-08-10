@@ -15,6 +15,7 @@ from .base import (
     SearchResult,
     classify_provider_exception,
 )
+from ..cli_constants import _get_version
 from ..utils import get_prompt
 from ..logger import log_info
 from ..config import config
@@ -144,7 +145,7 @@ class OpenAICompatibleSearchProvider(BaseSearchProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
-            "User-Agent": "smart-search/0.1.0",
+            "User-Agent": f"smart-search/{_get_version()}",
         }
 
     def _get_ssl_verify(self) -> bool:

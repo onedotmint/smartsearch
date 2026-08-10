@@ -1174,6 +1174,53 @@ def _legacy_exit_code(data: Mapping[str, Any]) -> int:
     return 5
 
 
+# Upper bound for failed-case records exposed on a failed source-checkout
+# regression; keeps the V3 result bounded even for a massively broken tree.
+_FAILED_CASE_LIMIT = 500
+
+
+def _is_failed_node_id(node_id: str) -> bool:
+    """Conservative shape check for a pytest short-summary node id.
+
+    Accepts only ``<path>.py::<test>`` records (optionally class-scoped or
+    parametrized) with printable ASCII characters. Anything else is dropped
+    so arbitrary captured output can never leak into the typed result.
+    """
+    if "::" not in node_id or "\n" in node_id or "\r" in node_id:
+        return False
+    path_part, sep, tail = node_id.partition("::")
+    if not path_part.endswith(".py") or not sep or not tail:
+        return False
+    if any(ch.isspace() for ch in node_id):
+        return False
+    return all(32 <= ord(ch) < 127 for ch in node_id)
+
+
+def _extract_failed_test_cases(output: str) -> list[str]:
+    """Extract deterministic failed pytest node ids from captured child output.
+
+    Pytest's short-test-summary records are the only stable failed-node
+    format: ``FAILED <node-id> - <reason>``. Only records whose node id
+    matches ``_is_failed_node_id`` are kept, deduplicated in first-seen
+    order, and capped at ``_FAILED_CASE_LIMIT``. Returns an empty list when
+    no stable record is recognized. Raw output lines are never surfaced.
+    """
+    cases: list[str] = []
+    seen: set[str] = set()
+    for line in output.splitlines():
+        line = line.strip()
+        if not line.startswith("FAILED "):
+            continue
+        node_id = line[len("FAILED "):].split(" - ", 1)[0].strip()
+        if not _is_failed_node_id(node_id) or node_id in seen:
+            continue
+        seen.add(node_id)
+        cases.append(node_id)
+        if len(cases) >= _FAILED_CASE_LIMIT:
+            break
+    return cases
+
+
 def _execute_regression() -> dict[str, Any]:
     """Run the shared regression owner and return a structured process outcome.
 
@@ -1201,13 +1248,19 @@ def _execute_regression() -> dict[str, Any]:
         errors="replace",
     )
     code = completed.returncode
-    return {
+    data = {
         "ok": code == 0,
         "exit_code": code,
         "subprocess_started": True,
         "fallback": "",
         "test_files": list(_REGRESSION_PATTERNS),
     }
+    if code != 0:
+        # The pytest short summary on stdout is the only stable failed-node
+        # source; child stdout/stderr remain captured and never become result
+        # fields because test output can include sensitive fixture values.
+        data["failed_cases"] = _extract_failed_test_cases(completed.stdout or "")
+    return data
 
 
 async def run_dev_regression() -> ControlOperationOutcome:

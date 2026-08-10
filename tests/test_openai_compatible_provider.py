@@ -396,6 +396,17 @@ async def test_build_api_headers():
     assert headers["User-Agent"].startswith("smart-search/")
 
 
+def test_openai_compatible_user_agent_uses_runtime_version(monkeypatch):
+    """OpenAI-compatible request headers derive User-Agent from the runtime
+    version lookup, not a release-specific literal. No HTTP request is made."""
+    import smart_search.providers.openai_compatible as openai_module
+
+    monkeypatch.setattr(openai_module, "_get_version", lambda: "9.9.9")
+    provider = OpenAICompatibleSearchProvider("https://api.example.com", "test-key", "test-model")
+    headers = provider._build_api_headers()
+    assert headers["User-Agent"] == "smart-search/9.9.9"
+
+
 # ─── SSL verification tests ─────────────────────────────────────────────────
 
 

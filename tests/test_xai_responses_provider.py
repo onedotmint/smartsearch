@@ -98,3 +98,14 @@ async def test_xai_responses_execute_posts_to_responses(monkeypatch):
     assert result == "ok"
     assert calls[0][0] == "https://api.x.ai/v1/responses"
     assert calls[0][2]["tools"] == []
+
+
+def test_xai_responses_user_agent_uses_runtime_version(monkeypatch):
+    """xAI request headers derive User-Agent from the runtime version lookup,
+    not a release-specific literal. No HTTP request is made."""
+    import smart_search.providers.xai_responses as xai_module
+
+    monkeypatch.setattr(xai_module, "_get_version", lambda: "9.9.9")
+    provider = XAIResponsesSearchProvider("https://api.x.ai/v1", "test-key", "test-model", [])
+    headers = provider._build_api_headers()
+    assert headers["User-Agent"] == "smart-search/9.9.9"

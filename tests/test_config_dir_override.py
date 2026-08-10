@@ -279,3 +279,28 @@ def test_unavailable_default_dir_does_not_fall_back_to_cwd(monkeypatch, tmp_path
     assert config_info["config_status"].startswith("config_error:")
     with pytest.raises(ValueError, match="SMART_SEARCH_CONFIG_DIR"):
         config._save_config_file({"XAI_API_KEY": "secret"})
+
+
+def test_setup_command_recovery_text_uses_only_canonical_spellings():
+    text = Config._SETUP_COMMAND
+    assert "`smart-search config set`" in text
+    assert "`smart-search doctor status --format json`" in text
+    assert "smart-search setup" not in text
+    # Bare ``doctor`` is a removed spelling; only the canonical status leaf
+    # may be recommended.
+    assert "`smart-search doctor --format json`" not in text
+    assert "`smart-search doctor`" not in text
+
+
+def test_empty_config_status_directs_users_to_canonical_commands(monkeypatch, tmp_path):
+    monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(tmp_path / "empty-config"))
+    config = _fresh_config_file(monkeypatch)
+    info = config.get_config_info()
+    status = info["config_status"]
+    assert status.startswith("config_error:")
+    assert "`smart-search config set`" in status
+    assert "`smart-search doctor status --format json`" in status
+    assert "smart-search setup" not in status
+    assert "`smart-search doctor --format json`" not in status
+    # The diagnostic probe must not persist any configuration file.
+    assert not (config.config_file).exists()

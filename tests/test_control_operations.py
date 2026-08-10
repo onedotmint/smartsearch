@@ -1257,6 +1257,17 @@ def test_diagnose_local_config_missing_fails_before_network(monkeypatch):
     assert result.network.targets == ()
 
 
+def test_diagnose_missing_config_recommendation_uses_canonical_commands():
+    """The real missing-config branch of the OpenAI-compatible diagnose
+    executor recommends only retained canonical commands, never the removed
+    ``smart-search setup`` spelling. No network or config write occurs."""
+    data = asyncio.run(co.control_executors._execute_diagnose_openai_compatible())
+    assert data["error_type"] == "config_error"
+    recommendation = data["recommendation"]
+    assert "`smart-search config set`" in recommendation
+    assert "smart-search setup" not in recommendation
+
+
 def test_diagnose_request_success_records_target(monkeypatch):
     async def fake_diagnose(timeout_seconds=30.0):
         return {
@@ -1566,6 +1577,7 @@ def test_regression_source_checkout_process_captures_child_output(monkeypatch):
         "subprocess_started": True,
         "fallback": "",
         "test_files": list(co._REGRESSION_PATTERNS),
+        "failed_cases": [],
     }
     assert "pytest" not in json.dumps(data)
 
@@ -1573,6 +1585,7 @@ def test_regression_source_checkout_process_captures_child_output(monkeypatch):
     assert outcome.status is ControlOperationStatus.FAILED
     assert outcome.error is not None and outcome.error.type == "subprocess_error"
     assert outcome.side_effects.subprocess_started is True
+    assert outcome.result_dict["failed_cases"] == []
     assert "pytest" not in json.dumps(outcome.result_dict)
 
     def fake_run_ok(cmd, **kwargs):
@@ -1584,9 +1597,88 @@ def test_regression_source_checkout_process_captures_child_output(monkeypatch):
     monkeypatch.setattr(co.subprocess, "run", fake_run_ok)
     data = co._execute_regression()
     assert data["ok"] is True and data["exit_code"] == 0
+    assert "failed_cases" not in data
     outcome = asyncio.run(co.run_dev_regression())
     assert outcome.status is ControlOperationStatus.COMPLETE
+    assert "failed_cases" not in outcome.result_dict
     assert "pytest" not in json.dumps(outcome.result_dict)
+
+
+def test_regression_source_checkout_failure_reports_failed_cases(monkeypatch):
+    """A nonzero source-checkout run surfaces only deterministic failed pytest
+    node ids; raw pytest output and reason text never become result fields."""
+
+    def fake_run(cmd, **kwargs):
+        assert kwargs.get("stdout") is subprocess.PIPE
+        assert kwargs.get("stderr") is subprocess.PIPE
+        return subprocess.CompletedProcess(
+            cmd,
+            1,
+            stdout=(
+                "tests/test_cli_v2.py::test_search F\n"
+                "=========================== short test summary info ============================\n"
+                "FAILED tests/test_cli_v2.py::test_search - AssertionError: boom\n"
+                "FAILED tests/test_cli_v3.py::TestRegression::test_run[case-a] - AssertionError: x\n"
+            ),
+            stderr="teardown noise with secret-fixture-value\n",
+        )
+
+    monkeypatch.setattr(co.subprocess, "run", fake_run)
+    data = co._execute_regression()
+    assert data["ok"] is False
+    assert data["exit_code"] == 1
+    assert data["subprocess_started"] is True
+    assert data["failed_cases"] == [
+        "tests/test_cli_v2.py::test_search",
+        "tests/test_cli_v3.py::TestRegression::test_run[case-a]",
+    ]
+    assert "AssertionError" not in json.dumps(data)
+    assert "secret-fixture-value" not in json.dumps(data)
+    assert "pytest" not in json.dumps(data)
+
+    outcome = asyncio.run(co.run_dev_regression())
+    assert outcome.status is ControlOperationStatus.FAILED
+    assert outcome.error is not None and outcome.error.type == "subprocess_error"
+    assert outcome.result_dict["failed_cases"] == [
+        "tests/test_cli_v2.py::test_search",
+        "tests/test_cli_v3.py::TestRegression::test_run[case-a]",
+    ]
+    assert "AssertionError" not in json.dumps(outcome.result_dict)
+
+
+def test_extract_failed_test_cases_recognizes_short_summary_records():
+    output = (
+        "=========================== short test summary info ============================\n"
+        "FAILED tests/test_cli_v2.py::test_search - AssertionError: boom\n"
+        "FAILED tests/test_cli_v3.py::TestRegression::test_run[case-a] - AssertionError: x\n"
+        "FAILED tests/test_cli_v3.py::TestRegression::test_run[case-a] - AssertionError: dup\n"
+        "============================== 3 failed in 2.34s ===============================\n"
+    )
+    assert co._extract_failed_test_cases(output) == [
+        "tests/test_cli_v2.py::test_search",
+        "tests/test_cli_v3.py::TestRegression::test_run[case-a]",
+    ]
+
+
+def test_extract_failed_test_cases_is_conservative():
+    output = (
+        ".....F pytest progress text.....\n"
+        "FAILED not-a-node-id\n"
+        "FAILED tests/test_x.py - missing node separator\n"
+        "FAILED tests/test_x.py::\n"
+        "FAILED tests/test_x.py::test spaced param\n"
+        "tests/test_x.py::test_y F\n"
+        "WARNING tests/test_x.py::test_z - boom\n"
+    )
+    assert co._extract_failed_test_cases(output) == []
+
+
+def test_extract_failed_test_cases_is_bounded():
+    output = "\n".join(f"FAILED tests/test_f.py::test_{i} - boom" for i in range(600))
+    cases = co._extract_failed_test_cases(output)
+    assert len(cases) == co._FAILED_CASE_LIMIT
+    assert cases[0] == "tests/test_f.py::test_0"
+    assert cases[-1] == f"tests/test_f.py::test_{co._FAILED_CASE_LIMIT - 1}"
 
 
 # ---------------------------------------------------------------------------

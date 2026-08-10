@@ -38,9 +38,9 @@ class ConfigSnapshot:
 class Config:
     _instance = None
     _SETUP_COMMAND = (
-        "Run `smart-search setup`, or configure XAI_API_KEY and/or "
+        "Run `smart-search config set` with XAI_API_KEY and/or "
         "OPENAI_COMPATIBLE_API_URL plus OPENAI_COMPATIBLE_API_KEY, then run "
-        "`smart-search doctor --format json`."
+        "`smart-search doctor status --format json`."
     )
     _DEFAULT_MODEL = "grok-4-fast"
     _DEFAULT_XAI_TOOLS = "web_search,x_search"

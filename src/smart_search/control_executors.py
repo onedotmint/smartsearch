@@ -323,7 +323,7 @@ async def _execute_diagnose_openai_compatible(timeout_seconds: float = 30.0) -> 
                 "error_type": "config_error",
                 "error": "缺少 OpenAI-compatible 配置: " + ", ".join(missing),
                 "summary": "OpenAI-compatible 配置不完整。",
-                "recommendation": "请先运行 `smart-search setup`，或用 `smart-search config set` 填好缺失项。",
+                "recommendation": "请用 `smart-search config set` 填好缺失项。",
                 "missing": missing,
                 "elapsed_ms": _elapsed_ms(start),
             }

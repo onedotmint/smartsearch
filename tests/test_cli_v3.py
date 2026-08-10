@@ -453,6 +453,7 @@ def test_v3_regression_source_checkout_emits_single_json_document(monkeypatch, c
     assert payload["status"] == "failed"
     assert payload["error"]["code"] == "SUBPROCESS_FAILED"
     assert payload["side_effects"]["subprocess"]["started"] is True
+    assert payload["result"]["failed_cases"] == []
     assert "pytest" not in out
 
     def fake_run_ok(cmd, **kwargs):
@@ -465,6 +466,40 @@ def test_v3_regression_source_checkout_emits_single_json_document(monkeypatch, c
     payload = _payload(capsys)
     assert payload["status"] == "complete"
     assert payload["error"] is None
+    assert "failed_cases" not in payload["result"]
+
+
+def test_v3_regression_source_checkout_failure_exposes_failed_cases(monkeypatch, capsys):
+    """A nonzero source-checkout regression yields the SUBPROCESS_FAILED V3
+    result plus a stable bounded failed_cases list of pytest node ids, with no
+    raw pytest output or reason text in the single JSON document."""
+
+    def fake_run(cmd, **kwargs):
+        assert kwargs.get("stdout") is subprocess.PIPE
+        assert kwargs.get("stderr") is subprocess.PIPE
+        return subprocess.CompletedProcess(
+            cmd,
+            1,
+            stdout=(
+                "=========================== short test summary info ============================\n"
+                "FAILED tests/test_cli_v2.py::test_search - AssertionError: boom\n"
+                "FAILED tests/test_cli_v3.py::TestRegression::test_run[case-a] - AssertionError: x\n"
+            ),
+            stderr="teardown noise\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert main(["dev", "regression", "--format", "json"]) == 5
+    payload = _payload(capsys)
+    assert payload["operation"] == "dev.regression"
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "SUBPROCESS_FAILED"
+    assert payload["result"]["failed_cases"] == [
+        "tests/test_cli_v2.py::test_search",
+        "tests/test_cli_v3.py::TestRegression::test_run[case-a]",
+    ]
+    assert "AssertionError" not in json.dumps(payload)
+    assert "pytest" not in json.dumps(payload)
 
 
 def _serve_stream_error(status: int, body: bytes) -> ThreadingHTTPServer:
