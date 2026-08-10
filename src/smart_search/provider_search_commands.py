@@ -186,7 +186,7 @@ async def exa_search(
         return {
             "ok": False,
             "error_type": "config_error",
-            "error": "EXA_API_KEY 未配置。请运行 `smart-search setup`，或使用 `smart-search config set EXA_API_KEY <key>`。",
+            "error": "EXA_API_KEY 未配置。请运行 `smart-search config set EXA_API_KEY <key>`。",
         }
     provider = ExaSearchProvider(config.exa_base_url, config.exa_api_key, config.exa_timeout)
     raw = await provider.search(
@@ -222,7 +222,7 @@ async def zhipu_search(
         return {
             "ok": False,
             "error_type": "config_error",
-            "error": "ZHIPU_API_KEY 未配置。请运行 `smart-search setup`，或使用 `smart-search config set ZHIPU_API_KEY <key>`。",
+            "error": "ZHIPU_API_KEY 未配置。请运行 `smart-search config set ZHIPU_API_KEY <key>`。",
         }
     provider = ZhipuWebSearchProvider(
         config.zhipu_api_url,
@@ -253,7 +253,7 @@ async def context7_library(name: str, query: str = "") -> dict[str, Any]:
         return {
             "ok": False,
             "error_type": "config_error",
-            "error": "CONTEXT7_API_KEY 未配置。请运行 `smart-search setup`，或使用 `smart-search config set CONTEXT7_API_KEY <key>`。",
+            "error": "CONTEXT7_API_KEY 未配置。请运行 `smart-search config set CONTEXT7_API_KEY <key>`。",
         }
     provider = Context7Provider(config.context7_base_url, config.context7_api_key, config.context7_timeout)
     result = await decode_provider_json(

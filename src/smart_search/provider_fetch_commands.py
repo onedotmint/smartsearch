@@ -224,7 +224,7 @@ async def call_tavily_map(
                 "error_type": "config_error",
                 "error": (
                     "Tavily provider unavailable: "
-                    f"{reason}. 请运行 `smart-search setup`，或使用 `smart-search config set TAVILY_API_KEY <key>`。"
+                    f"{reason}. 请运行 `smart-search config set TAVILY_API_KEY <key>`。"
                 ),
                 "retryable": False,
             }
