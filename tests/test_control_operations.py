@@ -575,6 +575,48 @@ def test_config_unset_success_and_parameter_failure(monkeypatch, tmp_path):
     assert failed.side_effects.config.write_attempted is False
 
 
+def test_config_set_rejects_environment_owned_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAI_API_KEY", "environment-key")
+    monkeypatch.setattr(co.config, "_config_file", tmp_path / "config.json")
+    (tmp_path / "config.json").write_text("{}\n", encoding="utf-8")
+
+    result = asyncio.run(co.run_config_set("XAI_API_KEY", "dormant-file-key"))
+    assert result.status is ControlOperationStatus.FAILED
+    assert result.error.type == "parameter_error"
+    assert "environment" in result.error.message
+    assert result.side_effects.config.write_committed is False
+    assert (tmp_path / "config.json").read_text(encoding="utf-8") == "{}\n"
+
+
+def test_config_unset_rejects_environment_owned_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAI_API_KEY", "environment-key")
+    monkeypatch.setattr(co.config, "_config_file", tmp_path / "config.json")
+    (tmp_path / "config.json").write_text('{"XAI_API_KEY": "file-key"}\n', encoding="utf-8")
+
+    result = asyncio.run(co.run_config_unset("XAI_API_KEY"))
+    assert result.status is ControlOperationStatus.FAILED
+    assert result.error.type == "parameter_error"
+    assert result.side_effects.config.write_committed is False
+    assert (tmp_path / "config.json").read_text(encoding="utf-8") == '{"XAI_API_KEY": "file-key"}\n'
+
+
+def test_config_list_and_set_on_malformed_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(co.config, "_config_file", tmp_path / "config.json")
+    (tmp_path / "config.json").write_text("{ not valid json", encoding="utf-8")
+
+    listed = asyncio.run(co.run_config_list())
+    assert listed.status is ControlOperationStatus.FAILED
+    assert listed.error.type == "config_error"
+    assert "malformed" in listed.error.message
+
+    original = (tmp_path / "config.json").read_bytes()
+    result = asyncio.run(co.run_config_set("XAI_MODEL", "replacement"))
+    assert result.status is ControlOperationStatus.FAILED
+    assert result.error.type == "config_error"
+    assert result.side_effects.config.write_committed is False
+    assert (tmp_path / "config.json").read_bytes() == original
+
+
 # ---------------------------------------------------------------------------
 # Provider catalog owners
 # ---------------------------------------------------------------------------

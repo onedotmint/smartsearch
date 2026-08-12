@@ -64,6 +64,27 @@ def test_v3_doctor_option_before_leaf_resolves_identically():
         assert before["operation"] == after["operation"] == f"doctor.{leaf}"
 
 
+def test_v3_config_set_rejects_environment_owned_key(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("XAI_API_KEY", "environment-key")
+    (tmp_path / "config.json").write_text("{}\n", encoding="utf-8")
+
+    assert main(["config", "set", "XAI_API_KEY", "dormant-file-key"]) == 2
+    payload = _payload(capsys)
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert (tmp_path / "config.json").read_text(encoding="utf-8") == "{}\n"
+
+
+def test_v3_config_set_on_malformed_file_preserves_bytes(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.json").write_text("{ not valid json", encoding="utf-8")
+
+    assert main(["config", "set", "XAI_MODEL", "replacement"]) == 3
+    payload = _payload(capsys)
+    assert payload["error"]["code"] == "CONFIGURATION_ERROR"
+    assert (tmp_path / "config.json").read_text(encoding="utf-8") == "{ not valid json"
+
+
 def test_v3_route_write_projects_masked_routes(monkeypatch, capsys):
     from smart_search import control_operations
     from smart_search.control_operations import (

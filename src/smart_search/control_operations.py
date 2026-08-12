@@ -345,6 +345,20 @@ async def run_config_list(show_secrets: bool = False) -> ControlOperationOutcome
             side_effects=side_effects,
             metadata=ExecutionMetadata("config.list", _elapsed_ms(start)),
         )
+    load_error = path_info.get("config_load_error")
+    if load_error is not None:
+        result = _strip_legacy_semantics(path_info)
+        result["values"] = {}
+        return _outcome(
+            "config.list",
+            ControlOperationStatus.FAILED,
+            result,
+            error=_config_error(
+                f"config file is malformed ({load_error.get('kind')}); repair the file before editing"
+            ),
+            side_effects=side_effects,
+            metadata=ExecutionMetadata("config.list", _elapsed_ms(start)),
+        )
     try:
         config.validate_saved_model_routes()
         config.validate_effective_model_routes()

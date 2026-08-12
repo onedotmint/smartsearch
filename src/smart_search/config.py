@@ -162,6 +162,7 @@ class Config:
             cls._instance._cached_model = None
             cls._instance._credential_state_digest = None
             cls._instance._credential_epoch = 0
+            cls._instance._load_error = None
         return cls._instance
 
     @staticmethod
@@ -330,8 +331,16 @@ class Config:
         try:
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+                self._load_error = None
                 return data if isinstance(data, dict) else {}
-        except (FileNotFoundError, PermissionError, OSError, json.JSONDecodeError):
+        except FileNotFoundError:
+            self._load_error = None
+            return {}
+        except json.JSONDecodeError as exc:
+            self._load_error = {"kind": "json_decode", "path": str(self.config_file), "detail": str(exc)}
+            return {}
+        except OSError as exc:
+            self._load_error = {"kind": "io", "path": str(self.config_file), "detail": str(exc)}
             return {}
 
     @classmethod
@@ -809,11 +818,32 @@ class Config:
                 sources[key] = "config_file" if legacy_key and legacy_key in snapshot.file_values else "default"
         return sources
 
+    def config_load_error(self) -> dict | None:
+        """Return the typed config-file load error fact, or None if the file loaded cleanly."""
+        self._get_config_snapshot()
+        return self._load_error
+
+    @staticmethod
+    def _reject_env_owned_key(key: str, snapshot: ConfigSnapshot) -> None:
+        if snapshot.environment_values.get(key) is not None:
+            raise ValueError(f"{key} is controlled by the environment and cannot be edited locally.")
+
+    def _reject_malformed_write(self) -> None:
+        if self._load_error is not None:
+            kind = self._load_error.get("kind") or "unknown"
+            raise ConfigStorageError(
+                f"config file is malformed ({kind}); refusing to overwrite it. "
+                "Inspect and repair the file, then retry."
+            )
+
     def set_config_value(self, key: str, value: object) -> None:
         key = key.strip().upper()
         if key not in self._CONFIG_KEYS:
             raise ValueError(f"Unsupported config key: {key}")
-        config_data = dict(self._get_config_snapshot().file_values)
+        snapshot = self._get_config_snapshot()
+        self._reject_env_owned_key(key, snapshot)
+        self._reject_malformed_write()
+        config_data = dict(snapshot.file_values)
         config_data[key] = self._parse_model_routes_value(value) if key == self._MODEL_ROUTES_KEY else value
         self._save_config_file(config_data)
         if key in {
@@ -838,7 +868,10 @@ class Config:
         key = key.strip().upper()
         if key not in self._CONFIG_KEYS:
             raise ValueError(f"Unsupported config key: {key}")
-        config_data = dict(self._get_config_snapshot().file_values)
+        snapshot = self._get_config_snapshot()
+        self._reject_env_owned_key(key, snapshot)
+        self._reject_malformed_write()
+        config_data = dict(snapshot.file_values)
         config_data.pop(key, None)
         for old_key, new_key in self._LEGACY_CONFIG_KEYS.items():
             if new_key == key:
@@ -863,6 +896,7 @@ class Config:
             self._cached_model = None
 
     def config_path_info(self) -> dict:
+        self._get_config_snapshot()
         config_file = self.config_file
         storage_ok = self._safe_mkdir(config_file.parent)
         storage_error = "" if storage_ok else self._config_storage_error(config_file.parent)
@@ -878,6 +912,7 @@ class Config:
             "config_dir_override_matches_default": self._config_dir_override_matches_default(),
             "exists": config_file.exists(),
             "config_storage_ok": storage_ok,
+            "config_load_error": self._load_error,
             "error_type": "" if storage_ok else "config_error",
             "error": storage_error,
         }
@@ -1536,6 +1571,11 @@ class Config:
             config_status = f"config_error: {'; '.join(config_parameter_errors)}"
         if not config_path.get("ok", False):
             config_status = f"config_error: {config_path.get('error', self._config_storage_hint())}"
+        if config_path.get("config_load_error") is not None:
+            config_status = (
+                "config_error: config file is malformed "
+                f"({config_path['config_load_error'].get('kind')}); repair the file"
+            )
 
         # 1.3 诊断展示沿用同一优先级，避免空路由显示旧模型仍可用。
         if model_routes:
@@ -1641,6 +1681,7 @@ class Config:
             "resolved_log_dir": str(self.log_dir),
             "file_logging_enabled": self.debug_enabled or self.log_to_file_enabled,
             "config_sources": self.get_config_sources(),
+            "config_load_error": config_path.get("config_load_error"),
             "config_parameter_errors": config_parameter_errors,
             "config_status": config_status
         }
