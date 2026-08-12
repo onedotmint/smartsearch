@@ -31,6 +31,7 @@ from smart_search.runtime_cache import (
     RequestContext,
     RuntimeMetrics,
     RuntimeTTLCache,
+    add_fetch,
     bounded_retry_delay,
     cache_input,
     normalize_url,
@@ -80,6 +81,16 @@ def _fetch_operation(url: str, run) -> CapabilityOperation:
         is_success=lambda value: isinstance(value, dict) and bool(value.get("content")),
         result_count=lambda _value: 1,
     )
+
+
+class _FakeBudgetClient:
+    """Minimal stand-in client so budget tests never create network transport."""
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    async def aclose(self):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +577,169 @@ async def test_fetch_cache_bypasses_sensitive_urls(monkeypatch):
     await execute_capability(operation, providers=["tavily"])
 
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_budget_reserved_on_miss_but_not_on_hit(monkeypatch):
+    """A cache miss reserves the fetch budget once before provider execution; a
+    later cache hit for the same URL is budget-neutral (no reservation and no
+    budget-exhaustion rejection)."""
+    monkeypatch.setenv("SMART_SEARCH_CACHE_ENABLED", "true")
+    monkeypatch.setenv("SMART_SEARCH_FETCH_CACHE_TTL_SECONDS", "30")
+    monkeypatch.setattr(
+        capability_executor,
+        "_provider_status_for_capability",
+        lambda capability: _eligible_statuses("tavily"),
+    )
+    now = [100.0]
+    budget = RequestBudget(
+        deadline=200.0,
+        max_provider_attempts=8,
+        max_retry_attempts=4,
+        max_fetches=2,
+        clock=lambda: now[0],
+    )
+    context = await RequestContext.create(
+        command="research",
+        config_snapshot=_snapshot(),
+        budget=budget,
+        clock=lambda: now[0],
+        client_factory=lambda **kwargs: _FakeBudgetClient(),
+    )
+    calls = 0
+
+    async def run(provider: str, outcome: dict[str, object]) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"content": f"content-{calls}", "url": "https://example.com/page", "provider": provider}
+
+    operation = _fetch_operation("https://example.com/page", run)
+    with request_scope(context):
+        missed = await execute_capability(operation, providers=["tavily"], reserve_fetch=add_fetch)
+        assert budget.fetches == 1
+        assert context.metrics.fetch_count == 1
+        assert missed.attempts[-1].details.get("cache_hit") is None
+
+        hit = await execute_capability(operation, providers=["tavily"], reserve_fetch=add_fetch)
+    await context.aclose()
+
+    assert calls == 1
+    assert hit.value["content"] == "content-1"
+    assert hit.attempts[-1].details["cache_hit"] is True
+    assert budget.fetches == 1  # cache hit did not reserve
+    assert context.metrics.fetch_count == 1
+    assert budget.exhausted_reason == ""
+
+
+@pytest.mark.asyncio
+async def test_fetch_budget_reserved_once_for_inflight_joiner(monkeypatch):
+    """Concurrent requests for the same URL share one owner task; the owner's
+    cache miss reserves the fetch budget exactly once and the in-flight joiner
+    reserves nothing."""
+    monkeypatch.setenv("SMART_SEARCH_CACHE_ENABLED", "true")
+    monkeypatch.setenv("SMART_SEARCH_FETCH_CACHE_TTL_SECONDS", "30")
+    monkeypatch.setattr(
+        capability_executor,
+        "_provider_status_for_capability",
+        lambda capability: _eligible_statuses("tavily"),
+    )
+    budget = RequestBudget(
+        deadline=None,
+        max_provider_attempts=8,
+        max_retry_attempts=4,
+        max_fetches=2,
+    )
+    context = await RequestContext.create(
+        command="research",
+        config_snapshot=_snapshot(),
+        budget=budget,
+        client_factory=lambda **kwargs: _FakeBudgetClient(),
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def run(provider: str, outcome: dict[str, object]) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return {"content": f"content-{calls}", "url": "https://example.com/page", "provider": provider}
+
+    operation = _fetch_operation("https://example.com/page", run)
+    with request_scope(context):
+        owner = asyncio.create_task(execute_capability(operation, providers=["tavily"], reserve_fetch=add_fetch))
+        await started.wait()
+        waiter = asyncio.create_task(execute_capability(operation, providers=["tavily"], reserve_fetch=add_fetch))
+        await asyncio.sleep(0)
+        release.set()
+        owner_result, waiter_result = await asyncio.gather(owner, waiter)
+    await context.aclose()
+
+    assert calls == 1
+    assert budget.fetches == 1
+    assert context.metrics.fetch_count == 1
+    assert owner_result.value["content"] == waiter_result.value["content"]
+    assert waiter_result.attempts[-1].details["inflight_joined"] is True
+
+
+@pytest.mark.asyncio
+async def test_exhausted_fetch_budget_still_serves_cache_hit(monkeypatch):
+    """An otherwise usable cached result must not be rejected just because the
+    fetch budget is exhausted: a cache hit stays budget-neutral and returns the
+    cached content, while a fresh URL miss is refused without provider I/O."""
+    monkeypatch.setenv("SMART_SEARCH_CACHE_ENABLED", "true")
+    monkeypatch.setenv("SMART_SEARCH_FETCH_CACHE_TTL_SECONDS", "30")
+    monkeypatch.setattr(
+        capability_executor,
+        "_provider_status_for_capability",
+        lambda capability: _eligible_statuses("tavily"),
+    )
+    budget = RequestBudget(
+        deadline=None,
+        max_provider_attempts=8,
+        max_retry_attempts=4,
+        max_fetches=1,
+    )
+    context = await RequestContext.create(
+        command="research",
+        config_snapshot=_snapshot(),
+        budget=budget,
+        client_factory=lambda **kwargs: _FakeBudgetClient(),
+    )
+    calls = 0
+
+    async def run(provider: str, outcome: dict[str, object]) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {
+            "content": f"content-{calls}",
+            "url": f"https://example.com/page-{calls}",
+            "provider": provider,
+        }
+
+    op_a = _fetch_operation("https://example.com/page-1", run)
+    op_b = _fetch_operation("https://example.com/page-2", run)
+    with request_scope(context):
+        first = await execute_capability(op_a, providers=["tavily"], reserve_fetch=add_fetch)
+        assert budget.fetches == 1  # the miss reserved the only fetch slot
+
+        refused = await execute_capability(op_b, providers=["tavily"], reserve_fetch=add_fetch)
+        assert budget.exhausted_reason == "fetches"
+
+        again = await execute_capability(op_a, providers=["tavily"], reserve_fetch=add_fetch)
+    await context.aclose()
+
+    assert calls == 1
+    assert refused.attempts[0].status.value == "skipped"
+    assert refused.attempts[0].error is not None
+    assert refused.attempts[0].error.type == "budget_exhausted"
+    assert refused.value["content"] == ""  # empty fetch payload from the refusal
+
+    assert again.value["content"] == "content-1"
+    assert again.attempts[-1].details["cache_hit"] is True
+    assert again.attempts[-1].status.value == "ok"
+    assert budget.fetches == 1  # the cache hit added no reservation
 
 
 @pytest.mark.asyncio

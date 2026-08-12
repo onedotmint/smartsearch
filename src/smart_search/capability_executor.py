@@ -199,6 +199,28 @@ def _classification_message(error_type: str, error: str) -> str:
     return _DEFAULT_ERROR_MESSAGES.get(error_type, f"provider execution failed: {error_type}")
 
 
+class _FetchBudgetRefused(Exception):
+    """Internal control-flow marker raised when the fetch reservation inside the
+    cache-miss provider factory is refused.
+
+    The executor boundary converts it into the stable skipped ``budget_exhausted``
+    attempt, so a cache hit never consumes fetch budget and a refused miss never
+    calls the provider. It is never surfaced as a provider error.
+    """
+
+
+def _fetch_budget_refusal_attempt(capability: str) -> ExecutionAttempt:
+    """Build the stable skipped budget-exhausted attempt with the historical
+    diagnostic parity: a current RequestContext with a non-empty
+    ``budget.exhausted_reason`` appends the reason to the message; without one
+    the base message stays unchanged."""
+    context = current_context()
+    reason = "request budget exhausted"
+    if context is not None and context.budget.exhausted_reason:
+        reason = f"request budget exhausted: {context.budget.exhausted_reason}"
+    return budget_exhausted_attempt(capability, message=reason, elapsed_ms=0.0)
+
+
 async def execute_capability(
     operation: CapabilityOperation,
     *,
@@ -216,8 +238,9 @@ async def execute_capability(
      * 目标：统一 provider 选择、预算、缓存、attempt 和 fallback 生命周期。
      * 数据源：CapabilityOperation、provider registry 和当前 RequestContext。
      * 操作：
-     * 1) 预留 fetch 预算并解析 eligible provider。
-     * 2) 在缓存未命中时预留 provider request，再执行 owning workflow 的 operation。
+     * 1) 解析 eligible provider。
+     * 2) 在缓存未命中时先预留 fetch 预算，再预留 provider request，然后执行
+     *    owning workflow 的 operation；缓存命中不消耗 fetch 预算。
      * 3) 记录成功、空结果、provider 错误和运行时异常，然后按 fallback 继续。
      * ================================================================================
      */
@@ -230,21 +253,7 @@ async def execute_capability(
     if operation.cache_kind not in {"source", "fetch", "content", "", "none"}:
         raise ValueError(f"Unsupported capability cache kind: {operation.cache_kind}")
 
-    # 3.1 预留 command 级 fetch 预算。
-    if reserve_fetch is not None and not reserve_fetch():
-        # 恢复旧 service_support._budget_exhausted_attempt 的 diagnostic parity：
-        # 存在当前 RequestContext 且 budget.exhausted_reason 非空时，把 reason 附加到
-        # message，否则保持不带 reason 的 base message。
-        context = current_context()
-        reason = "request budget exhausted"
-        if context is not None and context.budget.exhausted_reason:
-            reason = f"request budget exhausted: {context.budget.exhausted_reason}"
-        attempts = (budget_exhausted_attempt(operation.capability, message=reason, elapsed_ms=0.0),)
-        value = operation.empty_value("request-budget")
-        logger.info("capability 执行因 fetch 预算结束: capability=%s", operation.capability)
-        return CapabilityExecution(value=value, attempts=attempts)
-
-    # 3.2 解析显式 provider filter。
+    # 3.1 解析显式 provider filter。
     normalized_filter = (
         _parse_provider_filter(provider_filter)
         if isinstance(provider_filter, str)
@@ -257,16 +266,24 @@ async def execute_capability(
         preferred_order,
     )
 
-    # 3.3 fallback=off 只保留首个 eligible provider。
+    # 3.2 fallback=off 只保留首个 eligible provider。
     if fallback == "off":
         selected = selected[:1]
 
-    # 3.4 对每个 provider 共享 request、cache 和 attempt 生命周期。
+    # 3.3 对每个 provider 共享 request、cache 和 attempt 生命周期。
+    # fetch 预算只在缓存未命中路径预留一次（含 in-flight owner 路径），缓存命中
+    # 完全不消耗 fetch 预算，也不会因预算耗尽拒绝一个可用的缓存结果。
+    fetch_reserved = False
     for provider in selected:
         provider_start = time.time()
         outcome: dict[str, Any] = {}
 
         async def provider_factory() -> Any:
+            nonlocal fetch_reserved
+            if reserve_fetch is not None and not fetch_reserved:
+                if not reserve_fetch():
+                    raise _FetchBudgetRefused()
+                fetch_reserved = True
             if not add_request():
                 outcome.update(
                     {
@@ -331,7 +348,17 @@ async def execute_capability(
             if error_type == "budget_exhausted":
                 logger.info("capability 执行停止于预算边界: capability=%s provider=%s", operation.capability, provider)
                 break
-        # 3.5 将 transport、HTTP、timeout 和未知异常统一转为稳定 attempt。
+        except _FetchBudgetRefused:
+            # 恢复旧 service_support._budget_exhausted_attempt 的 diagnostic parity：
+            # 存在当前 RequestContext 且 budget.exhausted_reason 非空时，把 reason
+            # 附加到 message，否则保持不带 reason 的 base message。拒绝时停止整条链。
+            attempts = attempts + (_fetch_budget_refusal_attempt(operation.capability),)
+            logger.info("capability 执行因 fetch 预算结束: capability=%s", operation.capability)
+            return CapabilityExecution(
+                value=operation.empty_value("request-budget"),
+                attempts=attempts,
+            )
+        # 3.4 将 transport、HTTP、timeout 和未知异常统一转为稳定 attempt。
         except Exception as exc:
             error_type, error, retryable = classify_provider_exception(exc)
             attempts = attempts + (

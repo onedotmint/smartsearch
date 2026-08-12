@@ -313,6 +313,116 @@ async def test_fetch_budget_refusal_base_message_without_context(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_budget_not_reserved_on_cache_hit(monkeypatch):
+    """A cache-hit execution must not reserve (decrement) the fetch budget:
+    the provider factory is never invoked, so the fetch reservation must never
+    run either."""
+    reservations: list[int] = []
+    monkeypatch.setattr(
+        capability_executor,
+        "_provider_status_for_capability",
+        lambda capability: _eligible_statuses("cached"),
+    )
+    monkeypatch.setattr(
+        capability_executor,
+        "_cached_source_provider",
+        lambda *args: _cached_execution_without_factory(),
+    )
+
+    async def run(provider: str, outcome: dict[str, object]) -> dict[str, str]:
+        raise AssertionError("provider must not run on a cache hit")
+
+    execution = await execute_capability(
+        CapabilityOperation(
+            capability="web_fetch",
+            input_value="https://example.test",
+            run=run,
+        ),
+        reserve_fetch=lambda: (reservations.append(1) or True),
+    )
+
+    assert reservations == []
+    assert execution.value == [{"url": "https://cached.test", "provider": "cached"}]
+    assert execution.attempts[-1].details["cache_hit"] is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_budget_reserved_exactly_once_across_fallback_on_miss(monkeypatch):
+    """A cache-miss execution reserves the fetch budget exactly once even when
+    the same capability falls back across multiple providers, so one URL fetch
+    never consumes more than one fetch-budget slot."""
+    reservations: list[int] = []
+    calls: list[str] = []
+    monkeypatch.setattr(
+        capability_executor,
+        "_provider_status_for_capability",
+        lambda capability: _eligible_statuses("first", "second"),
+    )
+    monkeypatch.setattr(capability_executor, "add_request", lambda: True)
+
+    async def run(provider: str, outcome: dict[str, object]) -> dict[str, object]:
+        calls.append(provider)
+        if provider == "first":
+            return {"content": "", "url": "https://example.test", "provider": provider}
+        return {"content": "page content", "url": "https://example.test", "provider": provider}
+
+    execution = await execute_capability(
+        CapabilityOperation(
+            capability="web_fetch",
+            input_value="https://example.test",
+            cache_kind="fetch",
+            run=run,
+            empty_value=lambda provider: {
+                "content": "",
+                "url": "https://example.test",
+                "provider": provider,
+                "error_type": "empty",
+            },
+            is_success=lambda value: isinstance(value, dict) and bool(value.get("content")),
+            result_count=lambda _value: 1,
+        ),
+        reserve_fetch=lambda: (reservations.append(1) or True),
+    )
+
+    assert calls == ["first", "second"]
+    assert reservations == [1]
+    assert execution.provider == "second"
+
+
+@pytest.mark.asyncio
+async def test_fetch_budget_refused_on_miss_prevents_provider_execution(monkeypatch):
+    """When the fetch reservation is refused on the cache-miss path, the
+    provider must not run and the stable skipped budget attempt is produced
+    exactly as before."""
+    calls: list[str] = []
+    monkeypatch.setattr(
+        capability_executor,
+        "_provider_status_for_capability",
+        lambda capability: _eligible_statuses("first", "second"),
+    )
+    monkeypatch.setattr(capability_executor, "add_request", lambda: True)
+
+    async def run(provider: str, outcome: dict[str, object]) -> dict[str, str]:
+        calls.append(provider)
+        return [{"url": "https://unexpected.test", "provider": provider}]
+
+    execution = await execute_capability(
+        CapabilityOperation(
+            capability="web_fetch",
+            input_value="https://example.test",
+            run=run,
+        ),
+        reserve_fetch=lambda: False,
+    )
+
+    assert calls == []
+    assert execution.attempts[0].status is ExecutionAttemptStatus.SKIPPED
+    assert execution.attempts[0].error is not None
+    assert execution.attempts[0].error.type == "budget_exhausted"
+    assert execution.attempts[0].details["budget_exhausted"] is True
+
+
+@pytest.mark.asyncio
 async def test_executor_preserves_cache_attempt_metadata(monkeypatch):
     """
     /*
