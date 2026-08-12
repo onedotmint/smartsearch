@@ -174,8 +174,9 @@ async def test_exa_provider_reports_bad_request_as_parameter_error(monkeypatch):
 
     assert data["ok"] is False
     assert data["error_type"] == "parameter_error"
-    assert "HTTP 400" in data["error"]
-    assert "invalid includeDomains" in data["error"]
+    assert data["error"] == "HTTP 400"
+    # Upstream body bytes must never cross the public provider error.
+    assert "invalid includeDomains" not in data["error"]
 
 
 @pytest.mark.asyncio

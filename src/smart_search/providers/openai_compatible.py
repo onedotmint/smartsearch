@@ -76,9 +76,9 @@ def _transport_error_message(exc: BaseException) -> str:
     if isinstance(exc, ProviderError):
         return str(exc)
     if isinstance(exc, httpx.HTTPStatusError):
-        body = exc.response.text[:300] if exc.response is not None else str(exc)
-        status = exc.response.status_code if exc.response is not None else "unknown"
-        return f"HTTP {status}: {body}"
+        # Containment: reuse the classified status-only message so upstream
+        # body bytes never enter transport attempt diagnostics.
+        return classify_provider_exception(exc)[1]
     return str(exc)
 
 

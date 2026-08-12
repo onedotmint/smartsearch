@@ -380,7 +380,7 @@ async def _test_primary_connection(api_url: str, api_key: str, model: str) -> di
             )
             response_time = _elapsed_ms(start)
             if response.status_code != 200:
-                models_test = {"status": "warning", "message": f"HTTP {response.status_code}: {response.text[:100]}", "response_time_ms": response_time}
+                models_test = {"status": "warning", "message": f"HTTP {response.status_code}", "response_time_ms": response_time}
             else:
                 models_test = {"status": "ok", "message": f"成功获取模型列表 (HTTP {response.status_code})", "response_time_ms": response_time}
                 try:
@@ -440,7 +440,7 @@ async def _test_primary_responses(api_url: str, api_key: str, model: str) -> dic
         )
         response_time = _elapsed_ms(start)
         if response.status_code != 200:
-            return {"status": "warning", "message": f"HTTP {response.status_code}: {response.text[:100]}", "response_time_ms": response_time}
+            return {"status": "warning", "message": f"HTTP {response.status_code}", "response_time_ms": response_time}
         return {"status": "ok", "message": f"xAI Responses API 可用 (HTTP {response.status_code})", "response_time_ms": response_time}
 
 

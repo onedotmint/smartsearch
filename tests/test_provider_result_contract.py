@@ -15,15 +15,18 @@ import json
 import httpx
 import pytest
 
-from smart_search import capability_executor
+from smart_search import canonical_operations, capability_executor, evidence_operations
 from smart_search.capability_executor import CapabilityOperation, execute_capability
+from smart_search.evidence_operations import SourceDiscoveryRequest
 from smart_search.execution_primitives import ExecutionAttemptStatus, project_attempts_dict
 from smart_search.providers.base import (
+    ProviderError,
     ProviderResult,
     classify_provider_exception,
     coerce_provider_result,
 )
 from smart_search.service_support import _fallback_used
+from smart_search.v2_contract import serialize_result
 
 
 def test_provider_result_exposes_stable_fields_and_legacy_content_wire():
@@ -98,7 +101,8 @@ def test_provider_http_and_transport_errors_have_stable_categories():
         error_type, message, retryable = classify_provider_exception(error)
 
         assert error_type == expected_type
-        assert "upstream" in message
+        assert message == f"HTTP {status_code}"
+        assert "upstream" not in message
         assert retryable is expected_retryable
 
     error_type, _, retryable = classify_provider_exception(httpx.ReadTimeout("slow", request=request))
@@ -156,3 +160,141 @@ async def test_executor_consumes_structured_provider_error_and_falls_back(monkey
     assert legacy_attempts[0]["status"] == "error"
     assert legacy_attempts[0]["error_type"] == "auth_error"
     assert _fallback_used(legacy_attempts) is True
+
+
+# ---------------------------------------------------------------------------
+# Upstream response-body containment (P0: no body bytes in public errors)
+# ---------------------------------------------------------------------------
+
+
+def _malicious_body() -> str:
+    return (
+        '{"error": "echo api_key=sk-leaked-123 request fragment '
+        '\\"Bearer sk-leaked-123\\""}'
+    )
+
+
+def _http_error(status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "https://provider.example.test/v1/search?q=request-fragment")
+    response = httpx.Response(status_code, text=_malicious_body(), request=request)
+    return httpx.HTTPStatusError("upstream", request=request, response=response)
+
+
+def test_classified_provider_error_never_embeds_response_body():
+    """An upstream body echoing credentials or request fragments must never
+    cross the classified provider-error boundary: the message is status-only
+    and the ProviderError/ProviderResult wire stays body-free."""
+    for status_code in (400, 401, 403, 429, 503):
+        error_type, message, retryable = classify_provider_exception(_http_error(status_code))
+
+        assert message == f"HTTP {status_code}"
+        assert "sk-leaked-123" not in message
+        assert "api_key=" not in message
+        assert "request-fragment" not in message
+
+        provider_error = ProviderError(
+            error_type,
+            message,
+            provider="xai-responses",
+            capability="main_search",
+            retryable=retryable,
+        )
+        rendered_wires = (
+            str(provider_error.to_result()),
+            str(coerce_provider_result(provider_error, provider="xai-responses", capability="main_search")),
+        )
+        for rendered in rendered_wires:
+            assert "sk-leaked-123" not in rendered
+            assert "api_key=" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_executor_attempt_errors_never_embed_response_body(monkeypatch):
+    """A provider exception whose body echoes credentials must produce an
+    attempt error carrying status only, so the legacy attempt projection used
+    by Workflow/synthesis boundaries stays body-free."""
+    monkeypatch.setattr(
+        capability_executor,
+        "_provider_status_for_capability",
+        lambda capability: [
+            {
+                "provider": "xai-responses",
+                "configured": True,
+                "enabled": True,
+                "eligible": True,
+                "reason": "ready",
+            }
+        ],
+    )
+    error = _http_error(429)
+
+    async def run(provider: str, outcome: dict[str, object]) -> list[dict[str, str]]:
+        raise error
+
+    execution = await execute_capability(
+        CapabilityOperation(
+            capability="main_search",
+            input_value="query",
+            run=run,
+            result_count=len,
+        )
+    )
+
+    assert execution.attempts[0].error is not None
+    assert execution.attempts[0].error.type == "rate_limited"
+    assert execution.attempts[0].error.message == "HTTP 429"
+    rendered = json.dumps(project_attempts_dict(execution.attempts))
+    assert "sk-leaked-123" not in rendered
+    assert "api_key=" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_v2_json_contains_no_provider_body_bytes(monkeypatch):
+    """A full V2 source_discovery flow fed an error body echoing credentials
+    must serialize public V2 JSON without any of those body bytes while
+    preserving the classified error category."""
+    monkeypatch.setattr(evidence_operations, "_qualified_providers", lambda operation: ["tavily"])
+    monkeypatch.setattr(
+        capability_executor,
+        "_provider_status_for_capability",
+        lambda capability: [
+            {
+                "provider": "tavily",
+                "configured": True,
+                "enabled": True,
+                "eligible": True,
+                "reason": "ready",
+            }
+        ],
+    )
+    error = _http_error(429)
+
+    async def fake_web(query, count=5, providers="auto", fallback="auto"):
+        async def run(provider: str, outcome: dict[str, object]) -> list[dict[str, str]]:
+            raise error
+
+        return await execute_capability(
+            CapabilityOperation(
+                capability="web_search",
+                input_value=query,
+                run=run,
+                empty_value=lambda _provider: [],
+                is_success=lambda value: isinstance(value, list) and bool(value),
+                result_count=len,
+            ),
+            provider_filter=providers,
+            fallback=fallback,
+        )
+
+    monkeypatch.setattr(evidence_operations, "_execute_web_search", fake_web)
+    envelope = await canonical_operations.source_discovery(SourceDiscoveryRequest("query"))
+    payload = serialize_result(envelope)
+    rendered = json.dumps(payload)
+
+    assert "sk-leaked-123" not in rendered
+    assert "api_key=" not in rendered
+    assert "request-fragment" not in rendered
+    # Error category and retryability semantics survive the containment change.
+    assert payload["attempts"][0]["error_code"] == "RATE_LIMITED"
+    assert payload["error"]["code"] == "RATE_LIMITED"
+    assert payload["error"]["retryable"] is True

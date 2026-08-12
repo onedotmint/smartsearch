@@ -64,9 +64,10 @@ def classify_provider_exception(exc: BaseException) -> tuple[str, str, bool]:
     if isinstance(exc, httpx.HTTPStatusError):
         response = exc.response
         status_code = response.status_code if response is not None else 0
-        body = ""
-        if response is not None:
-            body = (response.text or response.reason_phrase or "")[:500]
+        # Containment: never embed arbitrary upstream body bytes in the
+        # normalized provider error. The message carries status only so
+        # echoed credentials or request fragments cannot cross the public
+        # V2/V3/Workflow error boundary.
         if status_code in {401, 403}:
             error_type = "auth_error"
         elif status_code in {400, 422}:
@@ -79,7 +80,7 @@ def classify_provider_exception(exc: BaseException) -> tuple[str, str, bool]:
             error_type = "network_error"
         else:
             error_type = "protocol_error"
-        message = f"HTTP {status_code}: {body}".rstrip()
+        message = f"HTTP {status_code}"
         result = (error_type, message, _default_retryable(error_type))
         _logger.info("provider error classification finished")
         return result

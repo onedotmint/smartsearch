@@ -19,13 +19,17 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
+import httpx
+
 from smart_search.execution_primitives import (
     ExecutionAttempt,
     ExecutionAttemptStatus,
     ExecutionCitation,
     ExecutionEvidenceItem,
     ExecutionGap,
+    error_attempt,
 )
+from smart_search.providers.base import classify_provider_exception
 from smart_search.research_plan import (
     ResearchPlanOperation,
     build_research_plan,
@@ -805,3 +809,47 @@ def test_contract_module_forbidden_imports():
     assert "research_plan" in imported
     assert "research_workflow" in imported
     assert "security" in imported
+
+# ---------------------------------------------------------------------------
+# Upstream response-body containment in Workflow JSON
+# ---------------------------------------------------------------------------
+
+
+def test_workflow_json_contains_no_provider_body_bytes():
+    """An upstream error body echoing credentials must never cross the
+    Workflow JSON boundary: the attempt error projected into Workflow JSON
+    carries status only, and no body bytes survive serialization."""
+    request = httpx.Request("POST", "https://provider.example.test/v1/search")
+    response = httpx.Response(429, text='{"error": "echo api_key=sk-leaked-123 request fragment"}', request=request)
+    error = httpx.HTTPStatusError("upstream", request=request, response=response)
+    _, message, retryable = classify_provider_exception(error)
+    assert message == "HTTP 429"
+
+    outcome = complete_outcome()
+    outcome = WorkflowOutcome(
+        status=outcome.status,
+        plan=outcome.plan,
+        stages=outcome.stages,
+        evidence=outcome.evidence,
+        citations=outcome.citations,
+        gaps=outcome.gaps,
+        attempts=(
+            error_attempt(
+                "content_fetch",
+                "jina",
+                error_type="rate_limited",
+                message=message,
+                elapsed_ms=1.0,
+                retryable=retryable,
+            ),
+        ),
+        artifacts=outcome.artifacts,
+        meta=outcome.meta,
+    )
+
+    payload = serialize_workflow(outcome)
+    rendered = json.dumps(payload)
+    assert "sk-leaked-123" not in rendered
+    assert "api_key=" not in rendered
+    assert payload["attempts"][0]["error"] == "HTTP 429"
+    assert payload["attempts"][0]["error_type"] == "rate_limited"

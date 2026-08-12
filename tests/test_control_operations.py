@@ -1332,6 +1332,84 @@ def _serve_stream_error(status: int, body: bytes) -> ThreadingHTTPServer:
     return server
 
 
+def _serve_status_error(status: int, body: bytes) -> ThreadingHTTPServer:
+    """Localhost server that fails every POST and GET with a fixed status
+    and a body that echoes credentials (used to prove diagnostic
+    containment)."""
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def _respond(self):
+            try:
+                self.send_response(status)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                pass
+            finally:
+                self.close_connection = True
+
+        def do_POST(self):
+            self._respond()
+
+        def do_GET(self):
+            self._respond()
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_primary_connection_diagnostics_never_embed_response_body(monkeypatch):
+    """The doctor main-search connection diagnostics (chat + models probes)
+    must carry status only: an upstream error body echoing credentials must
+    never cross into the public V3 diagnostic JSON."""
+    server = _serve_status_error(401, b'{"error": "echo api_key=sk-leaked-123 request fragment"}')
+    try:
+        port = server.server_address[1]
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_URL", f"http://127.0.0.1:{port}")
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "sk-local-test-secret")
+        monkeypatch.setenv("OPENAI_COMPATIBLE_MODEL", "model-x")
+        data = asyncio.run(co.control_executors._test_primary_connection(
+            f"http://127.0.0.1:{port}", "sk-local-test-secret", "model-x"
+        ))
+    finally:
+        server.shutdown()
+
+    rendered = json.dumps(data)
+    assert "sk-leaked-123" not in rendered
+    assert "api_key=" not in rendered
+    assert "sk-local-test-secret" not in rendered
+    for check in (data.get("models_endpoint_test"), data.get("chat_completion_test")):
+        if check is not None:
+            assert check["message"].startswith("HTTP 401")
+
+
+def test_primary_responses_diagnostic_never_embeds_response_body(monkeypatch):
+    """The xAI Responses probe must carry status only when the upstream error
+    body echoes credentials or request fragments."""
+    server = _serve_status_error(429, b'{"error": "echo api_key=sk-leaked-123"}')
+    try:
+        port = server.server_address[1]
+        monkeypatch.setenv("XAI_API_URL", f"http://127.0.0.1:{port}")
+        data = asyncio.run(co.control_executors._test_primary_responses(
+            f"http://127.0.0.1:{port}", "sk-local-test-secret", "model-x"
+        ))
+    finally:
+        server.shutdown()
+
+    rendered = json.dumps(data)
+    assert "sk-leaked-123" not in rendered
+    assert "api_key=" not in rendered
+    assert data["message"] == "HTTP 429"
+
+
 def test_diagnose_streamed_http_error_returns_typed_network_failure(monkeypatch):
     """A streamed 4xx/5xx response must be consumed safely and reported as a
     diagnostic check; ResponseNotRead/StreamClosed must never escape into a

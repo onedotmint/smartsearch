@@ -44,7 +44,7 @@ async def _test_exa_connection() -> dict[str, object]:
     response_time = _elapsed_ms(start)
     if response.status_code == 200:
         return {"status": "ok", "message": "Exa API 可用 (HTTP 200)", "response_time_ms": response_time}
-    return {"status": "warning", "message": f"HTTP {response.status_code}: {response.text[:100]}", "response_time_ms": response_time}
+    return {"status": "warning", "message": f"HTTP {response.status_code}", "response_time_ms": response_time}
 
 
 async def _test_tavily_connection() -> dict[str, object]:
@@ -65,7 +65,7 @@ async def _test_tavily_connection() -> dict[str, object]:
     response_time = _elapsed_ms(start)
     if response.status_code == 200:
         return {"status": "ok", "message": "Tavily API 可用 (HTTP 200)", "response_time_ms": response_time}
-    return {"status": "warning", "message": f"HTTP {response.status_code}: {response.text[:100]}", "response_time_ms": response_time}
+    return {"status": "warning", "message": f"HTTP {response.status_code}", "response_time_ms": response_time}
 
 
 async def _test_jina_connection() -> dict[str, object]:
