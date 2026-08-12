@@ -696,6 +696,38 @@ def test_capability_status_reports_runtime_availability_separately(monkeypatch):
     assert "qualification_by_tier" in capabilities
 
 
+def test_capability_status_disabled_provider_is_configured_but_not_eligible(monkeypatch):
+    monkeypatch.setattr(
+        evidence_operations,
+        "get_capability_status",
+        lambda: {
+            "source_discovery": {
+                "configured": ["tavily", "jina"],
+                "ok": True,
+                "provider_status": [
+                    {
+                        "provider": "tavily",
+                        "configured": True,
+                        "enabled": True,
+                        "eligible": True,
+                    },
+                    {
+                        "provider": "jina",
+                        "configured": True,
+                        "enabled": False,
+                        "eligible": False,
+                    },
+                ],
+            }
+        },
+    )
+    outcome = evidence_operations.capability_status(request_id="cap-disabled")
+    legacy_status = outcome.local_data["capabilities"]["legacy_status"]["source_discovery"]
+    assert legacy_status["configured"] == ("tavily", "jina")
+    assert legacy_status["eligible"] == ("tavily",)
+    assert legacy_status["ok"] is True
+
+
 # ---------------------------------------------------------------------------
 # Typed composition
 # ---------------------------------------------------------------------------

@@ -771,6 +771,39 @@ async def site_discovery(request: SiteDiscoveryRequest) -> EvidenceOperationOutc
     )
 
 
+def _project_legacy_status(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Project one legacy capability-status entry into configured/eligible/ok.
+
+    Prefer per-provider status rows when present: ``configured`` lists every
+    provider with configuration and ``eligible`` only the providers that are
+    both configured and enabled. Entries without ``provider_status`` fall back
+    to the legacy ``configured`` list for both fields.
+    """
+    provider_status = value.get("provider_status")
+    if isinstance(provider_status, Sequence):
+        configured = [
+            str(item.get("provider"))
+            for item in provider_status
+            if isinstance(item, Mapping) and item.get("configured")
+        ]
+        eligible = [
+            str(item.get("provider"))
+            for item in provider_status
+            if isinstance(item, Mapping) and item.get("eligible")
+        ]
+        return {
+            "configured": configured,
+            "eligible": eligible,
+            "ok": value.get("ok"),
+        }
+    configured = value.get("configured", [])
+    return {
+        "configured": configured,
+        "eligible": configured,
+        "ok": value.get("ok"),
+    }
+
+
 def capability_status(*, request_id: str | None = None) -> EvidenceOperationOutcome:
     """Local zero-network capability status inspection.
 
@@ -818,11 +851,7 @@ def capability_status(*, request_id: str | None = None) -> EvidenceOperationOutc
                     for item in descriptors
                 ],
                 "legacy_status": {
-                    key: {
-                        "configured": value.get("configured", []),
-                        "eligible": value.get("configured", []),
-                        "ok": value.get("ok"),
-                    }
+                    key: _project_legacy_status(value)
                     for key, value in legacy_status.items()
                     if isinstance(value, Mapping)
                 },
