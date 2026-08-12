@@ -317,3 +317,60 @@ def test_v2_internal_handler_failure_has_a_fixed_non_leaking_shape(monkeypatch):
     assert payload["operation"] == "source_discovery"
     assert payload["error"]["code"] == "INTERNAL_ERROR"
     assert "private-token" not in out
+
+
+def _v2_leaf_help(command: str) -> str:
+    import argparse
+
+    from smart_search import cli_parser
+
+    parser = cli_parser.build_parser()
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    return subparsers.choices[command].format_help()
+
+
+# Rejected legacy options stay registered so the deterministic v2 rejection
+# envelopes keep working, but canonical V2 help must not advertise them.
+_V2_HELP_HIDDEN_OPTIONS = (
+    "--platform",
+    "--model",
+    "--extra-sources",
+    "--profile",
+    "--response-mode",
+    "--validation",
+    "--fallback",
+    "--providers",
+    "--stream",
+    "--no-stream",
+    "--timeout",
+    "--output",
+    "--force",
+    "--prompt-dir",
+    "--search-prompt-file",
+    "--fetch-prompt-file",
+    "--research-prompt-file",
+)
+
+
+def test_v2_help_hides_rejected_legacy_options():
+    for command in ("search", "fetch", "map", "capabilities"):
+        help_text = _v2_leaf_help(command)
+        for option in _V2_HELP_HIDDEN_OPTIONS:
+            assert option not in help_text, (
+                f"{command} help must not advertise rejected option {option}"
+            )
+
+
+def test_v2_help_keeps_active_v2_options():
+    search_help = _v2_leaf_help("search")
+    assert "--format" in search_help
+    assert "query" in search_help
+    # map parameter options are restored in a later task and stay visible.
+    map_help = _v2_leaf_help("map")
+    for option in ("--instructions", "--max-depth", "--max-breadth", "--limit"):
+        assert option in map_help, f"map help must keep {option}"
+    assert "--timeout" not in map_help

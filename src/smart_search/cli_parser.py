@@ -53,13 +53,16 @@ def _hide_advanced_command_help(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _add_format_args(parser: argparse.ArgumentParser) -> None:
+    # The six options below stay registered so the deterministic v2/v3
+    # INVALID_ARGUMENT rejection keeps working, but they are hidden from help
+    # because they are rejected legacy options, not active surface.
     parser.add_argument("--format", choices=["json", "markdown", "content"], default="json")
-    parser.add_argument("--output", default="", help="Write rendered output to a file.")
-    parser.add_argument("--force", action="store_true", help="Allow replacing an existing output file.")
-    parser.add_argument("--prompt-dir", default="", help="Load local UTF-8 Prompt files from this directory.")
-    parser.add_argument("--search-prompt-file", default="", help="Use a local UTF-8 search Prompt file.")
-    parser.add_argument("--fetch-prompt-file", default="", help="Use a local UTF-8 fetch Prompt file.")
-    parser.add_argument("--research-prompt-file", default="", help="Use a local UTF-8 research Prompt file.")
+    parser.add_argument("--output", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--prompt-dir", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--search-prompt-file", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--fetch-prompt-file", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--research-prompt-file", default="", help=argparse.SUPPRESS)
 
 def build_parser(*, raise_on_error: bool = False) -> argparse.ArgumentParser:
     parser = NamespaceArgumentParser(
@@ -93,23 +96,25 @@ def build_parser(*, raise_on_error: bool = False) -> argparse.ArgumentParser:
     )
     search_parser.set_defaults(command="search")
     search_parser.add_argument("query")
-    search_parser.add_argument("--platform", default="")
-    search_parser.add_argument("--model", default="")
-    search_parser.add_argument("--extra-sources", type=int, default=0)
-    search_parser.add_argument("--profile", choices=["fast", "balanced", "deep"], default="")
+    # Rejected legacy options: registered for deterministic rejection only,
+    # hidden from canonical V2 help (help=argparse.SUPPRESS).
+    search_parser.add_argument("--platform", default="", help=argparse.SUPPRESS)
+    search_parser.add_argument("--model", default="", help=argparse.SUPPRESS)
+    search_parser.add_argument("--extra-sources", type=int, default=0, help=argparse.SUPPRESS)
+    search_parser.add_argument("--profile", choices=["fast", "balanced", "deep"], default="", help=argparse.SUPPRESS)
     search_parser.add_argument(
         "--response-mode",
         choices=["evidence", "concise", "synthesized"],
         default="concise",
-        help="Choose evidence-only, concise, or full synthesized output.",
+        help=argparse.SUPPRESS,
     )
-    search_parser.add_argument("--validation", choices=["fast", "balanced", "strict"], default="")
-    search_parser.add_argument("--fallback", choices=["auto", "off"], default="")
-    search_parser.add_argument("--providers", default="auto")
+    search_parser.add_argument("--validation", choices=["fast", "balanced", "strict"], default="", help=argparse.SUPPRESS)
+    search_parser.add_argument("--fallback", choices=["auto", "off"], default="", help=argparse.SUPPRESS)
+    search_parser.add_argument("--providers", default="auto", help=argparse.SUPPRESS)
     stream_group = search_parser.add_mutually_exclusive_group()
-    stream_group.add_argument("--stream", dest="stream", action="store_true", default=None, help="Use stream=true for OpenAI-compatible main search.")
-    stream_group.add_argument("--no-stream", dest="stream", action="store_false", help="Force stream=false for OpenAI-compatible main search.")
-    search_parser.add_argument("--timeout", type=float, default=90, metavar="SECONDS", help="Hard timeout in seconds.")
+    stream_group.add_argument("--stream", dest="stream", action="store_true", default=None, help=argparse.SUPPRESS)
+    stream_group.add_argument("--no-stream", dest="stream", action="store_false", help=argparse.SUPPRESS)
+    search_parser.add_argument("--timeout", type=float, default=90, metavar="SECONDS", help=argparse.SUPPRESS)
     _add_format_args(search_parser)
 
     fetch_parser = sub.add_parser("fetch", help="Fetch a URL as markdown.")
@@ -124,7 +129,10 @@ def build_parser(*, raise_on_error: bool = False) -> argparse.ArgumentParser:
     map_parser.add_argument("--max-depth", type=int, default=1)
     map_parser.add_argument("--max-breadth", type=int, default=20)
     map_parser.add_argument("--limit", type=int, default=50)
-    map_parser.add_argument("--timeout", type=int, default=150)
+    # --timeout stays rejected for V2 map and is hidden; the other map
+    # parameter options (--instructions/--max-depth/--max-breadth/--limit)
+    # stay visible and are restored in a later task.
+    map_parser.add_argument("--timeout", type=int, default=150, help=argparse.SUPPRESS)
     _add_format_args(map_parser)
 
     capabilities_parser = sub.add_parser(
