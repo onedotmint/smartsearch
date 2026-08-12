@@ -1148,6 +1148,20 @@ def _regression_test_files_available(root: Path) -> bool:
     return all((root / pattern).exists() for pattern in _REGRESSION_PATTERNS)
 
 
+# Config-free safety net bounding a single source-checkout regression
+# subprocess. A hung child would otherwise block the async v3 owner
+# indefinitely (R2-P1-1); with this bound subprocess.run kills and reaps the
+# child before raising TimeoutExpired. It is a hang guard, not a performance
+# gate, so it is deliberately far above a healthy run's wall time.
+_REGRESSION_SUBPROCESS_TIMEOUT_SECONDS = 600.0
+
+# Stable nonzero exit code reported when the regression subprocess times out.
+# 124 matches the conventional ``timeout(1)`` exit code and stays distinct
+# from any pytest failure code, so consumers can recognize the timeout case
+# even without the ``subprocess_timeout`` result flag.
+_REGRESSION_TIMEOUT_EXIT_CODE = 124
+
+
 def _run_coroutine_sync(coro: Any) -> Any:
     """Run a coroutine from sync or already-running event-loop contexts."""
     try:
@@ -1224,9 +1238,10 @@ def _extract_failed_test_cases(output: str) -> list[str]:
 def _execute_regression() -> dict[str, Any]:
     """Run the shared regression owner and return a structured process outcome.
 
-    Source checkouts start the pytest subprocess. Packaged installs without the
-    test tree fall back to mock smoke without starting a subprocess. Safe to
-    call from both the sync v1 path and the async v3 dispatcher.
+    Source checkouts start the pytest subprocess under a config-free bounded
+    timeout. Packaged installs without the test tree fall back to mock smoke
+    without starting a subprocess. Safe to call from both the sync v1 path and
+    the async v3 dispatcher.
     """
     root = Path(__file__).resolve().parents[2]
     if not _regression_test_files_available(root):
@@ -1239,14 +1254,32 @@ def _execute_regression() -> dict[str, Any]:
             "failed_cases": list(data.get("failed_cases") or []),
         }
     cmd = [sys.executable, "-m", "pytest", *_REGRESSION_PATTERNS]
-    completed = subprocess.run(
-        cmd,
-        cwd=str(root),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
-    )
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            timeout=_REGRESSION_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run has already killed and reaped the child before
+        # raising, so no orphaned process or zombie remains. ``exc`` may carry
+        # partially captured stdout/stderr bytes; those stay private under the
+        # same containment rule as pytest output, because test output can
+        # include sensitive fixture values. The outcome is deterministic:
+        # stable nonzero exit, explicit timeout flag, empty failed cases.
+        return {
+            "ok": False,
+            "exit_code": _REGRESSION_TIMEOUT_EXIT_CODE,
+            "subprocess_started": True,
+            "fallback": "",
+            "test_files": list(_REGRESSION_PATTERNS),
+            "failed_cases": [],
+            "subprocess_timeout": True,
+        }
     code = completed.returncode
     data = {
         "ok": code == 0,
@@ -1272,7 +1305,14 @@ async def run_dev_regression() -> ControlOperationOutcome:
     side_effects = ControlSideEffectFacts(subprocess_started=started)
     result = {
         key: data[key]
-        for key in ("exit_code", "subprocess_started", "fallback", "test_files", "failed_cases")
+        for key in (
+            "exit_code",
+            "subprocess_started",
+            "fallback",
+            "test_files",
+            "failed_cases",
+            "subprocess_timeout",
+        )
         if key in data
     }
     if ok:
@@ -1284,7 +1324,14 @@ async def run_dev_regression() -> ControlOperationOutcome:
             metadata=ExecutionMetadata(operation, _elapsed_ms(start)),
         )
     if started:
-        error = ExecutionError("subprocess_error", str(data.get("error") or "regression subprocess failed"), False)
+        # Deterministic message only; the timeout flag on the result is the
+        # explicit indicator and no exception string or child output leaks.
+        message = (
+            "regression subprocess timed out"
+            if data.get("subprocess_timeout")
+            else "regression subprocess failed"
+        )
+        error = ExecutionError("subprocess_error", message, False)
     elif data.get("fallback") == "mock_smoke":
         error = ExecutionError("config_error", str(data.get("error") or "packaged mock-smoke regression failed"), False)
     else:

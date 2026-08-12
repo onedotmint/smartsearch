@@ -502,6 +502,36 @@ def test_v3_regression_source_checkout_failure_exposes_failed_cases(monkeypatch,
     assert "pytest" not in json.dumps(payload)
 
 
+def test_v3_regression_subprocess_timeout_envelope(monkeypatch, capsys):
+    """A timed-out source-checkout regression stays one parseable JSON document
+    with the stable SUBPROCESS_FAILED error and a deterministic result: nonzero
+    exit, explicit ``subprocess_timeout`` flag, empty failed cases. Partial
+    child output attached to TimeoutExpired never reaches the envelope."""
+    from smart_search import control_operations
+
+    def fake_run(cmd, **kwargs):
+        assert kwargs.get("stdout") is subprocess.PIPE
+        assert kwargs.get("stderr") is subprocess.PIPE
+        assert kwargs.get("timeout") == control_operations._REGRESSION_SUBPROCESS_TIMEOUT_SECONDS
+        raise subprocess.TimeoutExpired(
+            cmd, kwargs.get("timeout"), output=".....F partial\n", stderr="secret-fixture\n"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert main(["dev", "regression", "--format", "json"]) == 5
+    out = capsys.readouterr().out
+    payload = json.loads(out)  # one JSON document, no partial child output before it
+    assert payload["operation"] == "dev.regression"
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "SUBPROCESS_FAILED"
+    assert payload["side_effects"]["subprocess"]["started"] is True
+    assert payload["result"]["subprocess_timeout"] is True
+    assert payload["result"]["exit_code"] == control_operations._REGRESSION_TIMEOUT_EXIT_CODE
+    assert payload["result"]["failed_cases"] == []
+    assert "partial" not in json.dumps(payload)
+    assert "secret-fixture" not in json.dumps(payload)
+
+
 def _serve_stream_error(status: int, body: bytes) -> ThreadingHTTPServer:
     """Process-local localhost server that fails every POST."""
 

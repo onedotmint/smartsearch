@@ -318,7 +318,10 @@ def _project_result(operation: str, result: Mapping[str, Any]) -> dict[str, Any]
     if operation == "dev.smoke":
         return _smoke_result(result)
     if operation == "dev.regression":
-        return _pick(result, ("exit_code", "subprocess_started", "fallback", "test_files", "failed_cases"))
+        return _pick(
+            result,
+            ("exit_code", "subprocess_started", "fallback", "test_files", "failed_cases", "subprocess_timeout"),
+        )
     if operation in {"dev.skills.status", "dev.skills.update"}:
         return _skills_result(result, update=operation.endswith("update"))
     return dict(result)

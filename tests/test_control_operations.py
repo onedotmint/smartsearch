@@ -15,6 +15,7 @@ import asyncio
 import json
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -1757,6 +1758,100 @@ def test_extract_failed_test_cases_is_bounded():
     assert len(cases) == co._FAILED_CASE_LIMIT
     assert cases[0] == "tests/test_f.py::test_0"
     assert cases[-1] == f"tests/test_f.py::test_{co._FAILED_CASE_LIMIT - 1}"
+
+
+def test_regression_subprocess_timeout_deterministic_result(monkeypatch):
+    """A hung source-checkout child is bounded by the config-free subprocess
+    timeout. TimeoutExpired yields a deterministic structured result: stable
+    nonzero exit, explicit ``subprocess_timeout`` flag, empty failed cases, and
+    no leaked partial child output even when the exception carries captured
+    bytes/text."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(kwargs)
+        assert kwargs.get("stdout") is subprocess.PIPE
+        assert kwargs.get("stderr") is subprocess.PIPE
+        assert kwargs.get("timeout") == co._REGRESSION_SUBPROCESS_TIMEOUT_SECONDS
+        # subprocess.run attaches partially captured output to TimeoutExpired;
+        # the owner must ignore it under the containment rule.
+        raise subprocess.TimeoutExpired(
+            cmd,
+            kwargs.get("timeout"),
+            output=".....F partial pytest progress.....\n",
+            stderr="partial teardown with secret-fixture-value\n",
+        )
+
+    monkeypatch.setattr(co.subprocess, "run", fake_run)
+    data = co._execute_regression()
+    assert calls
+    assert data == {
+        "ok": False,
+        "exit_code": co._REGRESSION_TIMEOUT_EXIT_CODE,
+        "subprocess_started": True,
+        "fallback": "",
+        "test_files": list(co._REGRESSION_PATTERNS),
+        "failed_cases": [],
+        "subprocess_timeout": True,
+    }
+    assert "pytest" not in json.dumps(data)
+    assert "secret-fixture-value" not in json.dumps(data)
+
+    outcome = asyncio.run(co.run_dev_regression())
+    assert outcome.status is ControlOperationStatus.FAILED
+    assert outcome.error is not None and outcome.error.type == "subprocess_error"
+    assert outcome.side_effects.subprocess_started is True
+    assert outcome.result_dict["subprocess_timeout"] is True
+    assert outcome.result_dict["exit_code"] == co._REGRESSION_TIMEOUT_EXIT_CODE
+    assert outcome.result_dict["failed_cases"] == []
+    assert "pytest" not in json.dumps(outcome.result_dict)
+    assert "secret-fixture-value" not in json.dumps(outcome.result_dict)
+
+
+def test_regression_timeout_drops_captured_bytes(monkeypatch):
+    """Captured timeout bytes are private just like text-mode child output."""
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd,
+            kwargs.get("timeout"),
+            output=b"partial output api_key=leaked-bytes",
+            stderr=b"secret-fixture-bytes",
+        )
+
+    monkeypatch.setattr(co.subprocess, "run", fake_run)
+    data = co._execute_regression()
+    outcome = asyncio.run(co.run_dev_regression())
+
+    for rendered in (json.dumps(data), json.dumps(outcome.result_dict), outcome.error.message):
+        assert "leaked-bytes" not in rendered
+        assert "secret-fixture-bytes" not in rendered
+    assert data["subprocess_timeout"] is True
+    assert outcome.error.type == "subprocess_error"
+
+
+def test_regression_subprocess_timeout_real_hanging_child(monkeypatch):
+    """A real child that does not finish within the bound is killed and reaped
+    by subprocess.run; the owner returns the deterministic timeout result
+    instead of blocking indefinitely. Uses the real source-checkout branch with
+    a shrunken bound so the pytest child genuinely outlives it."""
+    monkeypatch.setattr(co, "_REGRESSION_SUBPROCESS_TIMEOUT_SECONDS", 1.0)
+    start = time.perf_counter()
+    data = co._execute_regression()
+    elapsed = time.perf_counter() - start
+    assert elapsed < 10.0, "the timeout must bound the real hanging child"
+    assert data["subprocess_timeout"] is True
+    assert data["ok"] is False
+    assert data["exit_code"] == co._REGRESSION_TIMEOUT_EXIT_CODE
+    assert data["subprocess_started"] is True
+    assert data["failed_cases"] == []
+    assert "pytest" not in json.dumps(data)
+
+    outcome = asyncio.run(co.run_dev_regression())
+    assert outcome.status is ControlOperationStatus.FAILED
+    assert outcome.error is not None and outcome.error.type == "subprocess_error"
+    assert outcome.result_dict["subprocess_timeout"] is True
+    assert outcome.result_dict["failed_cases"] == []
+
 
 
 # ---------------------------------------------------------------------------
