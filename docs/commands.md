@@ -141,7 +141,7 @@ smart-search fetch "https://example.com/source" --format markdown
 smart-search map "https://docs.example.com" --format json
 ```
 
-`fetch` is the page-level evidence boundary. `map` returns site or documentation structure candidates and does not replace fetching the pages that support claims. `fetch` and `map` accept only `--format json|markdown|content`; `--output`, `--force`, and the V1 `map` options (`--instructions`, `--max-depth`, `--max-breadth`, `--limit`, `--timeout`) are rejected before any owner work.
+`fetch` is the page-level evidence boundary. `map` returns site or documentation structure candidates and does not replace fetching the pages that support claims. `fetch` and `map` accept `--format json|markdown|content`; `map` additionally accepts `--instructions`, `--max-depth`, `--max-breadth`, and `--limit`. `--timeout`, `--output`, and `--force` are rejected before any owner work.
 
 ### Research Workflow
 

@@ -236,13 +236,13 @@ def test_cli_and_facade_parity(monkeypatch):
 
 def test_v2_map_v1_only_options_and_invalid_request_are_json_failures(monkeypatch):
     code, out, err = _run_main([
-        "map", "https://example.com", "--max-depth", "2",
+        "map", "https://example.com", "--timeout", "2",
     ])
     assert code == 2
     payload = json.loads(out)
     assert payload["operation"] == "site_discovery"
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
-    assert "max-depth" in payload["error"]["message"]
+    assert "timeout" in payload["error"]["message"]
 
     code, out, err = _run_main(["search", "   "])
     assert code == 2
@@ -253,7 +253,6 @@ def test_v2_map_v1_only_options_and_invalid_request_are_json_failures(monkeypatc
 
 def test_v2_explicit_default_v1_options_are_rejected_by_presence():
     cases = (
-        (["map", "https://example.com", "--max-depth", "1"], "max-depth"),
         (["search", "q", "--timeout", "90"], "timeout"),
         (["search", "q", "--providers", "auto"], "providers"),
     )
@@ -263,6 +262,56 @@ def test_v2_explicit_default_v1_options_are_rejected_by_presence():
         payload = json.loads(out)
         assert payload["error"]["code"] == "INVALID_ARGUMENT"
         assert option in payload["error"]["message"]
+
+
+def test_v2_map_restored_parameters_reach_owner_and_envelope(monkeypatch):
+    from smart_search import evidence_operations
+    from smart_search.execution_primitives import ExecutionOutcome, success_attempt
+
+    monkeypatch.setattr(evidence_operations, "_qualified_providers", lambda operation: ["tavily"])
+    captured: dict = {}
+
+    async def fake_map(url, instructions="", max_depth=1, max_breadth=20, limit=50, timeout=150):
+        captured.update(
+            url=url,
+            instructions=instructions,
+            max_depth=max_depth,
+            max_breadth=max_breadth,
+            limit=limit,
+            timeout=timeout,
+        )
+        return ExecutionOutcome(
+            value={
+                "ok": True,
+                "results": [
+                    "https://example.com/api",
+                    {"url": "https://example.com/guide", "title": "Guide"},
+                ],
+            },
+            attempts=(success_attempt("site_map", "tavily", elapsed_ms=1.0, result_count=2),),
+        )
+
+    monkeypatch.setattr(evidence_operations, "_execute_site_map", fake_map)
+
+    code, out, err = _run_main([
+        "map", "https://example.com", "--instructions", "deep", "--max-depth", "3",
+        "--format", "json",
+    ])
+    assert code == 0, (out, err)
+    payload = json.loads(out)
+    assert payload["operation"] == "site_discovery"
+    assert payload["status"] == "complete"
+    assert payload["result"]["total"] == 2
+    assert captured["instructions"] == "deep"
+    assert captured["max_depth"] == 3
+
+    # defaults are forwarded when the tuning options are omitted
+    code, out, err = _run_main(["map", "https://example.com"])
+    assert code == 0, (out, err)
+    assert captured["instructions"] == ""
+    assert captured["max_depth"] == 1
+    assert captured["max_breadth"] == 20
+    assert captured["limit"] == 50
 
 
 def test_v2_option_detection_stops_at_argv_delimiter(monkeypatch):

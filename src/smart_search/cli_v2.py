@@ -37,7 +37,7 @@ _V2_DISALLOWED_NONEMPTY: dict[str, frozenset[str]] = {
         "output", "force", "prompt_dir", "search_prompt_file", "fetch_prompt_file", "research_prompt_file",
     }),
     "map": frozenset({
-        "instructions", "max_depth", "max_breadth", "limit", "timeout", "output", "force",
+        "timeout", "output", "force",
         "prompt_dir", "search_prompt_file", "fetch_prompt_file", "research_prompt_file",
     }),
     "capabilities": frozenset({
@@ -149,13 +149,7 @@ def _reject_v1_only(args: Any, *, argv: list[str] | None = None) -> str | None:
         "research_prompt_file": "",
     }
     if command == "map":
-        default_ok.update({
-            "instructions": "",
-            "max_depth": 1,
-            "max_breadth": 20,
-            "limit": 50,
-            "timeout": 150,
-        })
+        default_ok.update({"timeout": 150})
     for name in disallowed:
         if not hasattr(args, name) or name == "response_mode":
             continue
