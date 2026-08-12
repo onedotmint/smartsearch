@@ -322,6 +322,22 @@ def test_v3_diagnose_smoke_regression_and_skills(monkeypatch, capsys):
     assert skills_update["side_effects"]["filesystem"]["write_committed"] is True
 
 
+def test_v3_skills_mixed_standalone_selector_invalid_argument(capsys):
+    # skip/none/all are standalone-only selectors; a mix must fail with a
+    # deterministic INVALID_ARGUMENT envelope before any write is attempted.
+    for targets in ("skip,codex", "codex,skip", "all,codex"):
+        assert main(["dev", "skills", "update", "--targets", targets]) == 2
+        payload = _payload(capsys)
+        assert payload["schema_version"] == "3"
+        assert payload["operation"] == "dev.skills.update"
+        assert payload["status"] == "failed"
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "INVALID_ARGUMENT"
+        assert "standalone" in payload["error"]["message"]
+        assert payload["side_effects"]["filesystem"]["write_attempted"] is False
+        assert payload["side_effects"]["filesystem"]["write_committed"] is False
+
+
 def test_v3_rejects_excluded_and_noncanonical_commands(capsys):
     # Canonical v3 namespaces with removed leaves/aliases stay v3-family.
     cases = (

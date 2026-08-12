@@ -1446,9 +1446,9 @@ async def run_dev_skills_update(
     failed_count = int(data.get("failed_count") or 0)
     degraded = bool(installed_count and failed_count)
     error_type = str(data.get("error_type") or "")
-    attempted = bool(error_type != "parameter_error")
+    attempted = bool(data.get("write_attempted", True))
     filesystem_error = error_type in {"filesystem_error", "file_system_error"} or bool(
-        attempted and not data.get("ok") and not degraded and failed_count > 0
+        not data.get("ok") and not degraded and failed_count > 0
     )
     side_effects = ControlSideEffectFacts(
         filesystem=ControlMutationFacts(

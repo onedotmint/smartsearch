@@ -1992,6 +1992,43 @@ def test_skills_update_invalid_target_no_write(monkeypatch):
     assert result.side_effects.filesystem.write_attempted is False
 
 
+def test_skills_update_symlink_preflight_reports_no_write(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text("skill")
+    victim = tmp_path / "victim.txt"
+    victim.write_text("victim")
+    dest = tmp_path / ".agents" / "skills" / "smart-search-cli"
+    dest.mkdir(parents=True)
+    (dest / "SKILL.md").symlink_to(victim)
+
+    result = asyncio.run(
+        co.run_dev_skills_update(
+            targets="generic",
+            project_root=tmp_path,
+        )
+    )
+    assert result.status is ControlOperationStatus.FAILED
+    assert result.error.type == "filesystem_error"
+    assert result.side_effects.filesystem.write_attempted is False
+    assert result.side_effects.filesystem.write_committed is False
+    assert victim.read_text() == "victim"
+
+
+def test_skills_update_mixed_standalone_selector_parameter_error():
+    # Real parser: skip/none/all are standalone-only; a mix raises
+    # SkillInstallError which the owner maps to parameter_error.
+    result = asyncio.run(co.run_dev_skills_update(targets="skip,codex"))
+    assert result.status is ControlOperationStatus.FAILED
+    assert result.error.type == "parameter_error"
+    assert result.side_effects.filesystem.write_attempted is False
+    assert result.side_effects.filesystem.write_committed is False
+    result = asyncio.run(co.run_dev_skills_update(targets="all,codex"))
+    assert result.status is ControlOperationStatus.FAILED
+    assert result.error.type == "parameter_error"
+    assert result.side_effects.filesystem.write_attempted is False
+
+
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
