@@ -30,7 +30,7 @@ V2_CAPABILITY_OPERATION_IDS = (
 )
 # Envelope-only meta operation for identified v2 capabilities inspection.
 # Not a Provider capability and never valid in Research Plan / routing /
-# attempt / degradation / gap / trace capability-bearing fields.
+# attempt / degradation / gap capability-bearing fields.
 V2_META_OPERATION_IDS = (
     "capability_status",
 )
@@ -257,21 +257,6 @@ class V2Meta:
 
 
 @dataclass(frozen=True)
-class V2TraceEvent:
-    operation: str = ""
-    capability: str = ""
-    provider: str = ""
-    status: str = ""
-    error_code: str = ""
-    evidence_id: str = ""
-    reason_codes: tuple[str, ...] = ()
-    elapsed_ms: int = 0
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "reason_codes", _tuple_values(self.reason_codes, "trace.reason_codes"))
-
-
-@dataclass(frozen=True)
 class V2Envelope:
     status: V2Status | str
     command: str
@@ -474,26 +459,10 @@ _defs["degradation"] = _strict_object(("code", "capability", "message"), {
     "code": _NONBLANK, "capability": {"oneOf": [_CAPABILITY, {"const": ""}]},
     "message": _NONBLANK,
 })
-_TRACE_FIELDS = (
-    "operation", "capability", "provider", "status", "error_code",
-    "evidence_id", "reason_codes", "elapsed_ms",
-)
-_defs["trace_event"] = _strict_object(_TRACE_FIELDS, {
-    "operation": {"oneOf": [_CAPABILITY, {"const": ""}]},
-    "capability": {"oneOf": [_CAPABILITY, {"const": ""}]},
-    "provider": {"type": "string"}, "status": {"type": "string"},
-    "error_code": {"type": "string"}, "evidence_id": {"type": "string"},
-    "reason_codes": {"type": "array", "items": {"type": "string"}},
-    "elapsed_ms": {"type": "integer", "minimum": 0},
-})
-_defs["trace"] = _strict_object(("events",), {
-    "events": {"type": "array", "items": {"$ref": "#/$defs/trace_event"}},
-})
 _defs["meta"] = _strict_object(("request_id", "duration_ms", "warnings", "deprecations"), {
     "request_id": _NONBLANK, "duration_ms": {"type": "integer", "minimum": 0},
     "warnings": {"type": "array", "items": {"type": "string"}},
     "deprecations": {"type": "array", "items": {"type": "string"}},
-    "trace": {"$ref": "#/$defs/trace"},
 })
 
 
@@ -503,7 +472,7 @@ def _nonblank(value: Any, name: str) -> None:
 
 
 def _capability(value: Any, name: str, *, allow_empty: bool = False) -> None:
-    """Validate a capability-bearing field (routing/attempt/gap/degradation/trace)."""
+    """Validate a capability-bearing field (routing/attempt/gap/degradation)."""
     if allow_empty and value == "":
         return
     if value not in V2_CAPABILITY_OPERATION_IDS:
@@ -743,40 +712,8 @@ def _project(value: Any, names: Sequence[str]) -> dict[str, Any]:
     return {name: _thaw(getattr(value, name)) for name in names}
 
 
-_TRACE_DEFAULTS = MappingProxyType({
-    "operation": "", "capability": "", "provider": "", "status": "",
-    "error_code": "", "evidence_id": "", "reason_codes": (), "elapsed_ms": 0,
-})
-
-
-def _trace_events(trace: Mapping[str, Any] | Iterable[Any]) -> Iterable[Any]:
-    return trace.get("events", ()) if isinstance(trace, Mapping) else trace
-
-
-def _whitelist_trace(trace: Mapping[str, Any] | Iterable[Any]) -> dict[str, Any]:
-    events = []
-    for raw in _trace_events(trace):
-        source = _project(raw, _TRACE_FIELDS) if isinstance(raw, V2TraceEvent) else raw
-        if not isinstance(source, Mapping):
-            raise V2ContractError("trace events must be mappings or V2TraceEvent values")
-        event = {name: _thaw(source.get(name, _TRACE_DEFAULTS[name])) for name in _TRACE_FIELDS}
-        if not isinstance(event["reason_codes"], list):
-            raise V2ContractError("trace reason_codes must be a sequence")
-        events.append(event)
-    return {"events": events}
-
-
-def safe_trace(
-    trace: Mapping[str, Any] | Iterable[Any], *, secrets: Iterable[str] | str = (),
-) -> dict[str, Any]:
-    """Whitelist, validate, and recursively redact trace fields."""
-    sanitized = sanitize_data(_whitelist_trace(trace), _secret_values(secrets))
-    _validate_trace_dict(sanitized)
-    return sanitized
-
-
 def serialize_result(
-    result: V2Envelope, *, trace: Mapping[str, Any] | Iterable[Any] | None = None,
+    result: V2Envelope, *,
     secrets: Iterable[str] | str = (),
 ) -> dict[str, Any]:
     """Return a fresh, deterministic, recursively redacted v2 JSON object."""
@@ -788,8 +725,6 @@ def serialize_result(
         "gaps": [_project(item, ("code", "message", "capability", "resource")) for item in result.evidence.gaps],
     }
     meta = _project(result.meta, ("request_id", "duration_ms", "warnings", "deprecations"))
-    if trace is not None:
-        meta["trace"] = _whitelist_trace(trace)
     error = None if result.error is None else {
         "code": _value(result.error.code), "message": result.error.message,
         "retryable": result.error.retryable, "details": _thaw(result.error.details),
@@ -828,22 +763,6 @@ def _array(value: Any, name: str) -> list[Any]:
     if not isinstance(value, list):
         raise V2ContractError(f"{name} must be an array")
     return value
-
-
-def _validate_trace_dict(trace: Any) -> None:
-    _exact_keys(trace, ("events",), "meta.trace")
-    for event in _array(trace["events"], "trace.events"):
-        _exact_keys(event, _TRACE_FIELDS, "trace event")
-        for name in _TRACE_FIELDS[:-2]:
-            if not isinstance(event[name], str):
-                raise V2ContractError(f"trace.{name} must be a string")
-        if not isinstance(event["reason_codes"], list) or not all(
-            isinstance(item, str) for item in event["reason_codes"]
-        ):
-            raise V2ContractError("trace.reason_codes must be a string array")
-        _exact_int(event["elapsed_ms"], "trace.elapsed_ms")
-        _capability(event["operation"], "trace.operation", allow_empty=True)
-        _capability(event["capability"], "trace.capability", allow_empty=True)
 
 
 def _from_raw(raw: dict[str, Any]) -> V2Envelope:
@@ -895,14 +814,12 @@ def _from_raw(raw: dict[str, Any]) -> V2Envelope:
         error = V2Error(**raw["error"])
     meta_raw = raw["meta"]
     meta_fields = ("request_id", "duration_ms", "warnings", "deprecations")
-    _exact_keys(meta_raw, meta_fields, "meta", ("trace",))
+    _exact_keys(meta_raw, meta_fields, "meta")
     meta = V2Meta(
         meta_raw["request_id"], meta_raw["duration_ms"],
         tuple(_array(meta_raw["warnings"], "meta.warnings")),
         tuple(_array(meta_raw["deprecations"], "meta.deprecations")),
     )
-    if "trace" in meta_raw:
-        _validate_trace_dict(meta_raw["trace"])
     if not isinstance(raw["result"], dict):
         raise V2ContractError("result must be an object")
     envelope = V2Envelope(
@@ -1015,13 +932,13 @@ __all__ = [
     "V2Attempt", "V2AttemptStatus", "V2Candidate", "V2Citation",
     "V2ContractError", "V2Degradation", "V2Envelope", "V2Error",
     "V2ErrorCode", "V2Evidence", "V2EvidenceItem", "V2Gap", "V2Meta",
-    "V2Routing", "V2Status", "V2TraceEvent", "V2_CAPABILITY_OPERATION_IDS",
+    "V2Routing", "V2Status", "V2_CAPABILITY_OPERATION_IDS",
     "V2_ENVELOPE_JSON_SCHEMA", "V2_ENVELOPE_OPERATION_IDS",
     "V2_ERROR_REGISTRY", "V2_EXIT_CONFIGURATION", "V2_EXIT_DEGRADED",
     "V2_EXIT_INTERNAL", "V2_EXIT_INVALID_ARGUMENT", "V2_EXIT_SUCCESS",
     "V2_EXIT_UPSTREAM", "V2_META_OPERATION_CAPABILITY_STATUS",
     "V2_META_OPERATION_IDS", "V2_OPERATION_IDS", "V2_SCHEMA_VERSION",
     "V2_TOP_LEVEL_FIELDS", "capability_status_result", "exit_code_for",
-    "parser_error_result", "safe_trace", "serialize_result",
+    "parser_error_result", "serialize_result",
     "validate_envelope_dict", "validate_result",
 ]

@@ -71,7 +71,7 @@ smart-search fetch "https://example.com/page"
 - V2 `search` returns discovery candidates only; it never calls legacy `main_search` or accepts `--response-mode`.
 - Host agents write the final answer from fetched `evidence.items`; discovery candidates are not claim-level proof.
 - `capabilities` uses envelope-only meta operation `capability_status` (local inspection, no Provider network).
-- `--fail-on-degraded` is available for v2 and v3; `--trace` remains v2-only.
+- `--fail-on-degraded` is available for v2 and v3.
 
 ### V3 control-plane JSON API
 

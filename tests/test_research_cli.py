@@ -295,7 +295,6 @@ def test_research_run_accepts_budget_and_profile(mock_evidence_owners, monkeypat
         (["research", "run", "topic", "--search-prompt-file", "s.md"], "prompt files"),
         (["research", "run", "topic", "--fetch-prompt-file", "f.md"], "prompt files"),
         (["research", "run", "topic", "--research-prompt-file", "r.md"], "prompt files"),
-        (["--trace", "research", "run", "topic"], "trace"),
     ],
 )
 def test_research_run_invalid_options_fail_before_owner(

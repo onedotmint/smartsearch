@@ -45,7 +45,6 @@ _RESEARCH_RUN_FORBIDDEN_OPTIONS: Mapping[str, str] = {
     "search_prompt_file": "research.run does not load prompt files",
     "fetch_prompt_file": "research.run does not load prompt files",
     "research_prompt_file": "research.run does not load prompt files",
-    "trace": "research.run has no trace events",
 }
 
 # Defaults for every forbidden option name; a programmatic dispatch call that
@@ -60,7 +59,6 @@ _DEFAULTS: Mapping[str, Any] = {
     "search_prompt_file": "",
     "fetch_prompt_file": "",
     "research_prompt_file": "",
-    "trace": False,
 }
 
 

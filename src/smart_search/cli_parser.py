@@ -73,11 +73,6 @@ def build_parser(*, raise_on_error: bool = False) -> argparse.ArgumentParser:
         action="store_true",
         help="Return exit code 6 for degraded v2 or v3 results without changing the envelope.",
     )
-    parser.add_argument(
-        "--trace",
-        action="store_true",
-        help="Include redacted non-stable v2 trace events in meta.trace.",
-    )
 
     class _SubParser(SmartSearchArgumentParser):
         def __init__(self, *args, **kwargs):

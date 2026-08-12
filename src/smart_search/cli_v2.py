@@ -224,8 +224,7 @@ async def dispatch(args: Any, *, argv: list[str] | None = None) -> int:
                 message=f"unsupported v2 command: {command}",
             )
 
-        trace = {"events": []} if getattr(args, "trace", False) else None
-        payload = serialize_result(envelope, trace=trace)
+        payload = serialize_result(envelope)
     except CanonicalOperationError as exc:
         return emit_parser_error(
             command=command,

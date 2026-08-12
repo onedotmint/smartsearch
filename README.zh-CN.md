@@ -71,7 +71,7 @@ smart-search fetch "https://example.com/page"
 - v2 `search` 只返回 discovery candidates；不会调用 legacy `main_search`，也不接受 `--response-mode`。
 - Host Agent 基于 fetched `evidence.items` 写最终回答；discovery candidates 不是 claim-level 证据。
 - `capabilities` 使用 envelope-only 元操作 `capability_status`（本地只读检查，不发 Provider 网络请求）。
-- `--fail-on-degraded` 可用于 v2 和 v3；`--trace` 仍仅用于 v2。
+- `--fail-on-degraded` 可用于 v2 和 v3。
 
 ### V3 控制面 JSON API
 

@@ -27,7 +27,6 @@ Root flags:
 | Option | Meaning |
 | --- | --- |
 | `--fail-on-degraded` | v2 and v3 only: exit `6` for degraded envelopes without changing JSON. |
-| `--trace` | v2 only: attach redacted non-stable `meta.trace` events. |
 
 Supported V2 Core commands:
 
@@ -82,8 +81,8 @@ side_effects, error, meta
 - `status` is `complete`, `degraded`, or `failed`. Empty successful lists and successful no-op removals are `complete`; `degraded` means the requested operation completed with observable partial outcomes; `failed` includes a structured error.
 - `network` reports declared policy/scope and actual `attempted` state. `side_effects` separately reports config/filesystem reads and write attempt/commit state plus subprocess start. Do not infer I/O from status.
 - V3 error codes are `INVALID_ARGUMENT`, `CONFIGURATION_ERROR`, `AUTHENTICATION_FAILED`, `UPSTREAM_TIMEOUT`, `PROVIDER_UNAVAILABLE`, `FILE_SYSTEM_ERROR`, `SUBPROCESS_FAILED`, and `INTERNAL_ERROR`. `--fail-on-degraded` changes only the process exit to `6`.
-- V3 output defaults to JSON, the only stable machine contract. `--format markdown|content` selects one non-stable human presentation document of the same validated envelope. V3 rejects `--output`, `--force`, prompt overrides, `--trace`, aliases, evidence commands, exact Provider direct commands, and all `experimental` leaves before an owner runs.
-- Values, error details, URLs, and route credentials are recursively redacted. V3 does not expose v2 `evidence`, `routing`, capability-attempt fields, or trace types.
+- V3 output defaults to JSON, the only stable machine contract. `--format markdown|content` selects one non-stable human presentation document of the same validated envelope. V3 rejects `--output`, `--force`, prompt overrides, aliases, evidence commands, exact Provider direct commands, and all `experimental` leaves before an owner runs.
+- Values, error details, URLs, and route credentials are recursively redacted. V3 does not expose v2 `evidence`, `routing`, or capability-attempt fields.
 
 Removed legacy control spellings fail with the V3 family's strict `INVALID_ARGUMENT` envelope and name the canonical replacement.
 
@@ -133,7 +132,7 @@ smart-search search "query" --format markdown
 smart-search search "query" --format content
 ```
 
-`search` is the fast live entrypoint and accepts only `--format json|markdown|content` (plus the root `--trace` / `--fail-on-degraded` flags). V1-era options (`--validation`, `--fallback`, `--stream`, `--no-stream`, `--timeout`, `--extra-sources`, `--platform`, `--model`, `--providers`, `--profile`, `--response-mode`, `--output`, `--force`) are rejected before network I/O with the V2 strict `INVALID_ARGUMENT` error. V2 search returns discovery candidates and never writes an answer itself.
+`search` is the fast live entrypoint and accepts only `--format json|markdown|content` (plus the root `--fail-on-degraded` flag). V1-era options (`--validation`, `--fallback`, `--stream`, `--no-stream`, `--timeout`, `--extra-sources`, `--platform`, `--model`, `--providers`, `--profile`, `--response-mode`, `--output`, `--force`) are rejected before network I/O with the V2 strict `INVALID_ARGUMENT` error. V2 search returns discovery candidates and never writes an answer itself.
 
 ### Fetch and map
 

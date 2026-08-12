@@ -411,25 +411,6 @@ def test_v1_and_v3_regression_use_one_shared_owner_per_invocation(monkeypatch, c
     assert calls == ["regression"]
 
 
-def test_v3_rejects_root_trace_before_owner(monkeypatch, capsys):
-    from smart_search import control_operations
-
-    # The removed v1 config wrapper is gone; the typed owner must also never
-    # be reached for a v3 command carrying the root-only --trace flag.
-    assert not hasattr(control_executors, "config_list")
-    monkeypatch.setattr(
-        control_operations,
-        "run_config_list",
-        lambda **_: (_ for _ in ()).throw(AssertionError("owner called")),
-    )
-    code = main(["--trace", "config", "list"])
-    assert code == 2
-    payload = _payload(capsys)
-    assert payload["error"]["code"] == "INVALID_ARGUMENT"
-    assert "trace" in payload["error"]["message"]
-    assert payload["side_effects"]["config"]["read"] is False
-
-
 def test_v3_packaged_regression_fallback_works_inside_event_loop(monkeypatch, capsys):
     from smart_search import control_operations
 

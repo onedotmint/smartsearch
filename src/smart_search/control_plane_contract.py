@@ -176,7 +176,7 @@ def operation_for_argv(argv: list[str] | None) -> V3OperationDescriptor | None:
     index = 0
     while index < len(args):
         token = args[index]
-        if token in {"--fail-on-degraded", "--trace"}:
+        if token in {"--fail-on-degraded"}:
             index += 1
             continue
         break

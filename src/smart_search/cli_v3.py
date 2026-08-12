@@ -80,7 +80,7 @@ def _raw_command_label(argv: list[str] | None, args: Any) -> str | None:
     raw = list(argv or ())
     while index < len(raw):
         token = raw[index]
-        if token in {"--fail-on-degraded", "--trace"}:
+        if token in {"--fail-on-degraded"}:
             index += 1
             continue
         if token.startswith("-") and token not in {"--"}:
@@ -110,8 +110,6 @@ def _reject(args: Any, argv: list[str] | None) -> tuple[V3OperationDescriptor | 
 
     options = _argv_options(argv)
     supplied = set(options)
-    if "trace" in supplied or bool(getattr(args, "trace", False)):
-        return descriptor, "v3 does not define trace output; omit --trace"
     if "format" in supplied:
         value = options.get("format")
         if value not in ("json", "markdown", "content"):

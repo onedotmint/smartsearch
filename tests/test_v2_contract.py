@@ -32,7 +32,6 @@ from smart_search.v2_contract import (
     V2Meta,
     V2Routing,
     V2Status,
-    V2TraceEvent,
     V2_CAPABILITY_OPERATION_IDS,
     V2_ENVELOPE_JSON_SCHEMA,
     V2_ENVELOPE_OPERATION_IDS,
@@ -44,7 +43,6 @@ from smart_search.v2_contract import (
     capability_status_result,
     exit_code_for,
     parser_error_result,
-    safe_trace,
     serialize_result,
     validate_envelope_dict,
     validate_result,
@@ -157,7 +155,7 @@ def test_schema_is_draft_2020_12_and_has_strict_shapes():
     assert V2_ENVELOPE_JSON_SCHEMA["additionalProperties"] is False
     for name in (
         "error", "candidate", "evidence_item", "citation", "gap", "evidence",
-        "routing", "attempt", "degradation", "meta", "trace", "trace_event",
+        "routing", "attempt", "degradation", "meta",
     ):
         assert V2_ENVELOPE_JSON_SCHEMA["$defs"][name]["additionalProperties"] is False
 
@@ -334,7 +332,6 @@ def test_ok_is_derived_and_model_is_recursively_immutable(complete_results):
     [
         lambda: V2Meta("req", 0, warnings="warning"),
         lambda: V2Routing(reason_codes="reason"),
-        lambda: V2TraceEvent(reason_codes="reason"),
         lambda: V2Envelope(
             V2Status.COMPLETE, "search", "source_discovery", {},
             V2Evidence(), V2Routing(), attempts="attempt", degradation=(),
@@ -417,69 +414,11 @@ def test_attempt_state_invariants(attempt):
         validate_result(envelope(attempts=(attempt,)))
 
 
-def test_trace_is_opt_in_whitelisted_and_recursively_redacted(complete_empty):
-    secret = "super-secret-value"
-    trace = {"events": [{
-        "operation": "source_discovery",
-        "capability": "source_discovery",
-        "provider": "Bearer token-123 Basic basic-456",
-        "status": f"api_key={secret}",
-        "error_code": "",
-        "evidence_id": "ev-1",
-        "reason_codes": [f"https://user:pass@example.com/a?api_key={secret}#token={secret}"],
-        "elapsed_ms": 1,
-        "extra": {"authorization": secret},
-        "request_body": secret,
-        "response_body": secret,
-        "embedding": [0.1],
-        "config": {"password": secret},
-    }]}
-    without_trace = serialize_result(complete_empty)
-    assert "trace" not in without_trace["meta"]
-    output = serialize_result(complete_empty, trace=trace, secrets=(secret,))
-    event = output["meta"]["trace"]["events"][0]
-    assert tuple(event) == (
-        "operation", "capability", "provider", "status", "error_code",
-        "evidence_id", "reason_codes", "elapsed_ms",
-    )
-    assert not {"extra", "request_body", "response_body", "embedding", "config"} & set(event)
-    rendered = json.dumps(output)
-    assert secret not in rendered
-    assert "token-123" not in rendered
-    assert "basic-456" not in rendered
-    assert "user:pass" not in rendered
-    assert "%5BREDACTED%5D" in rendered
-
-
-def test_safe_trace_accepts_typed_events_and_returns_fresh_data():
-    event = V2TraceEvent(operation="content_fetch", capability="content_fetch", provider="jina", status="ok", elapsed_ms=3)
-    first = safe_trace((event,))
-    first["events"][0]["provider"] = "changed"
-    assert safe_trace((event,))["events"][0]["provider"] == "jina"
-
-
-@pytest.mark.parametrize(
-    "event",
-    [
-        {"operation": "legacy_capability"},
-        {"operation": "source_discovery", "elapsed_ms": -1},
-        {"operation": 3},
-        {"operation": "source_discovery", "reason_codes": "not-an-array"},
-    ],
-)
-def test_safe_trace_rejects_schema_invalid_whitelisted_values(event):
-    with pytest.raises(V2ContractError):
-        safe_trace({"events": [event]})
-
-
 def test_explicit_secret_inputs_are_snapshotted_before_recursive_redaction(complete_empty):
     secret = "opaque-secret-value"
     model = replace(complete_empty, result={"note": secret})
     for secrets in ((item for item in (secret,)), secret, [secret]):
         assert serialize_result(model, secrets=secrets)["result"]["note"] == "[REDACTED]"
-    for secrets in ((item for item in (secret,)), secret, [secret]):
-        trace = safe_trace({"events": [{"status": secret}]}, secrets=secrets)
-        assert trace["events"][0]["status"] == "[REDACTED]"
 
 
 def test_final_boundary_redacts_result_error_details_and_meta():
@@ -787,12 +726,6 @@ def test_capability_status_forbidden_in_capability_bearing_fields():
         validate_result(envelope(
             evidence=V2Evidence(gaps=(V2Gap("g", "msg", V2_META_OPERATION_CAPABILITY_STATUS),)),
         ))
-    with pytest.raises(V2ContractError):
-        safe_trace([{"operation": V2_META_OPERATION_CAPABILITY_STATUS, "capability": "", "provider": "",
-                     "status": "", "error_code": "", "evidence_id": "", "reason_codes": [], "elapsed_ms": 0}])
-    with pytest.raises(V2ContractError):
-        safe_trace([{"operation": "", "capability": V2_META_OPERATION_CAPABILITY_STATUS, "provider": "",
-                     "status": "", "error_code": "", "evidence_id": "", "reason_codes": [], "elapsed_ms": 0}])
 
 
 def test_identified_capabilities_parser_error_keeps_capability_status_operation():
