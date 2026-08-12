@@ -14,6 +14,7 @@ import pytest
 
 from smart_search import operation_runtime, provider_fetch_commands, provider_search_commands
 from smart_search.providers.base import ProviderError
+from smart_search.runtime_cache import RequestContext, request_scope
 
 
 class _FakeResponseClient:
@@ -168,13 +169,53 @@ async def test_tavily_extract_empty_body_is_none_not_success_string(monkeypatch)
 async def test_tavily_map_http_timeout_schema_and_empty_classification(monkeypatch):
     monkeypatch.setenv("TAVILY_API_KEY", "tavily-secret")
 
-    class FakeAsyncClient:
-        response = None
-        exception = None
-        calls = []
+    http_client = _FakeResponseClient(exception=_http_error(503, "https://api.tavily.com/map"))
+    _install_request_client(monkeypatch, provider_fetch_commands, http_client)
+    http_result = await provider_fetch_commands.call_tavily_map("https://example.com")
+    assert http_result["ok"] is False
+    assert http_result["error_type"] == "network_error"
+    assert "results" not in http_result or http_result.get("results") in (None, [])
 
-        def __init__(self, timeout):
-            self.timeout = timeout
+    timeout_client = _FakeResponseClient(exception=httpx.TimeoutException("slow"))
+    _install_request_client(monkeypatch, provider_fetch_commands, timeout_client)
+    timeout_result = await provider_fetch_commands.call_tavily_map("https://example.com")
+    assert timeout_result["ok"] is False
+    assert timeout_result["error_type"] == "timeout"
+
+    schema_client = _FakeResponseClient(
+        response=httpx.Response(
+            200,
+            json={"results": "nope"},
+            request=httpx.Request("POST", "https://api.tavily.com/map"),
+        )
+    )
+    _install_request_client(monkeypatch, provider_fetch_commands, schema_client)
+    schema_result = await provider_fetch_commands.call_tavily_map("https://example.com")
+    assert schema_result["ok"] is False
+    assert schema_result["error_type"] == "parse_error"
+
+    empty_client = _FakeResponseClient(
+        response=httpx.Response(
+            200,
+            json={"base_url": "https://example.com", "results": [], "response_time": 0.1},
+            request=httpx.Request("POST", "https://api.tavily.com/map"),
+        )
+    )
+    _install_request_client(monkeypatch, provider_fetch_commands, empty_client)
+    empty_result = await provider_fetch_commands.call_tavily_map("https://example.com")
+    assert empty_result["ok"] is False
+    assert empty_result["error_type"] == "empty"
+    assert empty_result["results"] == []
+    assert empty_result["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_tavily_map_uses_shared_client_and_clamps_timeout_to_deadline(monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-secret")
+
+    class RecordingClient:
+        def __init__(self):
+            self.posts = []
 
         async def __aenter__(self):
             return self
@@ -182,47 +223,34 @@ async def test_tavily_map_http_timeout_schema_and_empty_classification(monkeypat
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
-        async def post(self, url, headers=None, json=None):
-            self.__class__.calls.append({"url": url, "headers": headers or {}, "json": json or {}})
-            if self.__class__.exception is not None:
-                raise self.__class__.exception
-            return self.__class__.response
+        async def post(self, url, headers=None, json=None, **kwargs):
+            self.posts.append({"url": url, "headers": headers or {}, "json": json or {}, "kwargs": kwargs})
+            return httpx.Response(
+                200,
+                json={"base_url": "https://example.com", "results": [], "response_time": 0.1},
+                request=httpx.Request("POST", url),
+            )
 
-    monkeypatch.setattr(provider_fetch_commands.httpx, "AsyncClient", FakeAsyncClient)
-
-    FakeAsyncClient.exception = _http_error(503, "https://api.tavily.com/map")
-    FakeAsyncClient.response = None
-    FakeAsyncClient.calls = []
-    http_result = await provider_fetch_commands.call_tavily_map("https://example.com")
-    assert http_result["ok"] is False
-    assert http_result["error_type"] == "network_error"
-    assert "results" not in http_result or http_result.get("results") in (None, [])
-
-    FakeAsyncClient.exception = httpx.TimeoutException("slow")
-    timeout_result = await provider_fetch_commands.call_tavily_map("https://example.com")
-    assert timeout_result["ok"] is False
-    assert timeout_result["error_type"] == "timeout"
-
-    FakeAsyncClient.exception = None
-    FakeAsyncClient.response = httpx.Response(
-        200,
-        json={"results": "nope"},
-        request=httpx.Request("POST", "https://api.tavily.com/map"),
+    client = RecordingClient()
+    ctx = await RequestContext.create(
+        command="map",
+        timeout_seconds=5.0,
+        client_factory=lambda **kwargs: client,
+        clock=lambda: 1000.0,
     )
-    schema_result = await provider_fetch_commands.call_tavily_map("https://example.com")
-    assert schema_result["ok"] is False
-    assert schema_result["error_type"] == "parse_error"
+    with request_scope(ctx):
+        result = await provider_fetch_commands.call_tavily_map("https://example.com", timeout=150)
 
-    FakeAsyncClient.response = httpx.Response(
-        200,
-        json={"base_url": "https://example.com", "results": [], "response_time": 0.1},
-        request=httpx.Request("POST", "https://api.tavily.com/map"),
-    )
-    empty_result = await provider_fetch_commands.call_tavily_map("https://example.com")
-    assert empty_result["ok"] is False
-    assert empty_result["error_type"] == "empty"
-    assert empty_result["results"] == []
-    assert empty_result["retryable"] is False
+    # Empty map stays an empty result, not a transport error.
+    assert result["ok"] is False
+    assert result["error_type"] == "empty"
+    # The request must flow through the context-bound shared client.
+    assert client.posts, "call_tavily_map must issue the request through the shared client"
+    sent = client.posts[0]
+    assert sent["url"].endswith("/map")
+    # Raw timeout (150 + 10 = 160) is clamped to the 5s command deadline.
+    assert sent["kwargs"].get("timeout") == pytest.approx(5.0)
+    assert sent["kwargs"]["timeout"] < 160.0
 
 
 @pytest.mark.asyncio

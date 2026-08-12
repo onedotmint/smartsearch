@@ -448,6 +448,9 @@ async def request_client(context: RequestContext | None = None, **client_kwargs:
      * 操作：
      * 1) 有 context 时校验 event loop 并返回共享 client，不负责关闭。
      * 2) 无 context 时创建并关闭本次调用的 AsyncClient。
+     * 3) client_kwargs（如 timeout）只在无 context 构造独立 client 时生效；
+     *    有 context 时被忽略，此时每次请求的 deadline 超时应通过
+     *    request_timeout_kwargs 传入，而非依赖 client_kwargs。
      * ================================================================================
      */
     """

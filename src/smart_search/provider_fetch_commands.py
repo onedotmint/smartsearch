@@ -232,12 +232,16 @@ async def call_tavily_map(
         if instructions:
             body["instructions"] = instructions
 
-        # 3.2 发起请求并校验结果结构。
-        async with httpx.AsyncClient(timeout=float(timeout + 10)) as client:
+        # 3.2 发起请求并校验结果结构（复用共享 deadline-aware client）。
+        endpoint = f"{config.tavily_api_url.rstrip('/')}/map"
+        headers = {"Authorization": f"Bearer {config.tavily_api_key}", "Content-Type": "application/json"}
+        ctx = current_context()
+        async with request_client(ctx, timeout=float(timeout + 10)) as client:
             response = await client.post(
-                f"{config.tavily_api_url.rstrip('/')}/map",
-                headers={"Authorization": f"Bearer {config.tavily_api_key}", "Content-Type": "application/json"},
+                endpoint,
+                headers=headers,
                 json=body,
+                **request_timeout_kwargs(float(timeout + 10), ctx),
             )
             response.raise_for_status()
             data = response.json()
