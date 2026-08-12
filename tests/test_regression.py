@@ -1,50 +1,69 @@
 import json
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_SKILL_DIR = ROOT / "skills" / "smart-search-cli"
 PACKAGED_SKILL_DIR = ROOT / "src" / "smart_search" / "assets" / "skills" / "smart-search-cli"
 PUBLIC_DOCS_DIR = ROOT / "docs"
 LOCAL_TRELLIS_DIR = ROOT / ".trellis"
 
+FORBIDDEN_PHRASES = [
+    "mcp__smart-search__",
+    "get_sources",
+    "get_config_info",
+    "toggle_builtin_tools",
+    "native web search fallback",
+    "silently fallback",
+]
+
+NATIVE_WEB_SEARCH_DISABLED_MARKERS = (
+    "native `web_search` is disabled",
+    "native web search is disabled",
+)
+
+NO_SILENT_FALLBACK_MARKER = "do not silently fall back"
+
 
 def test_regression_does_not_create_repo_log_file():
     log_dir = ROOT / "logs"
     if not log_dir.exists():
-        return
+        pytest.skip("logs/ directory is not present (machine-local check)")
     assert not list(log_dir.glob("smart_search_*.log"))
 
 
 def test_smart_search_skill_contract_enforces_cli_first():
     skill_dir = Path.home() / ".codex" / "skills" / "smart-search-cli"
     if not skill_dir.exists():
-        return
+        pytest.skip("user-level Codex skill is not installed (machine-local check)")
     skill_files = [
         p
         for p in skill_dir.rglob("*")
         if p.is_file() and p.suffix in {".md", ".yaml", ".yml"}
     ]
     if not skill_files:
-        return
+        pytest.skip("user-level Codex skill has no Markdown/YAML files (machine-local check)")
 
     text = "\n".join(
         p.read_text(encoding="utf-8")
         for p in skill_files
     )
 
-    forbidden_text = [
-        "mcp__smart-search__",
-        "get_sources",
-        "get_config_info",
-        "toggle_builtin_tools",
-        "native web search fallback",
-        "silently fallback",
-    ]
-    for phrase in forbidden_text:
+    for phrase in FORBIDDEN_PHRASES:
         assert phrase not in text
 
-    assert "native `web_search` is disabled" in text or "native web search is disabled" in text
-    assert "do not silently fall back" in text
+    assert any(marker in text for marker in NATIVE_WEB_SEARCH_DISABLED_MARKERS)
+    assert NO_SILENT_FALLBACK_MARKER in text
+
+
+def test_forbidden_phrases_absent_from_public_and_packaged_skills():
+    for skill_dir in (PUBLIC_SKILL_DIR, PACKAGED_SKILL_DIR):
+        text = _read_skill_tree(skill_dir)
+        for phrase in FORBIDDEN_PHRASES:
+            assert phrase not in text
+        assert any(marker in text for marker in NATIVE_WEB_SEARCH_DISABLED_MARKERS)
+        assert NO_SILENT_FALLBACK_MARKER in text
 
 
 def _read_skill_tree(path: Path) -> str:
