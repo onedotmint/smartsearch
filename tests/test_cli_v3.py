@@ -40,6 +40,30 @@ def test_v3_config_parameter_failure_does_not_attempt_write(monkeypatch, tmp_pat
     assert payload["side_effects"]["config"]["write_attempted"] is False
 
 
+def test_v3_root_leading_format_is_a_stable_parameter_error(capsys):
+    for value in ("json", "markdown", "content"):
+        assert main(["--format", value, "config", "list"]) == 2
+        payload = _payload(capsys)
+        assert payload["schema_version"] == "3"
+        assert payload["command"] == "config"
+        assert payload["operation"] == "config.list"
+        assert payload["error"]["code"] == "INVALID_ARGUMENT"
+        # Never the V2 unknown-command envelope or argparse's misleading
+        # "invalid choice" for the option value.
+        assert "unrecognized command" not in payload["error"]["message"]
+        assert "invalid choice" not in payload["error"]["message"]
+
+
+def test_v3_doctor_option_before_leaf_resolves_identically():
+    from smart_search.cli_constants import classify_command_domain
+
+    for leaf in ("probe", "status"):
+        before = classify_command_domain(["doctor", "--format", "json", leaf])
+        after = classify_command_domain(["doctor", leaf, "--format", "json"])
+        assert before["family"] == after["family"] == "v3"
+        assert before["operation"] == after["operation"] == f"doctor.{leaf}"
+
+
 def test_v3_route_write_projects_masked_routes(monkeypatch, capsys):
     from smart_search import control_operations
     from smart_search.control_operations import (

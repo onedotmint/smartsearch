@@ -170,19 +170,45 @@ if len({item.path for item in V3_OPERATIONS}) != len(V3_OPERATIONS):
     raise RuntimeError("duplicate v3 canonical path")
 
 
+V3_VALUE_OPTIONS = frozenset({
+    "format",
+    "output",
+    "prompt-dir",
+    "search-prompt-file",
+    "fetch-prompt-file",
+    "research-prompt-file",
+})
+
+
 def operation_for_argv(argv: list[str] | None) -> V3OperationDescriptor | None:
-    """Resolve only a canonical root-global v3 namespace leaf."""
+    """Resolve only a canonical root-global v3 namespace leaf.
+
+    Option tokens (and the values of value-taking options such as
+    ``--format json``) are skipped wherever they appear, so a misplaced
+    option never masks the canonical leaf path.
+    """
     args = list(argv or ())
+    body: list[str] = []
     index = 0
     while index < len(args):
         token = args[index]
+        if token == "--":
+            break
         if token in {"--fail-on-degraded"}:
             index += 1
             continue
-        break
-    body = tuple(args[index:])
+        if token.startswith("--"):
+            name = token[2:].split("=", 1)[0]
+            if name in V3_VALUE_OPTIONS and "=" not in token:
+                index += 2
+                continue
+            index += 1
+            continue
+        body.append(token)
+        index += 1
+    body_tuple = tuple(body)
     for descriptor in sorted(V3_OPERATIONS, key=lambda item: len(item.path), reverse=True):
-        if body[: len(descriptor.path)] == descriptor.path:
+        if body_tuple[: len(descriptor.path)] == descriptor.path:
             return descriptor
     return None
 

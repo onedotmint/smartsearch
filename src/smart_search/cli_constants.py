@@ -280,13 +280,33 @@ def _is_help_only_invocation(argv: list[str]) -> bool:
     return len(argv) >= 2 and all(token in {"--help", "-h"} for token in argv[1:])
 
 
+_LEADING_VALUE_OPTIONS = frozenset({
+    "--format",
+    "--output",
+    "--prompt-dir",
+    "--search-prompt-file",
+    "--fetch-prompt-file",
+    "--research-prompt-file",
+})
+
+
 def _leading_command_tokens(argv: list[str]) -> tuple[str, ...]:
-    """Return the first one or two non-flag command tokens."""
+    """Return the first one or two non-flag command tokens.
+
+    A leading option that consumes a value (``--format json``) is skipped
+    together with its value so the value is never mistaken for a command.
+    """
     tokens: list[str] = []
+    skip_value = False
     for token in argv:
+        if skip_value:
+            skip_value = False
+            continue
         if _starts_with_flag(token):
             if tokens:
                 break
+            if token.split("=", 1)[0] in _LEADING_VALUE_OPTIONS and "=" not in token:
+                skip_value = True
             continue
         tokens.append(token)
         if len(tokens) == 2:
@@ -321,6 +341,21 @@ def _strip_selector(argv: list[str]) -> list[str]:
         out.append(token)
         index += 1
     return out
+
+
+def _leading_value_option(argv: list[str]) -> str | None:
+    """Return the leading value-consuming option spelling if one is present."""
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            return None
+        if not _starts_with_flag(token):
+            return None
+        if token.split("=", 1)[0] in _LEADING_VALUE_OPTIONS:
+            return token.split("=", 1)[0]
+        index += 1
+    return None
 
 
 def classify_command_domain(argv: list[str] | None) -> dict[str, object]:
@@ -362,7 +397,11 @@ def classify_command_domain(argv: list[str] | None) -> dict[str, object]:
             "replacement": SELECTOR_REPLACEMENT,
         }
 
-    return _classify_canonical(args)
+    result = _classify_canonical(args)
+    leading = _leading_value_option(args)
+    if leading is not None and result.get("family") in ("v2", "v3", "workflow"):
+        return {**result, "root_leading_option": leading}
+    return result
 
 
 def _classify_canonical(argv: list[str]) -> dict[str, object]:

@@ -51,6 +51,13 @@ def main(argv: list[str] | None = None) -> int:
         message = f"unrecognized command {token!r}" if token else "unrecognized command"
         return v2_emit(command=None, operation=None, message=message)
 
+    # A leading value-taking option (--format json ...) is leaf-only and must
+    # fail with the target family's stable parameter error, never argparse's
+    # misleading "invalid choice" for the option value.
+    root_option = classification.get("root_leading_option")
+    if root_option:
+        return _emit_root_leading_option_error(classification, str(root_option))
+
     parser = build_parser(raise_on_error=True)
     try:
         args = parser.parse_args(raw_argv)
@@ -78,6 +85,33 @@ def main(argv: list[str] | None = None) -> int:
     from .cli_research import dispatch as research_dispatch
 
     return asyncio.run(research_dispatch(args, argv=raw_argv))
+
+
+def _emit_root_leading_option_error(classification: dict[str, object], option: str) -> int:
+    """Emit the target family's stable parameter error for a leading leaf option."""
+    family = classification["family"]
+    command = classification.get("command")
+    operation = classification.get("operation")
+    message = f"{option} is a leaf-level option and cannot precede the command"
+    if family == "v3":
+        from .cli_v3 import emit_parser_error
+
+        return emit_parser_error(
+            command=command if isinstance(command, str) else None,
+            operation=operation if isinstance(operation, str) else None,
+            message=message,
+        )
+    if family == "v2":
+        from .cli_v2 import emit_parser_error
+
+        return emit_parser_error(
+            command=command if isinstance(command, str) else None,
+            operation=operation if isinstance(operation, str) else None,
+            message=message,
+        )
+    from .cli_research import emit_parser_error
+
+    return emit_parser_error(message)
 
 
 def _emit_removed_family_error(classification: dict[str, object]) -> int:
