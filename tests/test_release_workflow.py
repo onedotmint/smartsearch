@@ -1,6 +1,8 @@
+import ast
 import json
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -259,3 +261,41 @@ def test_publish_workflow_release_side_effect_controls():
     # Prerelease versions must never use the latest dist-tag.
     assert "Refusing to publish prerelease version" in workflow
     assert 'if [[ "$tag" == "latest" && "$version" == *-* ]]' in workflow
+
+
+def _imported_top_level_modules(src_dir: Path) -> set[str]:
+    """Return the lowercased set of top-level modules imported under src_dir."""
+    imported: set[str] = set()
+    for path in sorted(src_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imported.add(alias.name.split(".")[0].lower())
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    imported.add(node.module.split(".")[0].lower())
+    return imported
+
+
+def test_declared_runtime_dependencies_are_imported():
+    """Every declared runtime dependency must be imported under src/smart_search.
+
+    Guards against re-adding V1-era dependencies (InquirerPy, pyfiglet, rich)
+    that are declared in pyproject.toml but never imported by the package.
+    """
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    declared = pyproject["project"]["dependencies"]
+
+    # Distribution names ignore extras and version specifiers.
+    names: set[str] = set()
+    for spec in declared:
+        name = re.split(r"[\[\]><=!~;]", spec)[0].strip().lower()
+        names.add(name)
+
+    imported = _imported_top_level_modules(ROOT / "src" / "smart_search")
+
+    missing = sorted(names - imported)
+    assert not missing, (
+        f"Declared runtime dependencies are never imported under src/smart_search: {missing}"
+    )
