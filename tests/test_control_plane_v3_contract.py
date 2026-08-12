@@ -103,6 +103,37 @@ def test_v3_redacts_config_values_urls_and_error_details():
     assert "api_key=super-secret" not in rendered
 
 
+def test_v3_serializer_redacts_signed_url_echoed_by_provider_payload():
+    signed_url = (
+        "https://cdn.example.com/file.zip?key=access-key-abc&sig=signature-xyz"
+        "&signature=extra-sig&expires=20300101"
+    )
+    result = V3Envelope(
+        V3Status.COMPLETE,
+        "provider",
+        "provider.probe",
+        {
+            "ok": True,
+            "provider": "jina",
+            "resource": signed_url,
+            "message": f"provider echoed {signed_url} in the payload",
+        },
+        V3Network("explicit", "single_provider", True, ("jina",)),
+        V3SideEffects(config=V3Mutation(read=True)),
+        meta=V3Meta(warnings=(signed_url,)),
+    )
+    rendered = json.dumps(serialize_result(result))
+    assert "signature-xyz" not in rendered
+    assert "access-key-abc" not in rendered
+    assert "extra-sig" not in rendered
+    assert "sig=%5BREDACTED%5D" in rendered
+    assert "key=%5BREDACTED%5D" in rendered
+    assert "signature=%5BREDACTED%5D" in rendered
+    assert "cdn.example.com" in rendered
+    assert "expires=20300101" in rendered
+    validate_envelope_dict(serialize_result(result))
+
+
 @pytest.mark.parametrize("fixture", [complete_config_list, complete_empty_catalog, complete_config_write, degraded_probe, failed_local_configuration, failed_filesystem, failed_subprocess])
 def test_fixture_top_level_field_order_is_exact(fixture):
     assert tuple(serialize_result(fixture())) == V3_TOP_LEVEL_FIELDS

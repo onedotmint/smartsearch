@@ -903,7 +903,10 @@ def test_v3_markdown_and_content_are_one_stdout_document(monkeypatch, tmp_path):
     assert code == 0, err
     payload = json.loads(out)
     assert payload["operation"] == "config.list"
-    assert payload["result"]["values"] == {"KEY": "value"}
+    # ``KEY`` is a sensitive name under the shared policy, so the serializer
+    # emits the redacted value; the assertion still proves the JSON default
+    # is the direct serializer document, not a presentation round trip.
+    assert payload["result"]["values"] == {"KEY": "[REDACTED]"}
     assert out.count('"schema_version"') == 1
 
 

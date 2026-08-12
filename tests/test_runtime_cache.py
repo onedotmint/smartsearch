@@ -176,6 +176,16 @@ def test_cache_input_normalizes_equivalent_inputs_and_bypasses_sensitive_values(
     # Sensitive URLs and userinfo never enter a cache key.
     assert cache_input("https://example.com/page?api_key=secret", kind="url") is None
     assert cache_input("https://user:pass@example.com/page", kind="url") is None
+    # Schemeless/relative inputs are guarded too: secret-bearing variants
+    # bypass the cache while benign relative resources keep their raw key.
+    assert normalize_url("relative?token=abc") is None
+    assert normalize_url("relative?key=abc") is None
+    assert normalize_url("relative?sig=abc&signature=def") is None
+    assert normalize_url("//user:pass@example.com/page") is None
+    assert normalize_url("relative?q=hello") == "relative?q=hello"
+    # The new shared names cover suffix/hyphen variants of sensitive params.
+    assert cache_input("https://example.com/page?x_api_key=secret", kind="url") is None
+    assert cache_input("https://example.com/page?API-KEY=secret", kind="url") is None
     # Sensitive text in a query input is not cached either.
     assert cache_input("Authorization: Bearer token", kind="query") is None
 

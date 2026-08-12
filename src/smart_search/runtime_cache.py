@@ -22,6 +22,7 @@ from weakref import WeakKeyDictionary
 import httpx
 
 from .config import ConfigSnapshot, config
+from .security import is_sensitive_key
 
 
 logger = logging.getLogger("smart_search")
@@ -29,18 +30,6 @@ logger = logging.getLogger("smart_search")
 T = TypeVar("T")
 F = TypeVar("F", bound=Callable[..., Awaitable[dict[str, Any]]])
 
-_SENSITIVE_QUERY_KEYS = {
-    "access_token",
-    "api_key",
-    "apikey",
-    "authorization",
-    "client_secret",
-    "password",
-    "secret",
-    "signature",
-    "sig",
-    "token",
-}
 _SENSITIVE_TEXT_PATTERN = re.compile(
     r"(?i)(?:api[_-]?key|access[_-]?token|authorization|client[_-]?secret|password|secret|token)\s*[:=]"
 )
@@ -944,31 +933,33 @@ def normalize_url(value: str) -> str | None:
         return None
     try:
         parsed = urlsplit(raw)
-        if not parsed.scheme or not parsed.netloc:
-            return raw
-        if parsed.username or parsed.password:
-            return None
-        query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
-        if any(key.lower() in _SENSITIVE_QUERY_KEYS for key, _ in query_pairs):
-            return None
-        hostname = parsed.hostname
-        if not hostname:
-            return None
-        hostname = hostname.lower()
-        try:
-            port = parsed.port
-        except ValueError:
-            return None
-        default_port = (parsed.scheme.lower() == "http" and port == 80) or (
-            parsed.scheme.lower() == "https" and port == 443
-        )
-        netloc = hostname if not port or default_port else f"{hostname}:{port}"
-        path = parsed.path or "/"
-        if path != "/":
-            path = path.rstrip("/") or "/"
-        return urlunsplit((parsed.scheme.lower(), netloc, path, parsed.query, ""))
     except ValueError:
         return None
+    # Credentials never enter a cache key: userinfo and sensitive query
+    # parameters bypass caching even for schemeless/relative inputs.
+    if parsed.username is not None or parsed.password is not None:
+        return None
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    if any(is_sensitive_key(key) for key, _ in query_pairs):
+        return None
+    if not parsed.scheme or not parsed.netloc:
+        return raw
+    hostname = parsed.hostname
+    if not hostname:
+        return None
+    hostname = hostname.lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    default_port = (parsed.scheme.lower() == "http" and port == 80) or (
+        parsed.scheme.lower() == "https" and port == 443
+    )
+    netloc = hostname if not port or default_port else f"{hostname}:{port}"
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/") or "/"
+    return urlunsplit((parsed.scheme.lower(), netloc, path, parsed.query, ""))
 
 
 def cache_input(value: str, *, kind: str) -> str | None:

@@ -612,6 +612,52 @@ def test_serialize_redacts_secrets_urls_and_error_details():
     validate_workflow_dict(redacted)
 
 
+def test_serialize_redacts_signed_url_echoed_by_provider_payload():
+    signed_url = (
+        "https://cdn.example.com/file.zip?key=access-key-abc&sig=signature-xyz"
+        "&signature=extra-sig&expires=20300101"
+    )
+    plan = _plan(_op("fetch-a", "content_fetch", input={"resource": signed_url}))
+    outcome = WorkflowOutcome(
+        status=WorkflowStatus.COMPLETE,
+        plan=plan,
+        stages=(
+            WorkflowStage(
+                id="fetch-a", operation="content_fetch",
+                status=WorkflowStageStatus.COMPLETE, order=1,
+                input={"resource": signed_url}, depends_on=(), result_count=1,
+                evidence_ids=("evidence-1",),
+            ),
+        ),
+        evidence=(
+            ExecutionEvidenceItem(
+                id="evidence-1",
+                resource=signed_url,
+                provider="jina",
+                title="Signed artifact",
+                content=f"provider echoed {signed_url} in the payload",
+            ),
+        ),
+        citations=(),
+        gaps=(),
+        attempts=(),
+        artifacts=(),
+        error=None,
+        meta=WorkflowMeta("req-signed", 1.0, (signed_url,)),
+    )
+    redacted = serialize_workflow(outcome)
+    text = json.dumps(redacted)
+    assert "signature-xyz" not in text
+    assert "access-key-abc" not in text
+    assert "extra-sig" not in text
+    assert "sig=%5BREDACTED%5D" in text
+    assert "key=%5BREDACTED%5D" in text
+    assert "signature=%5BREDACTED%5D" in text
+    assert "cdn.example.com" in text
+    assert "expires=20300101" in text
+    validate_workflow_dict(redacted)
+
+
 def test_serialize_redacts_url_userinfo_in_resources():
     plan = _plan(_op("fetch-a", "content_fetch", input={"resource": "https://example.com/a"}))
     outcome = WorkflowOutcome(

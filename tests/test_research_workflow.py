@@ -346,6 +346,9 @@ def test_url_dedupe_key_normalization_and_sensitivity():
     # sensitive URLs fall back to their exact raw string
     assert workflow_url_dedupe_key("https://user:pass@example.com/a") == "https://user:pass@example.com/a"
     assert workflow_url_dedupe_key("https://example.com/a?token=abc") == "https://example.com/a?token=abc"
+    for parameter in ("key", "sig", "signature"):
+        url = f"https://example.com/a?{parameter}=signed-value"
+        assert workflow_url_dedupe_key(url) == url
 
 
 # ---------------------------------------------------------------------------

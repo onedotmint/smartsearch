@@ -497,6 +497,40 @@ def test_final_boundary_redacts_result_error_details_and_meta():
     assert "[REDACTED]" in rendered
 
 
+def test_serializer_redacts_signed_url_echoed_by_provider_payload():
+    """A provider payload echoing a signed URL must never leak its signature
+    or key query parameters into V2 JSON, even without explicit secrets."""
+    signed_url = (
+        "https://cdn.example.com/file.zip?key=access-key-abc&sig=signature-xyz"
+        "&signature=extra-sig&expires=20300101"
+    )
+    model = replace(
+        envelope(result={"total": 1, "items": [{"url": signed_url}]}),
+        evidence=V2Evidence(
+            items=(
+                V2EvidenceItem(
+                    "ev-1",
+                    signed_url,
+                    "tavily",
+                    "Signed artifact",
+                    f"provider echoed {signed_url} in the payload",
+                ),
+            ),
+        ),
+        meta=V2Meta("req-signed", 1, (signed_url,)),
+    )
+    rendered = json.dumps(serialize_result(model))
+    assert "signature-xyz" not in rendered
+    assert "access-key-abc" not in rendered
+    assert "extra-sig" not in rendered
+    assert "sig=%5BREDACTED%5D" in rendered
+    assert "key=%5BREDACTED%5D" in rendered
+    assert "signature=%5BREDACTED%5D" in rendered
+    assert "cdn.example.com" in rendered
+    assert "expires=20300101" in rendered
+    validate_envelope_dict(serialize_result(model))
+
+
 @pytest.mark.parametrize("code", list(V2ErrorCode))
 def test_complete_error_registry_retryability_schema_and_exit(code):
     model = failed(code)

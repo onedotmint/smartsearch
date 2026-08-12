@@ -7,16 +7,42 @@ from urllib.parse import unquote_plus, urlsplit, urlunsplit
 from typing import Any, Iterable
 
 
-_SENSITIVE_KEY_NAMES = {
-    "access_token",
-    "api_key",
-    "apikey",
-    "authorization",
-    "client_secret",
-    "password",
-    "secret",
-    "token",
-}
+_SENSITIVE_KEY_NAMES = frozenset(
+    {
+        "access_token",
+        "api_key",
+        "apikey",
+        "authorization",
+        "client_secret",
+        "key",
+        "password",
+        "secret",
+        "sig",
+        "signature",
+        "token",
+    }
+)
+
+# Single source of truth for sensitive URL query-parameter names. Every
+# consumer (structured redaction above, ``runtime_cache`` cache-key
+# normalization, Research workflow URL dedupe) uses this policy so a signed
+# URL or API-key query parameter can never reach machine output or a cache
+# key unredacted.
+SENSITIVE_QUERY_KEY_NAMES = _SENSITIVE_KEY_NAMES
+
+# Fully-masked sentinel values that may legitimately appear under a sensitive
+# key: the redaction marker itself, the documented unconfigured markers, and
+# the all-asterisk marker emitted by ``config._mask_api_key`` for short
+# values. Anything else - including raw values that merely contain ``*`` such
+# as ``abc*def`` - is treated as a live secret and redacted.
+_MASKED_VALUE_SENTINELS = frozenset({"[REDACTED]", "未配置", "not configured"})
+
+
+def _is_masked_value(value: str) -> bool:
+    """Return True only for documented fully-masked sentinel values."""
+    if value in _MASKED_VALUE_SENTINELS:
+        return True
+    return len(value) >= 3 and value.strip("*") == ""
 _SENSITIVE_KEY_PATTERN = re.compile(
     r"(?i)(authorization|api[_-]?key|access[_-]?token|client[_-]?secret|password|secret|token)"
     r"(\s*[:=]\s*)([^\s,;\"'&#]+)"
@@ -123,9 +149,7 @@ def sanitize_data(value: Any, secrets: Iterable[str] = (), *, key: str = "") -> 
     """
     normalized_key = key.lower().replace("-", "_")
     if is_sensitive_key(normalized_key):
-        if isinstance(value, str) and (
-            value in {"[REDACTED]", "未配置", "not configured"} or "*" in value
-        ):
+        if isinstance(value, str) and _is_masked_value(value):
             return value
         return "[REDACTED]" if value not in (None, "") else value
     if isinstance(value, dict):

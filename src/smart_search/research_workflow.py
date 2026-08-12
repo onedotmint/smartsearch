@@ -57,6 +57,7 @@ from .research_plan import (
     ResearchPlanOperation,
     validate_research_plan,
 )
+from .security import is_sensitive_key
 
 # Stable schema-neutral workflow executable vocabulary (Evidence capability
 # ids, not V2 envelope ids).
@@ -153,23 +154,10 @@ _STAGE_ERROR_CODE_MAP = {
     "empty": WorkflowErrorCode.FETCH_FAILED,
 }
 
-# URL query keys that may carry credentials; such URLs deduplicate on their
-# exact raw string and never enter a normalized cache key.
-_SENSITIVE_QUERY_KEYS = frozenset(
-    {
-        "access_token",
-        "api_key",
-        "apikey",
-        "authorization",
-        "client_secret",
-        "key",
-        "password",
-        "secret",
-        "sig",
-        "signature",
-        "token",
-    }
-)
+# URL query keys that may carry credentials are the single shared policy in
+# ``security.SENSITIVE_QUERY_KEY_NAMES`` (consumed via ``is_sensitive_key``);
+# such URLs deduplicate on their exact raw string and never enter a
+# normalized cache key.
 
 # Forbidden stage-input fields mirror the research plan serializer rules.
 _WORKFLOW_FORBIDDEN_INPUT_FIELDS = frozenset({"command", "output_path", "shell"})
@@ -681,12 +669,15 @@ def workflow_url_dedupe_key(url: str) -> str:
         parsed = urlsplit(raw)
     except ValueError:
         return raw
-    if not parsed.scheme or not parsed.netloc:
-        return raw
+    # Sensitive URLs keep their exact raw string as the dedupe key; the
+    # checks run before the schemeless fallback so ``relative?token=...``
+    # inputs never canonicalize into a shared key.
     if parsed.username is not None or parsed.password is not None:
         return raw
     pairs = parse_qsl(parsed.query, keep_blank_values=True)
-    if any(key.lower() in _SENSITIVE_QUERY_KEYS for key, _ in pairs):
+    if any(is_sensitive_key(key) for key, _ in pairs):
+        return raw
+    if not parsed.scheme or not parsed.netloc:
         return raw
     hostname = (parsed.hostname or "").lower()
     if not hostname:

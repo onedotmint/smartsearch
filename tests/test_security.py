@@ -1,5 +1,5 @@
 from smart_search.logger import logger
-from smart_search.security import redact_url_credentials, sanitize_text
+from smart_search.security import redact_url_credentials, sanitize_data, sanitize_text
 
 
 def test_redact_url_credentials_masks_userinfo_and_sensitive_query_values():
@@ -123,3 +123,71 @@ def test_redact_url_credentials_is_idempotent_for_masked_userinfo():
     assert "relay.example" in with_fragment and "state=ready" in with_fragment
     assert "fragment-secret" not in with_fragment
     assert redact_url_credentials("https://user:password@[invalid-host") == "[REDACTED]"
+
+
+# ---------------------------------------------------------------------------
+# sanitize_data: masked-form allowlist and shared sensitive-name policy
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_data_redacts_raw_values_containing_asterisk():
+    """Raw secrets that merely contain ``*`` must be redacted, not treated as
+    already-masked values."""
+    for raw in ("abc*def", "sk-***abc", "*" * 2, "prefix*", "*suffix"):
+        assert sanitize_data({"api_key": raw}) == {"api_key": "[REDACTED]"}, raw
+        assert sanitize_data({"token": raw}) == {"token": "[REDACTED]"}, raw
+        assert sanitize_data({"password": raw}) == {"password": "[REDACTED]"}, raw
+
+
+def test_sanitize_data_preserves_documented_masked_sentinels():
+    for masked in ("[REDACTED]", "未配置", "not configured", "***", "******"):
+        assert sanitize_data({"api_key": masked}) == {"api_key": masked}, masked
+
+
+def test_sanitize_data_preserves_empty_and_none_values():
+    assert sanitize_data({"api_key": None}) == {"api_key": None}
+    assert sanitize_data({"api_key": ""}) == {"api_key": ""}
+
+
+def test_sanitize_data_redacts_nested_sensitive_fields_and_keeps_shape():
+    payload = {
+        "ok": True,
+        "nested": {
+            "client_secret": "abc*def",
+            "token": "raw-token-123",
+            "safe": "visible",
+        },
+        "items": [{"sig": "raw*sig"}, {"signature": "raw"}],
+        "mixed_case": {"API-Key": "hyphen-secret"},
+    }
+    redacted = sanitize_data(payload)
+    assert redacted["ok"] is True
+    assert redacted["nested"] == {"client_secret": "[REDACTED]", "token": "[REDACTED]", "safe": "visible"}
+    assert redacted["items"] == [{"sig": "[REDACTED]"}, {"signature": "[REDACTED]"}]
+    assert redacted["mixed_case"] == {"API-Key": "[REDACTED]"}
+
+
+def test_sanitize_data_redacts_signed_url_query_params_in_string_values():
+    url = "https://cdn.example.com/file?sig=signature-secret&key=key-secret&signature=third-secret&ok=1"
+    redacted = sanitize_data({"url": url})
+    for secret in ("signature-secret", "key-secret", "third-secret"):
+        assert secret not in redacted["url"]
+    assert redacted["url"] == (
+        "https://cdn.example.com/file?sig=%5BREDACTED%5D"
+        "&key=%5BREDACTED%5D&signature=%5BREDACTED%5D&ok=1"
+    )
+
+
+def test_redact_url_credentials_masks_sig_signature_and_key_query_params():
+    raw = "https://cdn.example.com/file?sig=sig-secret&signature=full-secret&key=key-secret&ok=1"
+    redacted = redact_url_credentials(raw)
+    for secret in ("sig-secret", "full-secret", "key-secret"):
+        assert secret not in redacted
+    assert "sig=%5BREDACTED%5D" in redacted
+    assert "signature=%5BREDACTED%5D" in redacted
+    assert "key=%5BREDACTED%5D" in redacted
+    assert "ok=1" in redacted
+    # A bare dict field named ``key``/``sig``/``signature`` is sensitive too.
+    assert sanitize_data({"key": "abc*def"}) == {"key": "[REDACTED]"}
+    assert sanitize_data({"sig": "raw"}) == {"sig": "[REDACTED]"}
+    assert sanitize_data({"signature": "raw"}) == {"signature": "[REDACTED]"}
