@@ -1,7 +1,10 @@
 const assert = require("node:assert");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const vm = require("node:vm");
+
+const repairLock = require("./repair-lock");
 
 const wrapperPath = path.resolve(__dirname, "..", "bin", "smart-search.js");
 const wrapperSource = fs.readFileSync(wrapperPath, "utf8");
@@ -12,6 +15,8 @@ function runWrapper({ runtimeExists, repairStatus = 0, repairCreatesRuntime = tr
   const spawnCalls = [];
   const exits = [];
   const stderr = [];
+  const signalHandlers = {};
+  const killedSignals = [];
 
   const fakeFs = {
     existsSync(filePath) {
@@ -35,7 +40,11 @@ function runWrapper({ runtimeExists, repairStatus = 0, repairCreatesRuntime = tr
       exits.push(code);
       throw new Error(`process.exit(${code})`);
     },
-    kill() {}
+    kill() {},
+    on(event, handler) {
+      signalHandlers[event] = handler;
+      return this;
+    }
   };
 
   const fakeChildProcess = {
@@ -54,6 +63,9 @@ function runWrapper({ runtimeExists, repairStatus = 0, repairCreatesRuntime = tr
       return {
         on() {
           return this;
+        },
+        kill(signal) {
+          killedSignals.push(signal);
         }
       };
     }
@@ -85,7 +97,7 @@ function runWrapper({ runtimeExists, repairStatus = 0, repairCreatesRuntime = tr
     }
   }
 
-  return { spawnSyncCalls, spawnCalls, exits, stderr };
+  return { spawnSyncCalls, spawnCalls, exits, stderr, signalHandlers, killedSignals };
 }
 
 const healthy = runWrapper({ runtimeExists: true });
@@ -135,3 +147,35 @@ assert(
   !repairSpawnError.stderr.some((message) => message.includes("@next")),
   "repair spawn errors should not recommend the next release tag"
 );
+
+// Signal forwarding: the wrapper registers SIGINT/SIGTERM handlers that
+// forward to the Python child, guarding against duplicate forwarding.
+const forwarded = runWrapper({ runtimeExists: true });
+assert.strictEqual(typeof forwarded.signalHandlers.SIGINT, "function");
+assert.strictEqual(typeof forwarded.signalHandlers.SIGTERM, "function");
+forwarded.signalHandlers.SIGINT();
+forwarded.signalHandlers.SIGINT(); // duplicate is ignored while the child exits
+assert.deepStrictEqual(forwarded.killedSignals, ["SIGINT"]);
+forwarded.signalHandlers.SIGTERM(); // still ignored after the first signal
+assert.deepStrictEqual(forwarded.killedSignals, ["SIGINT"]);
+
+// Repair lock: a second process observes a held lock, a released lock can be
+// re-acquired, and waitForRelease returns once the lock is gone.
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "smart-search-lock-"));
+try {
+  const lockPath = path.join(tmpDir, "lock");
+  assert.strictEqual(repairLock.tryAcquire(lockPath), true);
+  assert.ok(fs.existsSync(lockPath), "lock file must exist after acquire");
+  // A concurrent second process cannot acquire while the lock is held.
+  assert.strictEqual(repairLock.tryAcquire(lockPath), false);
+  // waitForRelease times out while the lock stays held.
+  assert.strictEqual(repairLock.waitForRelease(lockPath, 100), false);
+  repairLock.release(lockPath);
+  assert.ok(!fs.existsSync(lockPath), "lock file must be removed after release");
+  // waitForRelease returns immediately once the lock is gone.
+  assert.strictEqual(repairLock.waitForRelease(lockPath, 1000), true);
+  assert.strictEqual(repairLock.tryAcquire(lockPath), true);
+  repairLock.release(lockPath);
+} finally {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+}

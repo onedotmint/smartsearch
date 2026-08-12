@@ -1,6 +1,7 @@
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { lockPathFor, tryAcquire, release, waitForRelease } = require("./repair-lock");
 
 const packageRoot = path.resolve(__dirname, "..", "..");
 const venvDir = path.join(packageRoot, ".smart-search-python");
@@ -61,27 +62,53 @@ if (!python) {
   process.exit(1);
 }
 
-if (!fs.existsSync(venvPython())) {
-  console.log("Creating smart-search Python runtime...");
-  const created = run(python.command, [...python.args, "-m", "venv", venvDir]);
-  if (!created.ok) {
-    console.error("Failed to create the smart-search Python virtual environment.");
-    process.exit(created.status || 1);
+// Serialize runtime repair so two concurrent first runs cannot both create the
+// shared venv. A second process observes the lock, waits for the owner to
+// finish, then re-checks whether the venv now exists (idempotent repair).
+function repair() {
+  const lockPath = lockPathFor(packageRoot);
+
+  if (!tryAcquire(lockPath)) {
+    console.log("A concurrent smart-search runtime repair is in progress; waiting for it to finish...");
+    if (!waitForRelease(lockPath)) {
+      console.error("Timed out waiting for a concurrent smart-search runtime repair.");
+      return 1;
+    }
+    if (!tryAcquire(lockPath)) {
+      console.error("Could not acquire the smart-search runtime repair lock.");
+      return 1;
+    }
+  }
+
+  try {
+    if (!fs.existsSync(venvPython())) {
+      console.log("Creating smart-search Python runtime...");
+      const created = run(python.command, [...python.args, "-m", "venv", venvDir]);
+      if (!created.ok) {
+        console.error("Failed to create the smart-search Python virtual environment.");
+        return created.status || 1;
+      }
+    }
+
+    const py = venvPython();
+
+    console.log("Installing smart-search Python package...");
+    const install = run(py, [
+      "-m",
+      "pip",
+      "install",
+      "--disable-pip-version-check",
+      packageRoot
+    ]);
+
+    if (!install.ok) {
+      console.error("Failed to install the bundled smart-search Python package.");
+      return install.status || 1;
+    }
+    return 0;
+  } finally {
+    release(lockPath);
   }
 }
 
-const py = venvPython();
-
-console.log("Installing smart-search Python package...");
-const install = run(py, [
-  "-m",
-  "pip",
-  "install",
-  "--disable-pip-version-check",
-  packageRoot
-]);
-
-if (!install.ok) {
-  console.error("Failed to install the bundled smart-search Python package.");
-  process.exit(install.status || 1);
-}
+process.exit(repair());

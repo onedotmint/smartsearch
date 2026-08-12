@@ -7,6 +7,7 @@ build/
 *.egg
 .venv/
 .smart-search-python/
+.smart-search-python.lock
 .env
 .smart-search/
 logs/

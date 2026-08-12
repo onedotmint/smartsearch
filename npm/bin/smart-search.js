@@ -54,15 +54,39 @@ const child = spawn(
   }
 );
 
+let childExited = false;
+let signalForwarded = false;
+
+const forwardSignal = (signal) => {
+  if (childExited || signalForwarded) {
+    return;
+  }
+  signalForwarded = true;
+  if (typeof child.kill === "function") {
+    try {
+      child.kill(signal);
+    } catch (error) {
+      // The child may have exited between the guard and the kill.
+    }
+  }
+};
+
 child.on("error", (error) => {
   console.error(`Failed to start smart-search: ${error.message}`);
   process.exit(5);
 });
 
 child.on("close", (code, signal) => {
+  childExited = true;
   if (signal) {
     process.kill(process.pid, signal);
     return;
   }
   process.exit(code ?? 5);
 });
+
+// Forward termination signals to the Python child so Ctrl-C / SIGTERM reach
+// the CLI instead of leaving an orphaned child running. Re-raise on close is
+// preserved above.
+process.on("SIGINT", () => forwardSignal("SIGINT"));
+process.on("SIGTERM", () => forwardSignal("SIGTERM"));
