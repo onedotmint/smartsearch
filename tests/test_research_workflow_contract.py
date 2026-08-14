@@ -22,6 +22,7 @@ from jsonschema import Draft202012Validator
 import httpx
 
 from smart_search.execution_primitives import (
+    DEFAULT_FETCH_CONTENT_LIMIT,
     ExecutionAttempt,
     ExecutionAttemptStatus,
     ExecutionCitation,
@@ -248,6 +249,84 @@ def test_schema_is_strict_and_fixtures_validate():
     parser_raw = serialize_workflow(parser)
     validate_workflow_dict(parser_raw)
     Draft202012Validator(WORKFLOW_JSON_SCHEMA).validate(parser_raw)
+
+
+def test_evidence_item_content_budget_metadata_is_required_and_validated():
+    """Workflow evidence items carry the additive content-budget metadata and
+    reject contradictory values through both the typed validator and the JSON
+    Schema."""
+    from smart_search.research_workflow import (
+        WorkflowOutcome,
+        WorkflowStage,
+        WorkflowStageStatus,
+        WorkflowStatus,
+    )
+    from smart_search.execution_primitives import ExecutionCitation, ExecutionGap
+
+    truncated = ExecutionEvidenceItem(
+        id="evidence-trunc",
+        resource="https://example.com/page",
+        provider="jina",
+        title="page",
+        content="x" * 8000,
+        truncated=True,
+        original_length=9000,
+        returned_length=8000,
+    )
+    outcome = WorkflowOutcome(
+        status=WorkflowStatus.COMPLETE,
+        plan=_plan(_op("fetch-1", "content_fetch", input={"resource": "https://example.com/page"})),
+        stages=(
+            WorkflowStage(
+                id="fetch-1", operation="content_fetch",
+                status=WorkflowStageStatus.COMPLETE, order=1,
+                input={"resource": "https://example.com/page"}, depends_on=(),
+                result_count=1, evidence_ids=("evidence-trunc",),
+            ),
+        ),
+        evidence=(truncated,),
+        citations=(),
+        gaps=(),
+        attempts=(),
+        artifacts=(),
+        meta=WorkflowMeta("req-budget", 1.0),
+    )
+    raw = serialize_workflow(outcome)
+    item = raw["evidence"][0]
+    assert item["truncated"] is True
+    assert item["original_length"] == 9000
+    assert item["returned_length"] == 8000
+    validate_workflow_dict(raw)
+    Draft202012Validator(WORKFLOW_JSON_SCHEMA).validate(raw)
+
+    # Default untruncated fixtures derive equal lengths from the content.
+    defaulted = serialize_workflow(complete_outcome())
+    assert defaulted["evidence"][0]["truncated"] is False
+    assert defaulted["evidence"][0]["original_length"] == defaulted["evidence"][0]["returned_length"]
+
+    # Missing metadata fails the raw validator and the JSON Schema.
+    broken = serialize_workflow(outcome)
+    del broken["evidence"][0]["truncated"]
+    with pytest.raises(WorkflowContractError):
+        validate_workflow_dict(broken)
+    assert list(Draft202012Validator(WORKFLOW_JSON_SCHEMA).iter_errors(broken))
+
+    # Contradictory metadata fails the raw validator.
+    broken = serialize_workflow(outcome)
+    broken["evidence"][0]["original_length"] = 5000
+    with pytest.raises(WorkflowContractError):
+        validate_workflow_dict(broken)
+
+    broken = serialize_workflow(outcome)
+    broken["evidence"][0]["returned_length"] = 7999
+    with pytest.raises(WorkflowContractError, match="returned_length must equal the content length"):
+        validate_workflow_dict(broken)
+    broken = serialize_workflow(outcome)
+    broken["evidence"][0]["content"] = "x" * (DEFAULT_FETCH_CONTENT_LIMIT + 1)
+    broken["evidence"][0]["original_length"] = DEFAULT_FETCH_CONTENT_LIMIT + 2
+    broken["evidence"][0]["returned_length"] = DEFAULT_FETCH_CONTENT_LIMIT + 1
+    with pytest.raises(WorkflowContractError, match="must not exceed DEFAULT_FETCH_CONTENT_LIMIT"):
+        validate_workflow_dict(broken)
 
 
 def test_typed_and_raw_round_trip():
@@ -659,7 +738,60 @@ def test_serialize_redacts_signed_url_echoed_by_provider_payload():
     assert "signature=%5BREDACTED%5D" in text
     assert "cdn.example.com" in text
     assert "expires=20300101" in text
+    evidence = redacted["evidence"][0]
+    assert evidence["returned_length"] == len(evidence["content"])
+    assert evidence["original_length"] == evidence["returned_length"]
     validate_workflow_dict(redacted)
+
+
+def test_serializer_preserves_truncated_evidence_budget_after_signed_url_redaction():
+    signed_url = "https://cdn.example.com/file?sig=a"
+    content = signed_url + " " + "x" * (8000 - len(signed_url) - 1)
+    outcome = WorkflowOutcome(
+        status=WorkflowStatus.COMPLETE,
+        plan=_plan(_op("fetch-a", "content_fetch", input={"resource": signed_url})),
+        stages=(
+            WorkflowStage(
+                id="fetch-a",
+                operation="content_fetch",
+                status=WorkflowStageStatus.COMPLETE,
+                order=1,
+                input={"resource": signed_url},
+                depends_on=(),
+                result_count=1,
+                evidence_ids=("evidence-truncated",),
+            ),
+        ),
+        evidence=(
+            ExecutionEvidenceItem(
+                id="evidence-truncated",
+                resource=signed_url,
+                provider="jina",
+                title="Signed artifact",
+                content=content,
+                truncated=True,
+                original_length=8001,
+                returned_length=8000,
+            ),
+        ),
+        citations=(),
+        gaps=(),
+        attempts=(),
+        artifacts=(),
+        error=None,
+        meta=WorkflowMeta("req-signed-truncated", 1.0),
+    )
+
+    payload = serialize_workflow(outcome)
+    evidence = payload["evidence"][0]
+    assert "?sig=a" not in evidence["content"]
+    assert "?sig=%5BREDACTED%5D" in evidence["content"]
+    assert evidence["truncated"] is True
+    assert evidence["original_length"] == 8001
+    assert evidence["returned_length"] == len(evidence["content"]) == DEFAULT_FETCH_CONTENT_LIMIT
+    assert len(evidence["content"]) <= DEFAULT_FETCH_CONTENT_LIMIT
+    validate_workflow_dict(payload)
+    Draft202012Validator(WORKFLOW_JSON_SCHEMA).validate(payload)
 
 
 def test_serialize_redacts_url_userinfo_in_resources():

@@ -94,8 +94,9 @@ operation must keep its dependencies within the same plan.
 ## Capability Boundaries
 
 - `search`: broad discovery and synthesis through the generic evidence command; use returned `routing`, `attempts`, and `degradation` as orchestration signals, not as claim proof. Provider selection inside `search` is internal and intent-driven (for example `docs_search` providers for library/API intent and `web_search` providers for Chinese/current topics).
-- `fetch`: page-content evidence. Key claims require fetched page text under `fetch_before_claim`.
+- `fetch`: page-content evidence. Key claims require fetched page text under `fetch_before_claim`. Each fetched evidence item is bounded to 8,000 characters by default and reports `truncated`/`original_length`/`returned_length`; `fetch "url" --full` preserves the available full content.
 - `map`: site structure exploration before many fetches from one site; not claim evidence by itself.
+- `research run` admits at most five evidence items per run and records explicit `evidence_output_budget` gaps when planned fetches are suppressed by the output allowance; discovery candidates are never promoted to evidence.
 - The canonical V2 commands accept only `--format json|markdown|content`; V1 options such as `--extra-sources`, `--timeout`, `--validation`, and `--output` are rejected before any provider work.
 
 ## Live Executor Output

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
+from smart_search.execution_primitives import DEFAULT_FETCH_CONTENT_LIMIT
 from smart_search.v2_contract import (
     ERROR_EXIT_CODES,
     ERROR_RETRYABILITY,
@@ -380,6 +381,89 @@ def test_candidate_requires_identity_provenance_and_display_text():
             validate_result(envelope(evidence=V2Evidence(candidates=(candidate,))))
 
 
+def test_evidence_item_content_budget_metadata_is_required_and_validated():
+    """Every V2 evidence item carries the additive content-budget metadata;
+    invalid or contradictory values are rejected by the typed validator and
+    the JSON Schema."""
+    good = V2EvidenceItem(
+        "ev-1", "https://example.com/a", "tavily", "A", "short body",
+        truncated=False, original_length=10, returned_length=10,
+    )
+    payload = serialize_result(envelope(evidence=V2Evidence(items=(good,))))
+    assert payload["evidence"]["items"][0]["truncated"] is False
+    assert payload["evidence"]["items"][0]["original_length"] == 10
+    assert payload["evidence"]["items"][0]["returned_length"] == 10
+    SCHEMA_VALIDATOR.validate(payload)
+
+    truncated = V2EvidenceItem(
+        "ev-2", "https://example.com/b", "jina", "B", "x" * 8000,
+        truncated=True, original_length=9000, returned_length=8000,
+    )
+    payload = serialize_result(envelope(evidence=V2Evidence(items=(truncated,))))
+    assert payload["evidence"]["items"][0]["truncated"] is True
+    SCHEMA_VALIDATOR.validate(payload)
+
+    with pytest.raises(V2ContractError, match="must not exceed DEFAULT_FETCH_CONTENT_LIMIT"):
+        V2EvidenceItem(
+            "ev-over-cap",
+            "https://example.com/over-cap",
+            "jina",
+            "Over cap",
+            "x" * (DEFAULT_FETCH_CONTENT_LIMIT + 1),
+            truncated=True,
+            original_length=DEFAULT_FETCH_CONTENT_LIMIT + 2,
+            returned_length=DEFAULT_FETCH_CONTENT_LIMIT + 1,
+        )
+
+    raw = serialize_result(envelope(evidence=V2Evidence(items=(truncated,))))
+    raw_item = raw["evidence"]["items"][0]
+    raw_item["content"] = "x" * (DEFAULT_FETCH_CONTENT_LIMIT + 1)
+    raw_item["original_length"] = DEFAULT_FETCH_CONTENT_LIMIT + 2
+    raw_item["returned_length"] = DEFAULT_FETCH_CONTENT_LIMIT + 1
+    with pytest.raises(V2ContractError, match="must not exceed DEFAULT_FETCH_CONTENT_LIMIT"):
+        validate_envelope_dict(raw)
+
+    # Default lengths are derived from the content for untruncated fixtures.
+    defaulted = V2EvidenceItem("ev-3", "https://example.com/c", "tavily", "C", "body")
+    payload = serialize_result(envelope(evidence=V2Evidence(items=(defaulted,))))
+    assert payload["evidence"]["items"][0]["original_length"] == 4
+    assert payload["evidence"]["items"][0]["returned_length"] == 4
+
+    for kwargs in (
+        dict(truncated="yes"),
+        dict(truncated=False, original_length=1, returned_length=2),
+        dict(truncated=False, original_length=3, returned_length=3),
+        dict(truncated=True, original_length=4, returned_length=4),
+        dict(truncated=True, original_length=9, returned_length=3),
+        dict(truncated=True, original_length=-1, returned_length=4),
+    ):
+        with pytest.raises(V2ContractError):
+            validate_result(
+                envelope(
+                    evidence=V2Evidence(
+                        items=(
+                            V2EvidenceItem(
+                                "b1", "https://example.com/a", "tavily", "A", "body", **kwargs
+                            ),
+                        )
+                    )
+                )
+            )
+
+    raw = serialize_result(envelope(evidence=V2Evidence(items=(good,))))
+    raw["evidence"]["items"][0]["original_length"] = 3
+    raw["evidence"]["items"][0]["returned_length"] = 3
+    with pytest.raises(V2ContractError, match="returned_length must equal the content length"):
+        validate_envelope_dict(raw)
+
+    # A raw dict missing the metadata is rejected by the schema and validator.
+    raw = serialize_result(envelope(evidence=V2Evidence(items=(good,))))
+    del raw["evidence"]["items"][0]["truncated"]
+    with pytest.raises(V2ContractError):
+        validate_envelope_dict(raw)
+    assert list(SCHEMA_VALIDATOR.iter_errors(raw))
+
+
 def test_routing_and_attempt_whitelists_reject_unknown_fields(complete_empty):
     raw = serialize_result(complete_empty)
     raw["routing"]["score"] = 0.9
@@ -467,7 +551,42 @@ def test_serializer_redacts_signed_url_echoed_by_provider_payload():
     assert "signature=%5BREDACTED%5D" in rendered
     assert "cdn.example.com" in rendered
     assert "expires=20300101" in rendered
+    evidence = serialize_result(model)["evidence"]["items"][0]
+    assert evidence["returned_length"] == len(evidence["content"])
+    assert evidence["original_length"] == evidence["returned_length"]
     validate_envelope_dict(serialize_result(model))
+
+
+def test_serializer_preserves_truncated_evidence_budget_after_signed_url_redaction():
+    signed_url = "https://cdn.example.com/file?sig=a"
+    content = signed_url + " " + "x" * (8000 - len(signed_url) - 1)
+    model = envelope(
+        evidence=V2Evidence(
+            items=(
+                V2EvidenceItem(
+                    "ev-truncated",
+                    signed_url,
+                    "jina",
+                    "Signed artifact",
+                    content,
+                    truncated=True,
+                    original_length=8001,
+                    returned_length=8000,
+                ),
+            ),
+        ),
+    )
+
+    payload = serialize_result(model)
+    evidence = payload["evidence"]["items"][0]
+    assert "?sig=a" not in evidence["content"]
+    assert "?sig=%5BREDACTED%5D" in evidence["content"]
+    assert evidence["truncated"] is True
+    assert evidence["original_length"] == 8001
+    assert evidence["returned_length"] == len(evidence["content"]) == DEFAULT_FETCH_CONTENT_LIMIT
+    assert len(evidence["content"]) <= DEFAULT_FETCH_CONTENT_LIMIT
+    validate_envelope_dict(payload)
+    SCHEMA_VALIDATOR.validate(payload)
 
 
 @pytest.mark.parametrize("code", list(V2ErrorCode))
@@ -601,7 +720,7 @@ def test_v2_contract_import_isolation_is_bidirectional():
     ):
         assert not (ROOT / "src" / "smart_search" / name).exists(), name
     imports = imported_modules(ROOT / "src" / "smart_search" / "v2_contract.py")
-    allowed_local = {".security"}
+    allowed_local = {".evidence_budget", ".security"}
     assert {item for item in imports if item.startswith(".")} <= allowed_local
     assert not any(fragment in item for item in imports for fragment in ("cli", "service", "config", "provider"))
 

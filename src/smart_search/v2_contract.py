@@ -13,6 +13,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any
 
+from .evidence_budget import DEFAULT_FETCH_CONTENT_LIMIT
 from .security import sanitize_data
 
 V2_SCHEMA_VERSION = "2"
@@ -186,6 +187,51 @@ class V2EvidenceItem:
     provider: str
     title: str
     content: str
+    truncated: bool = False
+    original_length: int = 0
+    returned_length: int = 0
+
+    def __post_init__(self) -> None:
+        """Derive default content-budget lengths for untruncated fixtures.
+
+        Explicit untruncated lengths must equal the content length; truncated
+        items require ``returned_length == len(content)`` and
+        ``original_length > returned_length``. Zero defaults on untruncated
+        items are computed from the content so existing typed fixtures stay
+        source-compatible.
+        """
+        if type(self.truncated) is not bool:
+            raise V2ContractError("evidence item truncated must be boolean")
+        original = self.original_length
+        returned = self.returned_length
+        if type(original) is not int or original < 0:
+            raise V2ContractError("evidence item original_length must be a non-negative integer")
+        if type(returned) is not int or returned < 0:
+            raise V2ContractError("evidence item returned_length must be a non-negative integer")
+        if not self.truncated:
+            if original == 0 and returned == 0:
+                original = len(self.content)
+                returned = len(self.content)
+            elif original != returned:
+                raise V2ContractError(
+                    "untruncated evidence item requires equal original and returned lengths"
+                )
+        else:
+            if original <= returned:
+                raise V2ContractError(
+                    "truncated evidence item original_length must exceed returned_length"
+                )
+            if returned > DEFAULT_FETCH_CONTENT_LIMIT:
+                raise V2ContractError(
+                    "truncated evidence item returned_length must not exceed "
+                    "DEFAULT_FETCH_CONTENT_LIMIT"
+                )
+        if returned != len(self.content):
+            raise V2ContractError(
+                "evidence item returned_length must equal the content length"
+            )
+        object.__setattr__(self, "original_length", original)
+        object.__setattr__(self, "returned_length", returned)
 
 
 @dataclass(frozen=True)
@@ -411,10 +457,16 @@ _defs["candidate"] = {
         {"properties": {"snippet": _NONBLANK}},
     ],
 }
-_defs["evidence_item"] = _strict_object(("id", "resource", "provider", "title", "content"), {
-    "id": _NONBLANK, "resource": _NONBLANK, "provider": _NONBLANK,
-    "title": {"type": "string"}, "content": _NONBLANK,
-})
+_defs["evidence_item"] = _strict_object(
+    ("id", "resource", "provider", "title", "content", "truncated", "original_length", "returned_length"),
+    {
+        "id": _NONBLANK, "resource": _NONBLANK, "provider": _NONBLANK,
+        "title": {"type": "string"}, "content": _NONBLANK,
+        "truncated": {"type": "boolean"},
+        "original_length": {"type": "integer", "minimum": 0},
+        "returned_length": {"type": "integer", "minimum": 0},
+    },
+)
 _defs["citation"] = _strict_object(("id", "evidence_id", "label"), {
     "id": _NONBLANK, "evidence_id": _NONBLANK, "label": _NONBLANK,
 })
@@ -564,6 +616,21 @@ def _validate_evidence(evidence: V2Evidence) -> None:
             _nonblank(getattr(item, name), f"evidence item.{name}")
         if not isinstance(item.title, str):
             raise V2ContractError("evidence item.title must be a string")
+        if type(item.truncated) is not bool:
+            raise V2ContractError("evidence item.truncated must be boolean")
+        _exact_int(item.original_length, "evidence item.original_length")
+        _exact_int(item.returned_length, "evidence item.returned_length")
+        if item.returned_length != len(item.content):
+            raise V2ContractError("evidence item returned_length must equal the content length")
+        if not item.truncated and item.original_length != item.returned_length:
+            raise V2ContractError("untruncated evidence item requires equal original and returned lengths")
+        if item.truncated and item.original_length <= item.returned_length:
+            raise V2ContractError("truncated evidence item requires original_length > returned_length")
+        if item.truncated and item.returned_length > DEFAULT_FETCH_CONTENT_LIMIT:
+            raise V2ContractError(
+                "truncated evidence item returned_length must not exceed "
+                "DEFAULT_FETCH_CONTENT_LIMIT"
+            )
         item_ids.append(item.id)
     _unique(item_ids, "evidence item id")
     if set(candidate_ids) & set(item_ids):
@@ -712,6 +779,21 @@ def _project(value: Any, names: Sequence[str]) -> dict[str, Any]:
     return {name: _thaw(getattr(value, name)) for name in names}
 
 
+def _project_redacted_evidence(items: Sequence[dict[str, Any]]) -> None:
+    """Restore content-budget metadata after redaction changes text length."""
+    for item in items:
+        if item["truncated"]:
+            max_length = min(
+                item["returned_length"],
+                item["original_length"] - 1,
+                DEFAULT_FETCH_CONTENT_LIMIT,
+            )
+            item["content"] = item["content"][:max_length]
+        item["returned_length"] = len(item["content"])
+        if not item["truncated"]:
+            item["original_length"] = item["returned_length"]
+
+
 def serialize_result(
     result: V2Envelope, *,
     secrets: Iterable[str] | str = (),
@@ -720,7 +802,10 @@ def serialize_result(
     validate_result(result)
     evidence = {
         "candidates": [_project(item, ("id", "resource", "provider", "title", "snippet")) for item in result.evidence.candidates],
-        "items": [_project(item, ("id", "resource", "provider", "title", "content")) for item in result.evidence.items],
+        "items": [_project(
+            item,
+            ("id", "resource", "provider", "title", "content", "truncated", "original_length", "returned_length"),
+        ) for item in result.evidence.items],
         "citations": [_project(item, ("id", "evidence_id", "label")) for item in result.evidence.citations],
         "gaps": [_project(item, ("code", "message", "capability", "resource")) for item in result.evidence.gaps],
     }
@@ -744,6 +829,7 @@ def serialize_result(
         "meta": meta,
     }
     sanitized = sanitize_data(output, _secret_values(secrets))
+    _project_redacted_evidence(sanitized["evidence"]["items"])
     validate_envelope_dict(sanitized)
     return sanitized
 
@@ -777,7 +863,7 @@ def _from_raw(raw: dict[str, Any]) -> V2Envelope:
         _exact_keys(item, fields, "candidate")
         candidates.append(V2Candidate(**item))
     for item in _array(ev["items"], "evidence.items"):
-        fields = ("id", "resource", "provider", "title", "content")
+        fields = ("id", "resource", "provider", "title", "content", "truncated", "original_length", "returned_length")
         _exact_keys(item, fields, "evidence item")
         items.append(V2EvidenceItem(**item))
     for item in _array(ev["citations"], "evidence.citations"):

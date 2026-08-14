@@ -490,6 +490,50 @@ async def test_owner_bounded_fetch_concurrency(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_owner_evidence_output_budget_caps_fetches_and_emits_gap(monkeypatch):
+    """The five-item output allowance bounds both provider work and host-facing
+    output: fetches beyond the remaining allowance are never begun and every
+    suppressed planned fetch keeps an explicit ``evidence_output_budget`` gap."""
+    from smart_search.research_workflow import WORKFLOW_EVIDENCE_OUTPUT_LIMIT
+
+    plan = _plan(
+        *[
+            _op(
+                f"fetch-{index}",
+                "content_fetch",
+                input={"resource": f"https://example.com/page-{index}"},
+            )
+            for index in range(1, WORKFLOW_EVIDENCE_OUTPUT_LIMIT + 2)
+        ]
+    )
+    calls: list[str] = []
+
+    async def fake_fetch(request):
+        assert len(calls) < WORKFLOW_EVIDENCE_OUTPUT_LIMIT
+        calls.append(request.resource)
+        return _fetch_outcome(
+            items=(_evidence(len(calls), request.resource),),
+            attempts=(_ok_attempt("content_fetch", "jina"),),
+        )
+
+    monkeypatch.setattr(evidence_operations, "content_fetch", fake_fetch)
+
+    outcome = await _run(WorkflowRequest(query="q", plan=plan, max_fetch_concurrency=1))
+    assert len(calls) == WORKFLOW_EVIDENCE_OUTPUT_LIMIT
+    assert len(outcome.evidence) == WORKFLOW_EVIDENCE_OUTPUT_LIMIT
+    assert outcome.status is WorkflowStatus.COMPLETE
+    budget_gaps = [gap for gap in outcome.gaps if gap.code == "evidence_output_budget"]
+    assert len(budget_gaps) == 1
+    assert budget_gaps[0].resource == f"https://example.com/page-{WORKFLOW_EVIDENCE_OUTPUT_LIMIT + 1}"
+    assert budget_gaps[0].capability == "content_fetch"
+    # the budget-suppressed stage completes empty; it is not a failure
+    assert [stage.status for stage in outcome.stages] == [
+        WorkflowStageStatus.COMPLETE
+    ] * (WORKFLOW_EVIDENCE_OUTPUT_LIMIT + 1)
+    assert outcome.stages[-1].result_count == 0
+
+
+@pytest.mark.asyncio
 async def test_owner_url_dedupe_fetches_once(monkeypatch):
     plan = _plan(
         _op("fetch-a", "content_fetch", input={"resource": "https://Example.com/docs/page"}),

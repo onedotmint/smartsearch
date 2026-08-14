@@ -23,6 +23,20 @@ def _eligible_statuses(*providers: str) -> list[dict[str, object]]:
     ]
 
 
+def _anonymous_statuses(*providers: str) -> list[dict[str, object]]:
+    return [
+        {
+            "provider": provider,
+            "configured": True,
+            "enabled": True,
+            "eligible": True,
+            "reason": "anonymous_ready",
+            "anonymous": True,
+        }
+        for provider in providers
+    ]
+
+
 @pytest.mark.asyncio
 async def test_executor_returns_success_and_attempt_metadata(monkeypatch):
     """
@@ -160,6 +174,98 @@ async def test_executor_fallback_off_limits_chain_to_first_provider(monkeypatch)
     assert execution.value == []
     assert [attempt.provider for attempt in execution.attempts] == ["first"]
     logger.info("capability executor fallback=off 测试完成")
+
+
+@pytest.mark.asyncio
+async def test_anonymous_eligible_provider_joins_same_capability_chain(monkeypatch):
+    """Anonymous-capable providers (anonymous_ready) are treated as eligible
+    in the same-capability chain: a failure at the first provider falls back to
+    the anonymous provider, and a success at the first provider never invokes
+    it. Ordered attempts preserve the failure then success."""
+    calls: list[str] = []
+    monkeypatch.setattr(
+        capability_executor,
+        "_provider_status_for_capability",
+        lambda capability: _eligible_statuses("tavily") + _anonymous_statuses("jina"),
+    )
+    monkeypatch.setattr(capability_executor, "add_request", lambda: True)
+
+    async def failing_then_ok(provider: str, outcome: dict[str, object]) -> dict[str, str]:
+        calls.append(provider)
+        if provider == "tavily":
+            raise ValueError("tavily failed")
+        return {"content": "jina body", "url": "https://example.test", "provider": provider}
+
+    execution = await execute_capability(
+        CapabilityOperation(
+            capability="web_fetch",
+            input_value="https://example.test",
+            run=failing_then_ok,
+            cache_kind="fetch",
+            is_success=lambda value: bool(value.get("content")),
+            result_count=lambda _value: 1,
+        ),
+        providers=["tavily", "jina"],
+    )
+    assert calls == ["tavily", "jina"]
+    assert execution.provider == "jina"
+    assert [attempt.provider for attempt in execution.attempts] == ["tavily", "jina"]
+    assert [attempt.status for attempt in execution.attempts] == [
+        ExecutionAttemptStatus.ERROR,
+        ExecutionAttemptStatus.OK,
+    ]
+
+    # A first-provider success never invokes the anonymous provider.
+    calls.clear()
+
+    async def tavily_ok(provider: str, outcome: dict[str, object]) -> dict[str, str]:
+        calls.append(provider)
+        return {"content": "tavily body", "url": "https://example.test", "provider": provider}
+
+    execution = await execute_capability(
+        CapabilityOperation(
+            capability="web_fetch",
+            input_value="https://example.test",
+            run=tavily_ok,
+            cache_kind="fetch",
+            is_success=lambda value: bool(value.get("content")),
+            result_count=lambda _value: 1,
+        ),
+        providers=["tavily", "jina"],
+    )
+    assert calls == ["tavily"]
+    assert execution.provider == "tavily"
+    assert [attempt.provider for attempt in execution.attempts] == ["tavily"]
+
+
+@pytest.mark.asyncio
+async def test_anonymous_ready_is_not_a_configured_but_ineligible_skip(monkeypatch):
+    """anonymous_ready providers are eligible and must never appear as
+    configured-but-ineligible skipped attempts."""
+    monkeypatch.setattr(
+        capability_executor,
+        "_provider_status_for_capability",
+        lambda capability: _anonymous_statuses("jina"),
+    )
+    monkeypatch.setattr(capability_executor, "add_request", lambda: True)
+
+    async def run(provider: str, outcome: dict[str, object]) -> dict[str, str]:
+        return {"content": "body", "url": "https://example.test", "provider": provider}
+
+    execution = await execute_capability(
+        CapabilityOperation(
+            capability="web_fetch",
+            input_value="https://example.test",
+            run=run,
+            cache_kind="fetch",
+            is_success=lambda value: bool(value.get("content")),
+            result_count=lambda _value: 1,
+        ),
+        providers=["jina"],
+    )
+    assert execution.provider == "jina"
+    assert len(execution.attempts) == 1
+    assert execution.attempts[0].status is ExecutionAttemptStatus.OK
 
 
 @pytest.mark.asyncio

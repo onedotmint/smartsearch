@@ -63,12 +63,14 @@ The evidence-first Core API is the recommended Agent default. The canonical comm
 smart-search capabilities
 smart-search search "example query"
 smart-search fetch "https://example.com/page"
+smart-search fetch "https://example.com/page" --full
 ```
 
 `map` is available as the Advanced `site_discovery` operation.
 
 - V2 defaults to JSON, the only stable machine contract, and returns the strict envelope (`status`, `operation`, `evidence`, `routing`, `attempts`, ...). `--format markdown|content` renders a non-stable human view of the same validated envelope.
 - V2 `search` returns discovery candidates only; it never calls legacy `main_search` or accepts `--response-mode`.
+- Fetched evidence is bounded to 8,000 characters per item by default; every item reports `truncated`, `original_length`, and `returned_length`, and `fetch --full` bypasses the cap for the available full content. `research run` admits at most five evidence items per run.
 - Host agents write the final answer from fetched `evidence.items`; discovery candidates are not claim-level proof.
 - `capabilities` uses envelope-only meta operation `capability_status` (local inspection, no Provider network).
 - `--fail-on-degraded` is available for v2 and v3.

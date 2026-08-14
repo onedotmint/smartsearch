@@ -423,3 +423,69 @@ def test_v2_help_keeps_active_v2_options():
     for option in ("--instructions", "--max-depth", "--max-breadth", "--limit"):
         assert option in map_help, f"map help must keep {option}"
     assert "--timeout" not in map_help
+
+
+def test_v2_fetch_full_flag_reaches_owner_and_default_stays_bounded(monkeypatch):
+    from smart_search import evidence_operations
+    from smart_search.evidence_operations import (
+        ContentFetchRequest,
+        DEFAULT_FETCH_CONTENT_LIMIT,
+        EvidenceOperationOutcome,
+        EvidenceOperationStatus,
+        EvidenceRouting,
+    )
+    from smart_search.execution_primitives import ExecutionEvidenceItem, ExecutionMetadata
+
+    captured: list[ContentFetchRequest] = []
+
+    async def fake_content_fetch(request):
+        captured.append(request)
+        body = "z" * (DEFAULT_FETCH_CONTENT_LIMIT + 100)
+        item = ExecutionEvidenceItem(
+            id="ev-full",
+            resource=request.resource,
+            provider="jina",
+            title="Page",
+            content=body,
+            original_length=len(body),
+            returned_length=len(body),
+        )
+        return EvidenceOperationOutcome(
+            operation="content_fetch",
+            status=EvidenceOperationStatus.COMPLETE,
+            evidence_items=(item,),
+            routing=EvidenceRouting(
+                ("content_fetch",), ("content_fetch",), "v2", ("content_fetch",)
+            ),
+            metadata=ExecutionMetadata("req", 1),
+        )
+
+    monkeypatch.setattr(evidence_operations, "content_fetch", fake_content_fetch)
+
+    code, out, err = _run_main(["fetch", "https://example.com", "--full"])
+    assert code == 0, err
+    assert captured and captured[0].full is True
+    assert captured[0].effective_content_limit is None
+    payload = json.loads(out)
+    assert payload["operation"] == "content_fetch"
+    assert payload["evidence"]["items"][0]["truncated"] is False
+    assert payload["evidence"]["items"][0]["original_length"] == DEFAULT_FETCH_CONTENT_LIMIT + 100
+
+    code, out, err = _run_main(["fetch", "https://example.com"])
+    assert code == 0, err
+    assert captured[1].full is False
+    assert captured[1].effective_content_limit == DEFAULT_FETCH_CONTENT_LIMIT
+
+    # The canonical envelope emits all three content-budget fields.
+    payload = json.loads(out)
+    item = payload["evidence"]["items"][0]
+    for field in ("truncated", "original_length", "returned_length"):
+        assert field in item
+
+
+def test_v2_fetch_full_is_not_a_rejected_legacy_option():
+    from smart_search.cli_v2 import _reject_v1_only
+    from smart_search import cli_parser
+
+    args = cli_parser.build_parser().parse_args(["fetch", "https://example.com", "--full"])
+    assert _reject_v1_only(args, argv=["fetch", "https://example.com", "--full"]) is None

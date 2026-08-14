@@ -138,10 +138,11 @@ smart-search search "query" --format content
 
 ```sh
 smart-search fetch "https://example.com/source" --format markdown
+smart-search fetch "https://example.com/source" --full
 smart-search map "https://docs.example.com" --format json
 ```
 
-`fetch` is the page-level evidence boundary. `map` returns site or documentation structure candidates and does not replace fetching the pages that support claims. `fetch` and `map` accept `--format json|markdown|content`; `map` additionally accepts `--instructions`, `--max-depth`, `--max-breadth`, and `--limit`. `--timeout`, `--output`, and `--force` are rejected before any owner work.
+`fetch` is the page-level evidence boundary. Each fetched evidence item is bounded to 8,000 characters by default and always reports `truncated`, `original_length`, and `returned_length` so no truncation is silent; `fetch --full` bypasses the per-item cap and preserves the available full content. `map` returns site or documentation structure candidates and does not replace fetching the pages that support claims. `fetch` and `map` accept `--format json|markdown|content`; `map` additionally accepts `--instructions`, `--max-depth`, `--max-breadth`, and `--limit`. `--timeout`, `--output`, and `--force` are rejected before any owner work.
 
 ### Research Workflow
 

@@ -63,12 +63,14 @@ smart-search 0.2.0
 smart-search capabilities
 smart-search search "示例查询"
 smart-search fetch "https://example.com/page"
+smart-search fetch "https://example.com/page" --full
 ```
 
 `map` 作为 Advanced `site_discovery` operation 提供；v2 用法见命令参考。
 
 - v2 默认输出 JSON——唯一稳定的机器契约——并返回严格版本化 envelope（`status`、`operation`、`evidence`、`routing`、`attempts` 等）。`--format markdown|content` 渲染同一 validated envelope 的非稳定人类视图；这些视图不提供字段级机器兼容承诺。
 - v2 `search` 只返回 discovery candidates；不会调用 legacy `main_search`，也不接受 `--response-mode`。
+- fetched evidence 默认按条目限制为 8,000 字符；每条 evidence 都会报告 `truncated`、`original_length` 和 `returned_length`，`fetch --full` 可绕过该上限保留可用全文。`research run` 每次运行最多接收五条 evidence。
 - Host Agent 基于 fetched `evidence.items` 写最终回答；discovery candidates 不是 claim-level 证据。
 - `capabilities` 使用 envelope-only 元操作 `capability_status`（本地只读检查，不发 Provider 网络请求）。
 - `--fail-on-degraded` 可用于 v2 和 v3。

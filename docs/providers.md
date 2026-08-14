@@ -9,7 +9,7 @@ Provider selection is capability-first. A provider can be selected only for a ca
 | `main_search` | xAI Responses -> OpenAI-compatible | Broad live answer generation and primary synthesis |
 | `docs_search` | Context7 -> Exa | Libraries, frameworks, APIs, official docs, papers, and trusted discovery |
 | `web_search` | Zhipu Web Search API -> Zhipu Coding Plan MCP -> Tavily -> Firecrawl | General, Chinese, domestic, current, or supplemental discovery |
-| `web_fetch` | Tavily -> Jina with key -> Zhipu Coding Plan MCP Reader -> Firecrawl | Known URL extraction and claim-level page evidence |
+| `web_fetch` | Tavily -> Jina (anonymous or keyed) -> Zhipu Coding Plan MCP Reader -> Firecrawl | Known URL extraction and claim-level page evidence |
 | `vertical_search` | AnySearch | Experimental structured search such as CVE, finance, legal, academic, or code/docs domains |
 | `site_map` | Tavily | Site and documentation structure discovery |
 
@@ -26,24 +26,25 @@ Fallback is same-capability only. AnySearch is not part of the `web_search` fall
 | Zhipu Web Search API | Chinese, domestic, current, or domain-filtered discovery | `ZHIPU_API_KEY`, `ZHIPU_API_URL`, `ZHIPU_SEARCH_ENGINE` | [Web Search API](https://docs.bigmodel.cn/cn/guide/tools/web-search), [API keys](https://open.bigmodel.cn/usercenter/apikeys) |
 | Zhipu Coding Plan Remote MCP | Coding Plan search, page reading, and repository discovery | `ZHIPU_MCP_API_KEY`, `ZHIPU_MCP_SEARCH_API_URL`, `ZHIPU_MCP_READER_API_URL`, `ZHIPU_MCP_ZREAD_API_URL` | [search MCP](https://docs.bigmodel.cn/cn/coding-plan/mcp/search-mcp-server), [reader MCP](https://docs.bigmodel.cn/cn/coding-plan/mcp/reader-mcp-server), [zread MCP](https://docs.bigmodel.cn/cn/coding-plan/mcp/zread-mcp-server) |
 | Tavily | Extra web sources, URL fetch, and site map | `TAVILY_API_URL`, `TAVILY_API_KEY`, `TAVILY_ENABLED` | [Tavily docs](https://docs.tavily.com/), [Tavily app](https://app.tavily.com/home) |
-| Jina Reader | Known URL extraction for `web_fetch` | `JINA_API_KEY`, `JINA_READER_API_URL`, `JINA_RESPOND_WITH`, `JINA_TIMEOUT_SECONDS` | [Jina Reader](https://jina.ai/reader/), [Jina AI](https://jina.ai/) |
+| Jina Reader | Known URL extraction for `web_fetch`; anonymous with the default endpoint | `JINA_API_KEY`, `JINA_READER_API_URL`, `JINA_RESPOND_WITH`, `JINA_TIMEOUT_SECONDS` | [Jina Reader](https://jina.ai/reader/), [Jina AI](https://jina.ai/) |
 | Firecrawl | Fetch fallback and supplementary web sources | `FIRECRAWL_API_URL`, `FIRECRAWL_API_KEY` | [Firecrawl docs](https://docs.firecrawl.dev/), [API keys](https://www.firecrawl.dev/app/api-keys) |
 | AnySearch | Experimental vertical search | `ANYSEARCH_API_URL`, `ANYSEARCH_API_KEY`, `ANYSEARCH_TIMEOUT_SECONDS` | [AnySearch docs](https://www.anysearch.com/docs), [API keys](https://www.anysearch.com/console/api-keys) |
 
 ## Minimum profiles
 
-The default `SMART_SEARCH_MINIMUM_PROFILE=standard` is fail-closed for profile diagnostics and `doctor`. It expects:
+The default `SMART_SEARCH_MINIMUM_PROFILE=standard` is fail-closed for profile diagnostics and `doctor`. The Core minimum needs source discovery plus fetch and never requires a model route:
 
-- one `main_search` provider: xAI Responses or OpenAI-compatible;
-- one `docs_search` provider: Exa or Context7;
-- one `web_fetch` provider: Tavily, Jina with `JINA_API_KEY`, Zhipu Coding Plan MCP Reader, or Firecrawl.
+- source discovery: at least one of `web_search` (Zhipu REST/MCP, Tavily, Firecrawl) or `docs_search` (Context7, Exa);
+- one `web_fetch` provider: Tavily, Jina (anonymous or with `JINA_API_KEY`), Zhipu Coding Plan MCP Reader, or Firecrawl.
 
 The explicit modes are:
 
-- `standard`: require `main_search`, `docs_search`, and `web_fetch`;
+- `standard`: require source discovery (`web_search` OR `docs_search`) and `web_fetch`;
 - `lite`: relax the profile gate to source/search availability (any `main_search`, `web_search`, or `docs_search` provider); command preflight stays capability-scoped;
-- `full`: require the standard three capabilities plus `site_map`;
+- `full`: require the Core minimum plus `site_map`;
 - `off`: disable the minimum-profile gate for local experiments.
+
+Legacy model routes (`main_search`: xAI Responses and OpenAI-compatible) remain configured and probeable as optional `llm_synthesis` state; `llm_plan` is reported as an explicit empty optional capability. An absent model route never makes an evidence-ready Core unavailable, and `doctor` reports it as a warning rather than a Core failure.
 
 Normal commands validate only the capabilities they need. `fetch` needs `web_fetch`, `map` needs `site_map`, and `research` needs `web_fetch` while discovery capabilities depend on the query. Missing command capabilities return `config_error` with `required_capabilities` and `missing_capabilities`.
 
@@ -95,7 +96,7 @@ Do not route it through the existing `/paas/v4/web_search` REST path. A normal `
 
 ### Jina Reader
 
-Jina Reader is `web_fetch` only. It is not a general search provider. `JINA_API_KEY` is required before Jina satisfies the standard minimum profile. Anonymous Jina Reader calls are explicit or experimental fetch behavior and must not weaken the fail-closed profile. `JINA_RESPOND_WITH=readerlm-v2` also requires a key.
+Jina Reader is `web_fetch` only. It is not a general search provider. Anonymous Jina with the default `JINA_READER_API_URL` (`https://r.jina.ai`) is normal eligible `web_fetch`: `provider status`, `provider probe`, and `doctor` distinguish `ready` (keyed) from `anonymous_ready` (anonymous) without exposing the key. A key is still supported and unlocks ReaderLM-v2 quality; `JINA_RESPOND_WITH=readerlm-v2` without a key stays a classified `config_error` and never becomes eligible.
 
 ### AnySearch
 

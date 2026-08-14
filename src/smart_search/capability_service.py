@@ -173,6 +173,40 @@ def _provider_availability(provider: str, capability: str = "") -> dict[str, Any
             configured = False
             missing_keys.append(key)
 
+    # Generic anonymous-capable handling: a provider whose required credential
+    # is absent but whose profile declares ``anonymous_capable`` becomes
+    # configured and eligible when its anonymous endpoint is available. It
+    # reports ``reason="anonymous_ready"`` and an explicit anonymous state.
+    # Key-required optional settings declared by the profile (e.g.
+    # ``JINA_RESPOND_WITH``) stay invalid without a key and never become
+    # eligible. With a credential the provider reports a normal ``ready``.
+    anonymous = False
+    anonymous_error = ""
+    if not configured and profile.get("anonymous_capable"):
+        for attribute in tuple(profile.get("anonymous_key_required_attrs") or ()):
+            key = attribute.upper()
+            if key not in config_keys:
+                config_keys.append(key)
+            try:
+                value = getattr(config, attribute, None)
+            except (TypeError, ValueError):
+                value = None
+            if value:
+                anonymous_error = f"{key} requires a provider key; anonymous use is not eligible"
+        endpoint_attr = str(profile.get("anonymous_endpoint_attr") or "")
+        if endpoint_attr:
+            endpoint_key = endpoint_attr.upper()
+            if endpoint_key not in config_keys:
+                config_keys.append(endpoint_key)
+        if not anonymous_error and endpoint_attr:
+            try:
+                endpoint = getattr(config, endpoint_attr, None)
+            except (TypeError, ValueError):
+                endpoint = None
+            if endpoint:
+                configured = True
+                anonymous = True
+
     enabled_attr = str(profile.get("enabled_attr") or "")
     enabled_key = str(profile.get("enabled_key") or (enabled_attr.upper() if enabled_attr else ""))
     if enabled_key and enabled_key not in config_keys:
@@ -184,10 +218,27 @@ def _provider_availability(provider: str, capability: str = "") -> dict[str, Any
         except (TypeError, ValueError):
             enabled = False
 
+    if anonymous_error:
+        result = {
+            "provider": provider,
+            "capabilities": list(capabilities),
+            "config_keys": config_keys,
+            "configured": False,
+            "enabled": enabled,
+            "eligible": False,
+            "reason": "config_error",
+            "error": anonymous_error,
+            "anonymous": True,
+        }
+        logger.info("provider 可用性计算完成: provider=%s reason=config_error", provider)
+        return result
+
     if not configured:
         reason = f"missing_config:{','.join(missing_keys)}"
     elif not enabled:
         reason = f"disabled:{enabled_key}=false"
+    elif anonymous:
+        reason = "anonymous_ready"
     else:
         reason = "ready"
     eligible = configured and enabled
@@ -200,6 +251,8 @@ def _provider_availability(provider: str, capability: str = "") -> dict[str, Any
         "eligible": eligible,
         "reason": reason,
     }
+    if anonymous:
+        result["anonymous"] = True
     logger.info(
         "provider 可用性计算完成: provider=%s configured=%s enabled=%s eligible=%s reason=%s",
         provider,
@@ -303,18 +356,47 @@ def get_capability_status() -> dict[str, Any]:
     status["zread"]["experimental"] = True
     status["zread"]["explicit"] = True
 
+    # Legacy model routes stay configured and probeable as optional LLM
+    # synthesis state. ``llm_synthesis`` mirrors the legacy ``main_search``
+    # configuration alias; ``llm_plan`` is an explicit empty optional
+    # capability. Neither is ever a Core dependency.
     main_configured = status["main_search"]["configured"]
+    status["llm_synthesis"] = {
+        "configured": list(main_configured),
+        "fallback_chain": list(status["main_search"]["fallback_chain"]),
+        "provider_status": list(status["main_search"]["provider_status"]),
+        "disabled": list(status["main_search"]["disabled"]),
+        "ok": bool(main_configured),
+        "optional": True,
+        "legacy_alias_of": "main_search",
+    }
+    status["llm_plan"] = {
+        "configured": [],
+        "fallback_chain": [],
+        "provider_status": [],
+        "disabled": [],
+        "ok": False,
+        "optional": True,
+        "capability": "llm_plan",
+        "reason": "no configured llm_plan capability",
+    }
+
+    # Core readiness requires source discovery (``web_search`` OR
+    # ``docs_search``) plus ``web_fetch``; model routes are never required.
+    source_discovery_providers = list(status["web_search"]["configured"]) + list(
+        status["docs_search"]["configured"]
+    )
+    fetch_providers = list(status["web_fetch"]["configured"])
+    deep_research_ready = bool(source_discovery_providers and fetch_providers)
     deep_research_providers = (
-        main_configured
-        if main_configured
-        and status["web_fetch"]["configured"]
-        and (status["web_search"]["configured"] or status["docs_search"]["configured"])
+        list(dict.fromkeys(source_discovery_providers + fetch_providers))
+        if deep_research_ready
         else []
     )
     status["deep_research"] = {
         "configured": deep_research_providers,
         "fallback_chain": deep_research_providers,
-        "ok": bool(deep_research_providers),
+        "ok": deep_research_ready,
     }
     logger.info("capability 状态生成完成: main=%s disabled=%s", main_configured, sum(len(item.get("disabled", [])) for item in status.values()))
     return status
@@ -331,30 +413,50 @@ def _minimum_profile_result(profile: str, capability_status: dict[str, Any]) -> 
     2) 根据 lite、standard、full 计算真正的 enforced_required。
     3) 返回缺失能力和降级信息。
     """
-    legacy_required = [] if profile == "off" else ["main_search", "docs_search", "web_fetch"]
     available_search = any(
         capability_status.get(capability, {}).get("ok")
         for capability in ("main_search", "web_search", "docs_search")
     )
+    # Core source discovery group: ``web_search`` OR ``docs_search``.
+    source_search_ok = any(
+        capability_status.get(capability, {}).get("ok")
+        for capability in ("web_search", "docs_search")
+    )
+    fetch_ok = bool(capability_status.get("web_fetch", {}).get("ok"))
+    site_map_ok = bool(capability_status.get("site_map", {}).get("ok"))
+
     if profile == "off":
+        legacy_required: list[str] = []
         enforced_required: list[str] = []
     elif profile == "lite":
+        legacy_required = ["web_search", "docs_search", "web_fetch"]
         enforced_required = ["search"] if not available_search else []
     elif profile == "standard":
-        enforced_required = list(legacy_required)
+        # Core minimum = source discovery + web_fetch. Model routes are
+        # optional LLM synthesis state and never a Core dependency.
+        legacy_required = ["web_search", "docs_search", "web_fetch"]
+        enforced_required = ["source_discovery", "web_fetch"]
     elif profile == "full":
-        enforced_required = ["main_search", "docs_search", "web_fetch", "site_map"]
+        legacy_required = ["web_search", "docs_search", "web_fetch", "site_map"]
+        enforced_required = ["source_discovery", "web_fetch", "site_map"]
     else:
-        enforced_required = list(legacy_required)
+        legacy_required = ["web_search", "docs_search", "web_fetch"]
+        enforced_required = ["source_discovery", "web_fetch"]
 
-    missing = [capability for capability in legacy_required if not capability_status.get(capability, {}).get("ok")]
-    missing_required = []
-    if "search" in enforced_required and not available_search:
-        missing_required.append("search")
+    missing = [
+        capability
+        for capability in legacy_required
+        if not capability_status.get(capability, {}).get("ok")
+    ]
+    missing_required: list[str] = []
     for capability in enforced_required:
-        if capability == "search":
-            continue
-        if not capability_status.get(capability, {}).get("ok"):
+        if capability == "source_discovery":
+            if not source_search_ok:
+                missing_required.append(capability)
+        elif capability == "search":
+            if not available_search:
+                missing_required.append(capability)
+        elif not capability_status.get(capability, {}).get("ok"):
             missing_required.append(capability)
     ok = not missing_required
     return {

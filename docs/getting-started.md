@@ -35,7 +35,7 @@ smart-search config list --format json
 smart-search doctor status --format json
 ```
 
-`doctor status` is local readiness only: configuration storage, capability eligibility, Core evidence path, and minimum-profile health. It does not probe providers. Use `doctor probe` only when you intentionally want a live aggregate connectivity check. A command checks only the capabilities it needs. The historical `standard` profile is fail-closed for the full diagnostic and still expects one `main_search`, one `docs_search`, and one `web_fetch` provider, while evidence-first workflows prioritize source/docs discovery plus content fetch.
+`doctor status` is local readiness only: configuration storage, capability eligibility, Core evidence path, and minimum-profile health. It does not probe providers. Use `doctor probe` only when you intentionally want a live aggregate connectivity check. A command checks only the capabilities it needs. The `standard` profile is fail-closed for the Core minimum: source discovery (`web_search` or `docs_search`) plus `web_fetch`. Legacy model routes (`main_search`) are optional `llm_synthesis` state and are never a Core requirement; an absent model route is a `doctor` warning, not a Core failure.
 
 The configuration file is stored in the platform config directory:
 

@@ -565,3 +565,88 @@ def test_qualification_does_not_participate_in_v1_eligibility():
     assert openai_v1["eligible"] is False
     assert is_provider_qualified("openai-compatible", "answer_synthesis") is True
     assert is_provider_qualified("openai-compatible", "source_discovery") is False
+
+
+def test_anonymous_jina_is_eligible_without_credential(monkeypatch):
+    """Anonymous Jina with the default Reader endpoint is normal eligible
+    ``web_fetch``; with a key it reports ``ready``; ``JINA_RESPOND_WITH``
+    without a key stays a non-eligible ``config_error`` that never leaks the
+    configured value."""
+    monkeypatch.delenv("JINA_API_KEY", raising=False)
+    monkeypatch.delenv("JINA_RESPOND_WITH", raising=False)
+    monkeypatch.delenv("JINA_READER_API_URL", raising=False)
+    anonymous = capability_service._provider_availability("jina", "web_fetch")
+    assert anonymous["configured"] is True
+    assert anonymous["eligible"] is True
+    assert anonymous["reason"] == "anonymous_ready"
+    assert anonymous.get("anonymous") is True
+    assert "JINA_API_KEY" not in anonymous
+
+    monkeypatch.setenv("JINA_API_KEY", "key-secret")
+    keyed = capability_service._provider_availability("jina", "web_fetch")
+    assert keyed["configured"] is True
+    assert keyed["eligible"] is True
+    assert keyed["reason"] == "ready"
+    assert "key-secret" not in str(keyed)
+
+    monkeypatch.setenv("JINA_RESPOND_WITH", "readerlm-v2")
+    monkeypatch.delenv("JINA_API_KEY", raising=False)
+    blocked = capability_service._provider_availability("jina", "web_fetch")
+    assert blocked["configured"] is False
+    assert blocked["eligible"] is False
+    assert blocked["reason"] == "config_error"
+    assert "readerlm-v2" not in str(blocked)
+
+
+def test_anonymous_jina_enters_fetch_only_never_discovery(monkeypatch):
+    """Anonymous eligibility applies only to the declared capability:
+    ``web_fetch``. Jina never becomes a discovery provider."""
+    monkeypatch.delenv("JINA_API_KEY", raising=False)
+    fetch_status = capability_service._provider_availability("jina", "web_fetch")
+    assert fetch_status["eligible"] is True
+    assert fetch_status["reason"] == "anonymous_ready"
+    for capability in ("web_search", "docs_search", "site_map"):
+        status = capability_service._provider_availability("jina", capability)
+        assert status["eligible"] is False
+        assert status["reason"].startswith("unsupported_capability")
+
+
+def test_no_model_core_is_ready_and_optional_llm_state_is_visible(monkeypatch):
+    """With discovery plus fetch configured and no model routes, the Core
+    minimum profile is ready while ``llm_synthesis``/``llm_plan`` stay
+    explicit empty optional state. ``main_search`` remains the compatibility
+    alias for the optional model routes."""
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+    monkeypatch.setenv("EXA_API_KEY", "exa-test")
+    monkeypatch.delenv("JINA_API_KEY", raising=False)
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_COMPATIBLE_API_KEY", raising=False)
+    monkeypatch.delenv("SMART_SEARCH_MODEL_ROUTES", raising=False)
+
+    status = capability_service.get_capability_status()
+    # Core group: source discovery (web_search OR docs_search) + web_fetch.
+    assert status["web_search"]["ok"] is True  # Tavily
+    assert status["docs_search"]["ok"] is True  # Exa
+    assert status["web_fetch"]["ok"] is True  # Tavily and anonymous Jina
+    assert status["main_search"]["ok"] is False  # no model route
+    assert status["llm_synthesis"]["ok"] is False
+    assert status["llm_synthesis"]["configured"] == []
+    assert status["llm_synthesis"]["legacy_alias_of"] == "main_search"
+    assert status["llm_synthesis"]["optional"] is True
+    assert status["llm_plan"]["ok"] is False
+    assert status["llm_plan"]["optional"] is True
+    assert "no configured llm_plan capability" in str(status["llm_plan"])
+    assert status["deep_research"]["ok"] is True
+    assert status["deep_research"]["configured"] == ["tavily", "exa", "jina"]
+
+    standard = capability_service._minimum_profile_result("standard", status)
+    assert standard["ok"] is True
+    assert standard["missing_required"] == []
+    assert "main_search" not in standard["required"]
+
+    full = capability_service._minimum_profile_result("full", status)
+    # full additionally requires site mapping (Tavily)
+    assert full["ok"] is True
+
+    lite = capability_service._minimum_profile_result("lite", status)
+    assert lite["ok"] is True

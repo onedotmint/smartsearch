@@ -36,11 +36,11 @@
 
 ## Setup Workflow
 
-- Legacy interactive `setup` is removed. Configure through `smart-search config set KEY VALUE` (see Provider Endpoint Setup) or environment variables; the grouped wizard no longer exists. `main_search`, `docs_search`, and `web_fetch` are the required capability groups; `web_search` is optional reinforcement, followed by optional smart intent router configuration.
+- Legacy interactive `setup` is removed. Configure through `smart-search config set KEY VALUE` (see Provider Endpoint Setup) or environment variables; the grouped wizard no longer exists. Source discovery (`web_search` or `docs_search`) and `web_fetch` are the required Core groups; legacy `main_search` model routes are optional `llm_synthesis` state, followed by optional smart intent router configuration.
 - `smart-search dev skills update --targets codex,claude,cursor,hermes --format json` installs/syncs the bundled `smart-search-cli` skill into selected tool skill directories; there is no interactive setup wizard.
-- - - - `SMART_SEARCH_MINIMUM_PROFILE` supports `lite`, `standard`, `full`, and `off`. `standard` keeps the fail-closed profile diagnostic for `main_search`, `docs_search`, and `web_fetch`; command execution is capability-scoped. Explicit `lite`/`off` evidence search permits source-only results from `web_search` or `docs_search`, while `fetch`, `map`, and `research` validate only their own required capabilities.
+- - - - `SMART_SEARCH_MINIMUM_PROFILE` supports `lite`, `standard`, `full`, and `off`. `standard` keeps the fail-closed Core profile diagnostic for source discovery (`web_search` OR `docs_search`) plus `web_fetch`; command execution is capability-scoped. Explicit `lite`/`off` evidence search permits source-only results from `web_search` or `docs_search`, while `fetch`, `map`, and `research` validate only their own required capabilities. `full` adds `site_map`; `off` disables the gate.
 - Built-in search, fetch, and research Prompts are configured through their `SMART_SEARCH_*_PROMPT_FILE` environment/config keys. CLI prompt-file overrides (`--prompt-dir`, `--search-prompt-file`, `--fetch-prompt-file`, `--research-prompt-file`) are rejected by the strict V2/V3/Workflow families before any owner work. Remote Prompt URLs are rejected.
-- Required groups are `main_search`, `docs_search`, and `web_fetch`; `web_search` is optional reinforcement, followed by optional smart intent router configuration.
+- Required Core groups are source discovery (`web_search` or `docs_search`) and `web_fetch`; `web_search` is optional reinforcement, followed by optional smart intent router configuration.
 - Unchecking a configured provider must not delete existing config values; use `smart-search config unset KEY` for deletion.
 
 ## Skill Installation Sync
@@ -63,7 +63,7 @@
 - `ZHIPU_API_URL` defaults to `https://open.bigmodel.cn/api`.
 - `ZHIPU_SEARCH_ENGINE` defaults to `search_std`.
 - Official Web Search API service values include `search_std`, `search_pro`, `search_pro_sogou`, and `search_pro_quark`.
-- Use `smart-search config set JINA_API_KEY "key"` to let Jina satisfy `web_fetch`; `JINA_RESPOND_WITH=readerlm-v2` also requires `JINA_API_KEY`.
+- Use `smart-search config set JINA_API_KEY "key"` for keyed Jina Reader quality (ReaderLM-v2); anonymous Jina with the default `https://r.jina.ai` endpoint is already eligible for `web_fetch` and satisfies the Core fetch role without a key. `JINA_RESPOND_WITH=readerlm-v2` requires `JINA_API_KEY`.
 - Use `smart-search config set ZHIPU_MCP_API_KEY "key"` only when the user explicitly wants Coding Plan Remote MCP quota.
 - Use `smart-search config set OPENAI_COMPATIBLE_STREAM "true"` only when an OpenAI-compatible relay benefits from SSE streaming for long requests. Default remains false.
 - Use `smart-search config set OPENAI_COMPATIBLE_FALLBACK_MODELS "model-a,model-b"` to save ordered OpenAI-compatible backup models for primary model instability. Routes carry their own `fallback_models` (set with `provider routes add --fallback-models`); a route without them disables model fallback for that route.

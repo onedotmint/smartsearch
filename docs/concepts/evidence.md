@@ -28,9 +28,15 @@ Unsupported key claims must be fetched or downgraded to unverified candidates. T
 Search and research results may contain:
 
 - `evidence.candidates`: discovery candidates (`id`, `resource`, `provider`, `title`, `snippet`) that are not yet proof;
-- `evidence.items`: fetched/read page text used for claims (`id`, `resource`, `provider`, `title`, `content`);
+- `evidence.items`: fetched/read page text used for claims (`id`, `resource`, `provider`, `title`, `content`, `truncated`, `original_length`, `returned_length`);
 - `evidence.citations`: references generated from fetched evidence;
 - `evidence.gaps`: claims or subquestions that remain unsupported;
+
+## Evidence output budget
+
+Fetched evidence is bounded so hosts never receive unbounded page dumps. Each evidence item is projected to at most 8,000 characters by default and always exposes `truncated`, `original_length`, and `returned_length` (measured in Python characters), so no truncation is silent. Untruncated items set `truncated=false` with both lengths equal; truncated items keep the full original length and the returned length. `smart-search fetch URL --full` bypasses the per-item cap and preserves the available full content; the default stays bounded and no per-request `--max-chars` option exists.
+
+Truncation happens after successful evidence admission, so it can never turn a failed or challenge page into evidence, and cached raw content may be projected at either limit. `research run` additionally admits at most five evidence items per run; fetches beyond the remaining allowance are never begun and are recorded as explicit `evidence_output_budget` gaps so the host knows evidence collection was capped.
 - `routing`, `attempts`, and `degradation`: provider execution metadata (capability routing, per-attempt provider/status/error, and degradation codes).
 
 Discovery candidates are candidates until their URLs are fetched. A broad answer is not a substitute for fetching the source that supports a high-risk claim.

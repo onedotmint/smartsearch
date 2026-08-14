@@ -513,6 +513,12 @@ def _execute_doctor_status() -> dict[str, Any]:
     config_storage_ok = bool(info.get("config_storage_ok", True))
     config_parameters_ok = not bool(info.get("config_parameter_errors"))
     minimum_ok = bool(minimum.get("ok", False))
+    # Legacy model routes are optional LLM synthesis state; their absence is
+    # reported as an explicit optional-capability status, never as a Core
+    # failure. ``llm_plan`` has no configured capability.
+    llm_synthesis_status = capability_status.get("llm_synthesis") or {}
+    llm_synthesis_ready = bool(llm_synthesis_status.get("ok"))
+    llm_synthesis_providers = list(llm_synthesis_status.get("configured") or [])
     # ok is local readiness only: storage/parameters + evidence path, never reachability.
     ok = config_storage_ok and config_parameters_ok and core_ready
 
@@ -536,6 +542,13 @@ def _execute_doctor_status() -> dict[str, Any]:
         "minimum_profile_missing_required": list(minimum.get("missing_required") or []),
         "core_evidence_path": evidence_path,
         "core_evidence_ready": core_ready,
+        "llm_synthesis": {
+            "ready": llm_synthesis_ready,
+            "providers": llm_synthesis_providers,
+            "legacy_alias_of": "main_search",
+            "optional": True,
+        },
+        "llm_plan": {"ready": False, "configured": [], "optional": True},
         "intent_router_status": router_status,
     }
     if ok:
@@ -682,19 +695,31 @@ async def _execute_doctor_probe() -> dict[str, Any]:
     primary_status = primary_test.get("status")
     main_search_ok = any(status == "ok" for status in main_search_statuses) if main_connection_tests else primary_status == "ok"
     active_profile = minimum.get("profile", "standard")
+    # Core readiness comes from the capability snapshot: source discovery
+    # (web_search OR docs_search) plus web_fetch. Legacy model routes are
+    # optional LLM synthesis state; absent routes never make an evidence-ready
+    # Core unavailable and surface only as a warning below.
     source_search_ok = any(
         _capability_available(info["capability_status"], capability)
-        for capability in ("main_search", "web_search", "docs_search")
+        for capability in ("web_search", "docs_search")
     )
-    profile_health_ok = main_search_ok
-    if active_profile in {"lite", "off"}:
-        profile_health_ok = source_search_ok
+    fetch_ok = _capability_available(info["capability_status"], "web_fetch")
+    core_ready = source_search_ok and fetch_ok
+    info["core_evidence_ready"] = core_ready
+    info["llm_synthesis_ready"] = main_search_ok
+    info["llm_plan_ready"] = False
+    profile_health_ok = core_ready
     info["ok"] = (
         info.get("config_storage_ok", True)
         and not info.get("config_parameter_errors")
         and profile_health_ok
         and minimum.get("ok", False)
     )
+    if info["ok"] and not main_search_ok:
+        llm_warning = "no configured llm_synthesis route; optional LLM synthesis unavailable"
+        existing = str(info.get("degraded_reason") or "").strip()
+        info["degraded_reason"] = (existing + "; " + llm_warning) if existing else llm_warning
+        info["degraded"] = True
     if info["ok"]:
         info["error_type"] = ""
         info["error"] = ""
@@ -870,13 +895,13 @@ async def _smoke_mock(start: float) -> dict[str, Any]:
         "standard",
         {
             **minimum_status,
-            "docs_search": {"configured": [], "fallback_chain": ["context7", "exa"], "ok": False},
+            "web_fetch": {"configured": [], "fallback_chain": ["tavily", "jina", "zhipu-mcp-reader", "firecrawl"], "ok": False},
         },
     )
     cases.append(
         _case(
             "doctor minimum profile fails closed",
-            not missing_minimum["ok"] and missing_minimum["missing"] == ["docs_search"],
+            not missing_minimum["ok"] and missing_minimum["missing"] == ["web_fetch"],
             {"missing": missing_minimum["missing"], "error_type": missing_minimum["error_type"]},
         )
     )

@@ -381,11 +381,15 @@ async def test_tavily_and_firecrawl_errors_feed_same_capability_attempts(monkeyp
             retryable=True,
         )
 
-    # Keep jina/zhipu-mcp out of the chain by not configuring them.
+    # Anonymous Jina is now a normal eligible ``web_fetch`` provider, so pin
+    # the chain to Tavily and Firecrawl to keep this transport-error freeze
+    # focused on those two providers.
     monkeypatch.setattr(operation_runtime, "_default_call_tavily_extract", failing_tavily)
     monkeypatch.setattr(operation_runtime, "_default_call_firecrawl_scrape", failing_firecrawl)
 
-    value, attempts = await operation_runtime._run_web_fetch_fallback("https://example.com/page")
+    value, attempts = await operation_runtime._run_web_fetch_fallback(
+        "https://example.com/page", providers=["tavily", "firecrawl"]
+    )
     assert value is None
     assert attempts
     assert all(item["capability"] == "web_fetch" for item in attempts)

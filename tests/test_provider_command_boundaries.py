@@ -16,6 +16,51 @@ def test_control_executors_use_provider_diagnostic_owners():
 
 
 @pytest.mark.asyncio
+async def test_jina_connection_probe_anonymous_and_keyed_statuses(monkeypatch):
+    """Jina diagnostics normalize anonymous success to ``anonymous_ready``,
+    keyed success to ``ready``, and never leak the key or the configured
+    ``JINA_RESPOND_WITH`` value."""
+    calls: list[str] = []
+
+    async def fake_jina_fetch(url):
+        calls.append(url)
+        return {"ok": True, "provider": "jina", "content": "Title: Example"}
+
+    monkeypatch.setattr(provider_diagnostics, "jina_fetch", fake_jina_fetch)
+    monkeypatch.delenv("JINA_API_KEY", raising=False)
+    monkeypatch.delenv("JINA_RESPOND_WITH", raising=False)
+
+    anonymous = await provider_diagnostics._test_jina_connection()
+    assert anonymous["status"] == "anonymous_ready"
+    assert calls == ["https://example.com"]
+
+    monkeypatch.setenv("JINA_API_KEY", "jina-probe-secret")
+    keyed = await provider_diagnostics._test_jina_connection()
+    assert keyed["status"] == "ready"
+    assert "jina-probe-secret" not in json.dumps(keyed)
+
+    monkeypatch.setenv("JINA_RESPOND_WITH", "readerlm-v2")
+    monkeypatch.delenv("JINA_API_KEY", raising=False)
+    calls_before_blocked = len(calls)
+    blocked = await provider_diagnostics._test_jina_connection()
+    assert blocked["status"] == "config_error"
+    assert len(calls) == calls_before_blocked  # no network for the blocked probe
+    assert "readerlm-v2" not in json.dumps(blocked)
+
+
+@pytest.mark.asyncio
+async def test_jina_connection_probe_preserves_classified_failure(monkeypatch):
+    async def failing_jina_fetch(url):
+        return {"ok": False, "error_type": "rate_limited", "error": "too many requests"}
+
+    monkeypatch.setattr(provider_diagnostics, "jina_fetch", failing_jina_fetch)
+    monkeypatch.setenv("JINA_API_KEY", "jina-probe-secret")
+    result = await provider_diagnostics._test_jina_connection()
+    assert result["status"] == "rate_limited"
+    assert "too many requests" in result["message"]
+
+
+@pytest.mark.asyncio
 async def test_exa_command_remains_uncached(monkeypatch):
     calls = []
 

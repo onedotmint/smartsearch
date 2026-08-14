@@ -47,18 +47,18 @@ Intent router rules:
 - Legacy `SMART_SEARCH_API_URL`, `SMART_SEARCH_API_KEY`, `SMART_SEARCH_API_MODE`, `SMART_SEARCH_MODEL`, and `SMART_SEARCH_XAI_TOOLS` are unsupported config keys.
 - xAI Responses mode may use only `XAI_TOOLS=web_search,x_search` and a subset of those tools.
 - Chat Completions mode must not send xAI `web_search` / `x_search` tools or legacy `search_parameters`; xAI Chat Completions Live Search is deprecated.
-- The standard minimum profile requires one configured provider in each of `main_search`, `docs_search`, and fetch capability for profile diagnostics and `doctor`. Command execution is capability-scoped: `search` requires source/discovery providers, `fetch` requires `web_fetch`, `map` requires `site_map`, and `research run` requires `web_fetch` while discovery capabilities remain optional. `doctor status` exposes `minimum_profile_ok`, `minimum_profile_missing`, `core_evidence_path`, and per-capability provider eligibility; it never probes providers.
+- The standard minimum profile requires source discovery plus fetch for profile diagnostics and `doctor`: at least one of `web_search` or `docs_search`, plus one `web_fetch` provider. Legacy model routes (`main_search`) are optional `llm_synthesis` state and are never a Core requirement; `llm_plan` is reported as an explicit empty optional capability. Command execution is capability-scoped: `search` requires source/discovery providers, `fetch` requires `web_fetch`, `map` requires `site_map`, and `research run` requires `web_fetch` while discovery capabilities remain optional. `doctor status` exposes `minimum_profile_ok`, `minimum_profile_missing`, `core_evidence_path`, and per-capability provider eligibility; it never probes providers.
 - `CapabilityPlan` is the internal command boundary for required/optional capabilities, provider-attempt limits, fetch limits, budget, and synthesis permission. `EvidenceBundle` is the shared evidence boundary: discovery candidates stay unverified, fetched/read content becomes evidence and citations, and synthesis receives only that fetched/read content.
 - AnySearch is reported only as optional experimental `vertical_search`; it is not part of the `web_search` fallback and is not required by the `standard` minimum profile.
-- Jina Reader is `web_fetch` only, not a general search provider. `JINA_API_KEY` is required before Jina satisfies the standard minimum profile; anonymous `r.jina.ai` is explicit/experimental fetch behavior.
+- Jina Reader is `web_fetch` only, not a general search provider. Anonymous Jina with the default Reader endpoint is normal eligible `web_fetch`: status/probe output distinguishes `ready` (keyed) from `anonymous_ready` (anonymous) without exposing the key. A key remains supported; `JINA_RESPOND_WITH=readerlm-v2` without a key stays a classified `config_error` that never becomes eligible.
 - Same-capability fallback is allowed; cross-capability fallback is not. Context7 is not used for unrelated broad web queries, and page extraction providers are not used as docs search providers.
 - `main_search`: xAI Responses first for Grok/xAI, then OpenAI-compatible answer fallback when that peer provider is separately configured.
 - `web_search`: Zhipu Web Search API first when routed in, then Zhipu Coding Plan MCP `web_search_prime`, then Tavily / Firecrawl source search when configured.
 - `docs_search`: Context7 first for library/API/docs intent, then Exa for official-domain, paper, product-page, trusted-site, or low-noise supplemental discovery.
-- Fetch capability: Tavily first, then Jina Reader with `JINA_API_KEY`, then Zhipu Coding Plan MCP `webReader`, then Firecrawl.
+- Fetch capability: Tavily first, then Jina Reader (anonymous or with `JINA_API_KEY`), then Zhipu Coding Plan MCP `webReader`, then Firecrawl.
 - Discovery breadth is bounded by the typed plan/request budgets (for example `max_results`), not by a CLI `--extra-sources` option; the canonical V2 surface rejects V1 options before any provider work.
 - `fetch` and known-URL `search "https://..."` use the same fetch fallback chain.
-- `fetch` tries Tavily first, then Jina with `JINA_API_KEY`, then Zhipu Coding Plan MCP Reader, then Firecrawl.
+- `fetch` tries Tavily first, then Jina (anonymous or keyed), then Zhipu Coding Plan MCP Reader, then Firecrawl.
 - `map` currently uses Tavily only.
 - `TAVILY_ENABLED=false` keeps a configured Tavily key visible as disabled in diagnostics, but removes Tavily from eligible search, fetch, and map calls; skipped fallback attempts include the disabled reason.
 - Provider selection is internal: `search` routes to Exa only for Exa-qualified docs intent, Context7 only for Context7-qualified docs intent, Zhipu only for Zhipu-qualified web intent, and AnySearch only for explicit vertical intent. Exact provider leaves and aliases are removed; their spellings fail at parse time.
@@ -87,9 +87,8 @@ Zhipu Coding Plan Remote MCP:
 Jina Reader:
 
 - `JINA_READER_API_URL` defaults to `https://r.jina.ai`.
-- `JINA_API_KEY` is required before Jina satisfies `SMART_SEARCH_MINIMUM_PROFILE=standard`.
-- Anonymous Jina Reader calls may be used only as explicit/experimental degraded fetch behavior; they must not make standard setup pass.
-- `JINA_RESPOND_WITH=readerlm-v2` requires `JINA_API_KEY` and should report a configuration error without a network request when the key is missing.
+- Anonymous Jina with the default Reader endpoint is eligible for `web_fetch` and satisfies the `standard` minimum profile fetch role; diagnostics report `anonymous_ready` and never expose the key.
+- `JINA_RESPOND_WITH=readerlm-v2` requires `JINA_API_KEY` and reports a configuration error without a network request when the key is missing; it never becomes eligible anonymously.
 - Jina Reader is `web_fetch` only, not `web_search`.
 - Jina 401/403, 422, 429, timeout, network errors, and low-quality challenge pages such as `Title: Just a moment...` must be reported as failed provider attempts and allow same-capability fallback.
 
@@ -138,5 +137,5 @@ Exa domain filters:
 - Register providers by capability first, then route by intent. Fallback is allowed only within the same capability.
 - Keep xAI Responses and OpenAI-compatible as peer `main_search` providers. A failed xAI Responses request may fall back to OpenAI-compatible only when `OPENAI_COMPATIBLE_API_URL` and `OPENAI_COMPATIBLE_API_KEY` are separately configured.
 - Do not use Context7 for broad news or generic web facts; do not use Tavily or Firecrawl as documentation semantic-search replacements.
-- Standard installs must fail closed unless `main_search`, `docs_search`, and fetch capability each have at least one configured provider.
+- Standard installs must fail closed unless source discovery (`web_search` or `docs_search`) and the fetch capability each have at least one eligible provider; legacy model routes are optional `llm_synthesis` state and never a Core requirement.
 - After provider-routing changes, run the source-checkout quality gate plus `smart-search dev smoke --mock --format json`. If live keys were used, run a targeted secret scan for exact key substrings before committing.

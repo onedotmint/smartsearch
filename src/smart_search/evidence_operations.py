@@ -39,6 +39,7 @@ from .capability_taxonomy import (
     v2_availability_by_tier,
 )
 from .config import ConfigStorageError, ModelRoutesConfigurationError
+from .evidence_budget import DEFAULT_FETCH_CONTENT_LIMIT
 from .execution_primitives import (
     ExecutionAttempt,
     ExecutionAttemptStatus,
@@ -126,9 +127,23 @@ class DocsDiscoveryRequest:
 @dataclass(frozen=True)
 class ContentFetchRequest:
     resource: str
+    content_limit: int | None = DEFAULT_FETCH_CONTENT_LIMIT
+    full: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "resource", _nonblank(self.resource, "resource"))
+        limit = self.content_limit
+        if limit is not None and (type(limit) is not int or limit < 1):
+            raise CanonicalOperationError("content_limit must be a positive integer or None")
+        if type(self.full) is not bool:
+            raise CanonicalOperationError("full must be boolean")
+
+    @property
+    def effective_content_limit(self) -> int | None:
+        """Return the applied projection cap: ``None`` means unbounded."""
+        if self.full:
+            return None
+        return self.content_limit
 
 
 @dataclass(frozen=True)
@@ -405,12 +420,20 @@ def _normalize_candidate(
     )
 
 
-def _normalize_evidence(item: Mapping[str, Any], *, index: int) -> ExecutionEvidenceItem | None:
+def _normalize_evidence(
+    item: Mapping[str, Any],
+    *,
+    index: int,
+    content_limit: int | None = DEFAULT_FETCH_CONTENT_LIMIT,
+) -> ExecutionEvidenceItem | None:
     """Allowlisted one-time normalization of a raw fetch mapping into evidence.
 
     Admitted only when resource, Provider provenance, and a non-blank fetched
     or read body pass the taxonomy predicate. Challenge pages, classified
     failures, missing provenance, and blank bodies never enter evidence.
+    Truncation is applied here, after successful admission, so it can never
+    turn a failed or challenge page into evidence; cached raw content may be
+    projected at either limit.
     """
     if not is_content_fetch_success(item):
         return None
@@ -418,12 +441,25 @@ def _normalize_evidence(item: Mapping[str, Any], *, index: int) -> ExecutionEvid
     provider = str(item.get("provider") or "").strip()
     content = str(item.get("content") or item.get("raw_content") or "").strip()
     title = str(item.get("title") or resource).strip()
+    if content_limit is not None and len(content) > content_limit:
+        returned = content[:content_limit]
+        truncated = True
+        original_length = len(content)
+        returned_length = len(returned)
+    else:
+        returned = content
+        truncated = False
+        original_length = len(content)
+        returned_length = len(content)
     return ExecutionEvidenceItem(
         id=_stable_id("evidence", resource, provider, str(index)),
         resource=resource,
         provider=provider,
         title=title,
-        content=content,
+        content=returned,
+        truncated=truncated,
+        original_length=original_length,
+        returned_length=returned_length,
     )
 
 
@@ -660,7 +696,11 @@ async def content_fetch(request: ContentFetchRequest) -> EvidenceOperationOutcom
     attempts = tuple(item for item in execution.attempts if item.provider in allowed)
     items: list[ExecutionEvidenceItem] = []
     if isinstance(execution.value, Mapping):
-        evidence_item = _normalize_evidence(execution.value, index=0)
+        evidence_item = _normalize_evidence(
+            execution.value,
+            index=0,
+            content_limit=request.effective_content_limit,
+        )
         if evidence_item:
             items.append(evidence_item)
 

@@ -417,7 +417,7 @@ def test_jina_and_zhipu_mcp_contract_public_and_packaged_assets_match():
         "JINA_READER_API_URL",
         "JINA_RESPOND_WITH",
         "Jina Reader is `web_fetch` only",
-        "Anonymous Jina Reader calls",
+        "anonymous_ready",
         "ZHIPU_MCP_API_KEY",
         "ZHIPU_MCP_SEARCH_API_URL",
         "ZHIPU_MCP_READER_API_URL",

@@ -145,6 +145,9 @@ def _item_to_v2(item: ExecutionEvidenceItem) -> V2EvidenceItem:
         item.provider,
         item.title,
         item.content,
+        item.truncated,
+        item.original_length,
+        item.returned_length,
     )
 
 

@@ -198,7 +198,12 @@ async def dispatch(args: Any, *, argv: list[str] | None = None) -> int:
         if command == "search":
             envelope = await api_v2._composite_search(args.query)
         elif command == "fetch":
-            envelope = await api_v2.content_fetch(ContentFetchRequest(resource=args.url))
+            envelope = await api_v2.content_fetch(
+                ContentFetchRequest(
+                    resource=args.url,
+                    full=bool(getattr(args, "full", False)),
+                )
+            )
         elif command == "map":
             envelope = await api_v2.site_discovery(
                 SiteDiscoveryRequest(

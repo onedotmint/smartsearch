@@ -32,6 +32,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from enum import Enum
 from typing import Any
 
+from .evidence_budget import DEFAULT_FETCH_CONTENT_LIMIT
 from .research_plan import (
     RESEARCH_PLAN_SCHEMA_VERSION,
     ResearchPlan,
@@ -294,6 +295,9 @@ def _evidence_item_to_dict(item: Any) -> dict[str, Any]:
         "provider": item.provider,
         "title": item.title,
         "content": item.content,
+        "truncated": item.truncated,
+        "original_length": item.original_length,
+        "returned_length": item.returned_length,
     }
 
 
@@ -353,6 +357,21 @@ def _meta_to_dict(meta: WorkflowMeta) -> dict[str, Any]:
     }
 
 
+def _project_redacted_evidence(items: Sequence[dict[str, Any]]) -> None:
+    """Restore content-budget metadata after redaction changes text length."""
+    for item in items:
+        if item["truncated"]:
+            max_length = min(
+                item["returned_length"],
+                item["original_length"] - 1,
+                DEFAULT_FETCH_CONTENT_LIMIT,
+            )
+            item["content"] = item["content"][:max_length]
+        item["returned_length"] = len(item["content"])
+        if not item["truncated"]:
+            item["original_length"] = item["returned_length"]
+
+
 def serialize_workflow(
     outcome: WorkflowOutcome, *, secrets: Iterable[str] | str = ()
 ) -> dict[str, Any]:
@@ -383,6 +402,7 @@ def serialize_workflow(
         "meta": _meta_to_dict(outcome.meta),
     }
     sanitized = sanitize_data(payload, secret_values)
+    _project_redacted_evidence(sanitized["evidence"])
     validate_workflow_dict(sanitized)
     try:
         json.dumps(sanitized, allow_nan=False)
@@ -454,18 +474,36 @@ def _stage_from_raw(raw: Any) -> WorkflowStage:
 
 
 def _evidence_item_from_raw(raw: Any) -> Any:
-    fields = ("id", "resource", "provider", "title", "content")
+    fields = ("id", "resource", "provider", "title", "content", "truncated", "original_length", "returned_length")
     _exact_keys(raw, fields, "evidence item")
     for name in ("id", "resource", "provider", "content"):
         _nonblank(raw[name], f"evidence item.{name}")
     if not isinstance(raw["title"], str):
         raise WorkflowContractError("evidence item.title must be a string")
+    if type(raw["truncated"]) is not bool:
+        raise WorkflowContractError("evidence item.truncated must be boolean")
+    _exact_int(raw["original_length"], "evidence item.original_length")
+    _exact_int(raw["returned_length"], "evidence item.returned_length")
+    if raw["returned_length"] != len(raw["content"]):
+        raise WorkflowContractError("evidence item returned_length must equal the content length")
+    if not raw["truncated"] and raw["original_length"] != raw["returned_length"]:
+        raise WorkflowContractError("untruncated evidence item requires equal original and returned lengths")
+    if raw["truncated"] and raw["original_length"] <= raw["returned_length"]:
+        raise WorkflowContractError("truncated evidence item requires original_length > returned_length")
+    if raw["truncated"] and raw["returned_length"] > DEFAULT_FETCH_CONTENT_LIMIT:
+        raise WorkflowContractError(
+            "truncated evidence item returned_length must not exceed "
+            "DEFAULT_FETCH_CONTENT_LIMIT"
+        )
     return {
         "id": raw["id"],
         "resource": raw["resource"],
         "provider": raw["provider"],
         "title": raw["title"],
         "content": raw["content"],
+        "truncated": raw["truncated"],
+        "original_length": raw["original_length"],
+        "returned_length": raw["returned_length"],
     }
 
 
@@ -633,6 +671,9 @@ def _evidence_primitive(item: dict[str, Any]) -> Any:
         provider=item["provider"],
         title=item["title"],
         content=item["content"],
+        truncated=item["truncated"],
+        original_length=item["original_length"],
+        returned_length=item["returned_length"],
     )
 
 
@@ -841,13 +882,16 @@ _defs["stage"] = _strict_object(
     },
 )
 _defs["evidence_item"] = _strict_object(
-    ("id", "resource", "provider", "title", "content"),
+    ("id", "resource", "provider", "title", "content", "truncated", "original_length", "returned_length"),
     {
         "id": _NONBLANK,
         "resource": _NONBLANK,
         "provider": _NONBLANK,
         "title": {"type": "string"},
         "content": _NONBLANK,
+        "truncated": {"type": "boolean"},
+        "original_length": {"type": "integer", "minimum": 0},
+        "returned_length": {"type": "integer", "minimum": 0},
     },
 )
 _defs["citation"] = _strict_object(

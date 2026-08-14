@@ -69,6 +69,10 @@ _DISCOVERY_OPERATIONS = frozenset(
 )
 # Default bounded fetch concurrency for one workflow run.
 WORKFLOW_FETCH_CONCURRENCY = 4
+# Maximum admitted evidence items for one workflow run. Fetches beyond the
+# remaining allowance are never begun and are recorded as explicit
+# ``evidence_output_budget`` gaps so hosts know evidence collection was capped.
+WORKFLOW_EVIDENCE_OUTPUT_LIMIT = 5
 
 # Exit policy follows the parent migration policy shared by the V2/V3 families.
 EXIT_SUCCESS = 0
@@ -771,6 +775,7 @@ class _WorkflowRunner:
         self.candidates: dict[str, list[ExecutionCandidate]] = {}
         self.evidence_by_stage: dict[str, list[ExecutionEvidenceItem]] = {}
         self.seen_evidence_ids: set[str] = set()
+        self.evidence_output_remaining = WORKFLOW_EVIDENCE_OUTPUT_LIMIT
         self.attempts: list[ExecutionAttempt] = []
         self.gaps: list[ExecutionGap] = []
         self.artifacts: dict[str, WorkflowArtifact] = {}
@@ -908,6 +913,11 @@ class _WorkflowRunner:
         fetch: a URL already fetched by an earlier stage is skipped and never
         refetched. Placeholder tokens (``<key-url>``) resolve to nothing so
         the stage becomes a no-op instead of fetching a literal placeholder.
+
+        The five-item output allowance is reserved here, at selection time, so
+        concurrent fetch stages never begin fetches beyond the remaining
+        allowance. Every suppressed planned fetch keeps an explicit
+        ``evidence_output_budget`` gap identifying the stage/resource.
         """
         resource = _input_str(op, "resource")
         if resource:
@@ -916,14 +926,26 @@ class _WorkflowRunner:
             key = workflow_url_dedupe_key(resource)
             if key and key in self.fetched_keys:
                 return []
+            if self.evidence_output_remaining <= 0:
+                self.gaps.append(
+                    ExecutionGap(
+                        "evidence_output_budget",
+                        "evidence output budget reached; suppressed planned fetch",
+                        capability="content_fetch",
+                        resource=resource,
+                    )
+                )
+                return []
             if key:
                 self.fetched_keys.add(key)
+            self.evidence_output_remaining -= 1
             return [resource]
         refs = op.input.get("candidate_refs") or ()
         if not isinstance(refs, (list, tuple)):
             return []
         max_items = _constraint_int(op, "max_items", 1)
         selected: list[str] = []
+        suppressed: list[str] = []
         for ref in refs:
             for candidate in self.candidates.get(str(ref), []):
                 if len(selected) >= max_items:
@@ -934,8 +956,21 @@ class _WorkflowRunner:
                 key = workflow_url_dedupe_key(url)
                 if not key or key in self.fetched_keys:
                     continue
+                if self.evidence_output_remaining <= 0:
+                    suppressed.append(url)
+                    continue
                 self.fetched_keys.add(key)
+                self.evidence_output_remaining -= 1
                 selected.append(url)
+        for url in suppressed:
+            self.gaps.append(
+                ExecutionGap(
+                    "evidence_output_budget",
+                    "evidence output budget reached; suppressed planned fetch",
+                    capability="content_fetch",
+                    resource=url,
+                )
+            )
         return selected
 
     async def _run_fetch(self, op: ResearchPlanOperation) -> WorkflowStage:
@@ -943,10 +978,9 @@ class _WorkflowRunner:
 
         resources = self._resolve_fetch_resources(op)
         if not resources:
-            # Placeholder/missing resource or only already-fetched URLs: the
-            # stage has no new fetch work and completes empty instead of
-            # failing the workflow (earlier stages already own those
-            # normalized URLs).
+            # No new fetch work (placeholder/missing resource, only
+            # already-fetched URLs, or budget-suppressed) completes empty;
+            # the gap list already records any ``evidence_output_budget`` cap.
             return self._empty_stage(op)
 
         async def fetch_one(resource: str) -> tuple[str, object]:
@@ -1251,6 +1285,7 @@ __all__ = [
     "WORKFLOW_ERROR_RETRYABILITY",
     "WORKFLOW_EXECUTABLE_OPERATIONS",
     "WORKFLOW_FETCH_CONCURRENCY",
+    "WORKFLOW_EVIDENCE_OUTPUT_LIMIT",
     "WorkflowArtifact",
     "WorkflowDomainError",
     "WorkflowError",

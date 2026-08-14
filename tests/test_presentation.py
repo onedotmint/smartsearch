@@ -474,6 +474,29 @@ def test_v2_content_matches_evidence_body_and_failure_summary():
     assert "no usable results" in degraded
 
 
+def test_v2_presentation_surfaces_truncation_metadata():
+    from smart_search.v2_contract import V2EvidenceItem
+
+    truncated_item = V2EvidenceItem(
+        id="evidence-trunc",
+        resource="https://example.com/page",
+        provider="jina",
+        title="Long page",
+        content="x" * 8000,
+        truncated=True,
+        original_length=9000,
+        returned_length=8000,
+    )
+    payload = _v2_payload(
+        items=(truncated_item,),
+        result={"total": 1, "items": [{"id": "evidence-trunc"}]},
+    )
+    markdown = render_v2(payload, "markdown")
+    assert "Truncated: 8000/9000 characters" in markdown
+    content = render_v2(payload, "content")
+    assert "[truncated: 8000 of 9000 characters]" in content
+
+
 def test_v3_markdown_shows_operation_sections_network_and_side_effects():
     complete = render_v3(_v3_complete_payload(), "markdown")
     assert "# V3 Provider Catalog" in complete

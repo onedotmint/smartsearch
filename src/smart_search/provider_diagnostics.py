@@ -69,16 +69,21 @@ async def _test_tavily_connection() -> dict[str, object]:
 
 
 async def _test_jina_connection() -> dict[str, object]:
-    """Probe Jina through the same web_fetch command boundary as fetch."""
+    """Probe Jina through the same web_fetch command boundary as fetch.
+
+    Anonymous Jina with the default Reader endpoint is normal eligible fetch
+    behavior: a successful anonymous probe reports ``anonymous_ready`` while a
+    keyed probe reports ``ready``. ``JINA_RESPOND_WITH`` without a key stays a
+    classified ``config_error`` and never becomes eligible.
+    """
     if config.jina_respond_with and not config.jina_api_key:
         return {"status": "config_error", "message": "JINA_RESPOND_WITH requires JINA_API_KEY"}
-    if not config.jina_api_key:
-        return {"status": "not_configured", "message": "JINA_API_KEY 未设置，Jina 不满足 standard web_fetch；匿名 Reader 只能作为显式实验使用"}
     start = time.time()
     data = await jina_fetch("https://example.com")
     response_time = _elapsed_ms(start)
     if data.get("ok"):
-        return {"status": "ok", "message": "Jina Reader 可用", "response_time_ms": response_time}
+        status = "anonymous_ready" if not config.jina_api_key else "ready"
+        return {"status": status, "message": "Jina Reader 可用", "response_time_ms": response_time}
     error_type = data.get("error_type", "")
     status = error_type if error_type in {"auth_error", "config_error", "parameter_error", "rate_limited", "timeout"} else "warning"
     return {"status": status, "message": data.get("error", "Jina Reader 不可用"), "response_time_ms": response_time}
@@ -284,6 +289,8 @@ def _normalize_probe_status(raw: dict[str, Any]) -> dict[str, Any]:
     status = str(raw.get("status") or "provider_error")
     allowed = {
         "ok",
+        "ready",
+        "anonymous_ready",
         "not_configured",
         "disabled",
         "config_error",

@@ -22,6 +22,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Generic, Iterable, Mapping, TypeVar
 
+from .evidence_budget import DEFAULT_FETCH_CONTENT_LIMIT
 from .security import sanitize_data
 
 T = TypeVar("T")
@@ -341,7 +342,12 @@ class ExecutionEvidenceItem:
     """A schema-neutral fetched/read evidence item with provenance.
 
     ``content`` must be a non-blank fetched/read body so an empty body is never
-    mistaken for admitted evidence.
+    mistaken for admitted evidence. The content-budget metadata is measured in
+    Python characters: untruncated items set ``truncated=false`` with both
+    lengths equal to the content length; truncated items keep the full
+    ``original_length`` and the projected ``returned_length``. Default zero
+    lengths on untruncated fixtures are derived from the content so existing
+    typed call sites stay source-compatible.
     """
 
     id: str
@@ -349,6 +355,9 @@ class ExecutionEvidenceItem:
     provider: str
     title: str = ""
     content: str = ""
+    truncated: bool = False
+    original_length: int = 0
+    returned_length: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _nonblank_str(self.id, "ExecutionEvidenceItem.id"))
@@ -356,6 +365,36 @@ class ExecutionEvidenceItem:
         object.__setattr__(self, "provider", _nonblank_str(self.provider, "ExecutionEvidenceItem.provider"))
         object.__setattr__(self, "title", _str_value(self.title, "ExecutionEvidenceItem.title"))
         object.__setattr__(self, "content", _nonblank_str(self.content, "ExecutionEvidenceItem.content"))
+        if type(self.truncated) is not bool:
+            raise ValueError("ExecutionEvidenceItem.truncated must be boolean")
+        original = self.original_length
+        returned = self.returned_length
+        if type(original) is not int or original < 0:
+            raise ValueError("ExecutionEvidenceItem.original_length must be a non-negative integer")
+        if type(returned) is not int or returned < 0:
+            raise ValueError("ExecutionEvidenceItem.returned_length must be a non-negative integer")
+        if not self.truncated:
+            if original == 0 and returned == 0:
+                original = len(self.content)
+                returned = len(self.content)
+            elif original != returned:
+                raise ValueError("untruncated evidence item requires equal original and returned lengths")
+        else:
+            if original <= returned:
+                raise ValueError(
+                    "truncated evidence item original_length must exceed returned_length"
+                )
+            if returned > DEFAULT_FETCH_CONTENT_LIMIT:
+                raise ValueError(
+                    "truncated evidence item returned_length must not exceed "
+                    "DEFAULT_FETCH_CONTENT_LIMIT"
+                )
+        if returned != len(self.content):
+            raise ValueError(
+                "evidence item returned_length must equal the content length"
+            )
+        object.__setattr__(self, "original_length", original)
+        object.__setattr__(self, "returned_length", returned)
 
 
 @dataclass(frozen=True)

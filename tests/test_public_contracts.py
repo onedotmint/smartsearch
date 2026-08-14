@@ -72,7 +72,10 @@ def test_minimum_profile_modes_keep_standard_fail_closed():
     )
 
     assert standard["ok"] is False
-    assert standard["missing_required"] == ["main_search", "docs_search", "web_fetch"]
+    # ``standard`` is the Core minimum: source discovery (web_search OR
+    # docs_search) plus web_fetch. Legacy model routes are optional LLM
+    # synthesis state, never a Core requirement.
+    assert standard["missing_required"] == ["web_fetch"]
     assert lite["ok"] is True
     assert lite["degraded"] is True
     assert lite_docs_only["ok"] is True

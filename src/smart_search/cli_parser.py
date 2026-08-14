@@ -120,6 +120,9 @@ def build_parser(*, raise_on_error: bool = False) -> argparse.ArgumentParser:
     fetch_parser = sub.add_parser("fetch", help="Fetch a URL as markdown.")
     fetch_parser.set_defaults(command="fetch")
     fetch_parser.add_argument("url")
+    # Bypass the default per-item content cap (8,000 characters). The default
+    # fetch output stays bounded; --full preserves the available full content.
+    fetch_parser.add_argument("--full", action="store_true", help=argparse.SUPPRESS)
     _add_format_args(fetch_parser)
 
     map_parser = sub.add_parser("map", help="Map a website structure.")

@@ -785,7 +785,7 @@ async def run_provider_probe(provider: str) -> ControlOperationOutcome:
     probe = await run_probe_adapter(provider_id)
     status = str(probe.get("status") or "provider_error")
     network_attempted = status not in {"not_configured", "disabled", "config_error", "unsupported"}
-    ok = status == "ok"
+    ok = status in {"ok", "ready", "anonymous_ready"}
     result = _strip_legacy_semantics(base)
     result["status"] = status
     result["message"] = str(probe.get("message") or status)
@@ -865,7 +865,10 @@ def _doctor_network_facts(data: Mapping[str, Any]) -> ControlNetworkFacts:
 
 
 def _any_doctor_check_ok(data: Mapping[str, Any]) -> bool:
-    return any(str(check.get("status") or "") == "ok" for check in _connection_checks(data))
+    return any(
+        str(check.get("status") or "") in {"ok", "ready", "anonymous_ready"}
+        for check in _connection_checks(data)
+    )
 
 
 async def run_doctor_status() -> ControlOperationOutcome:

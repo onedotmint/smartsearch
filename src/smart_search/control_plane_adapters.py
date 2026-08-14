@@ -201,6 +201,7 @@ def _doctor_status_result(data: Mapping[str, Any]) -> dict[str, Any]:
             "config_storage_ok", "config_parameter_errors", "minimum_profile",
             "minimum_profile_ok", "minimum_profile_missing", "minimum_profile_missing_required",
             "core_evidence_path", "core_evidence_ready", "intent_router_status", "capability_status",
+            "llm_synthesis", "llm_plan",
         ),
     )
 

@@ -542,6 +542,81 @@ async def test_content_fetch_admission_and_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_content_fetch_bounds_default_limit_with_explicit_metadata(monkeypatch):
+    from smart_search.evidence_operations import DEFAULT_FETCH_CONTENT_LIMIT
+
+    monkeypatch.setattr(evidence_operations, "_qualified_providers", lambda operation: ["tavily"])
+    long_body = "x" * (DEFAULT_FETCH_CONTENT_LIMIT + 500)
+
+    async def fake_fetch(url, fallback="auto", preferred_order=None, providers=None):
+        body = "short body" if url.endswith("/short") else long_body
+        return ExecutionOutcome(
+            value={
+                "ok": True,
+                "url": url,
+                "provider": "tavily",
+                "content": body,
+            },
+            attempts=(success_attempt("web_fetch", "tavily", elapsed_ms=5.0, result_count=1),),
+        )
+
+    monkeypatch.setattr(evidence_operations, "_execute_web_fetch", fake_fetch)
+    outcome = await evidence_operations.content_fetch(ContentFetchRequest("https://example.com/page"))
+    assert outcome.status is EvidenceOperationStatus.COMPLETE
+    item = outcome.evidence_items[0]
+    assert len(item.content) == DEFAULT_FETCH_CONTENT_LIMIT
+    assert item.truncated is True
+    assert item.original_length == len(long_body)
+    assert item.returned_length == len(item.content)
+
+    short_outcome = await evidence_operations.content_fetch(
+        ContentFetchRequest("https://example.com/short")
+    )
+    short = short_outcome.evidence_items[0]
+    assert short.truncated is False
+    assert short.original_length == short.returned_length == len(short.content)
+
+
+@pytest.mark.asyncio
+async def test_content_fetch_full_bypasses_default_cap(monkeypatch):
+    from smart_search.evidence_operations import DEFAULT_FETCH_CONTENT_LIMIT
+
+    monkeypatch.setattr(evidence_operations, "_qualified_providers", lambda operation: ["tavily"])
+    long_body = "y" * (DEFAULT_FETCH_CONTENT_LIMIT + 500)
+
+    async def fake_fetch(url, fallback="auto", preferred_order=None, providers=None):
+        return ExecutionOutcome(
+            value={"ok": True, "url": url, "provider": "tavily", "content": long_body},
+            attempts=(success_attempt("web_fetch", "tavily", elapsed_ms=5.0, result_count=1),),
+        )
+
+    monkeypatch.setattr(evidence_operations, "_execute_web_fetch", fake_fetch)
+    outcome = await evidence_operations.content_fetch(
+        ContentFetchRequest("https://example.com/page", full=True)
+    )
+    item = outcome.evidence_items[0]
+    assert item.truncated is False
+    assert item.original_length == item.returned_length == len(long_body)
+    assert len(item.content) == len(long_body)
+
+    custom = await evidence_operations.content_fetch(
+        ContentFetchRequest("https://example.com/page", content_limit=100)
+    )
+    assert custom.evidence_items[0].truncated is True
+    assert custom.evidence_items[0].returned_length == 100
+
+
+@pytest.mark.asyncio
+async def test_content_fetch_request_rejects_invalid_budget_inputs():
+    with pytest.raises(evidence_operations.CanonicalOperationError):
+        ContentFetchRequest("https://example.com", content_limit=0)
+    with pytest.raises(evidence_operations.CanonicalOperationError):
+        ContentFetchRequest("https://example.com", content_limit="8000")
+    with pytest.raises(evidence_operations.CanonicalOperationError):
+        ContentFetchRequest("https://example.com", full="yes")
+
+
+@pytest.mark.asyncio
 async def test_content_fetch_rejects_challenge_and_missing_provenance(monkeypatch):
     monkeypatch.setattr(evidence_operations, "_qualified_providers", lambda operation: ["tavily"])
 

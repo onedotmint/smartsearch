@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from smart_search.execution_primitives import (
+    DEFAULT_FETCH_CONTENT_LIMIT,
     ExecutionAttempt,
     ExecutionAttemptStatus,
     ExecutionCandidate,
@@ -329,6 +330,45 @@ def test_evidence_requires_nonblank_content():
         ExecutionEvidenceItem("e1", "https://example.com", "tavily", "Title", "")
     with pytest.raises(ValueError):
         ExecutionEvidenceItem("e1", "https://example.com", "tavily", "Title", "   ")
+
+
+@pytest.mark.parametrize(
+    ("truncated", "original_length", "returned_length"),
+    (
+        (False, 3, 3),
+        (True, 9, 3),
+    ),
+)
+def test_evidence_metadata_returned_length_must_match_content(
+    truncated: bool,
+    original_length: int,
+    returned_length: int,
+):
+    with pytest.raises(ValueError, match="returned_length must equal the content length"):
+        ExecutionEvidenceItem(
+            "e1",
+            "https://example.com",
+            "tavily",
+            "Title",
+            "body",
+            truncated=truncated,
+            original_length=original_length,
+            returned_length=returned_length,
+        )
+
+
+def test_truncated_evidence_content_must_not_exceed_default_cap():
+    with pytest.raises(ValueError, match="must not exceed DEFAULT_FETCH_CONTENT_LIMIT"):
+        ExecutionEvidenceItem(
+            "e1",
+            "https://example.com",
+            "tavily",
+            "Title",
+            "x" * (DEFAULT_FETCH_CONTENT_LIMIT + 1),
+            truncated=True,
+            original_length=DEFAULT_FETCH_CONTENT_LIMIT + 2,
+            returned_length=DEFAULT_FETCH_CONTENT_LIMIT + 1,
+        )
 
 
 def test_citation_requires_nonblank_label():

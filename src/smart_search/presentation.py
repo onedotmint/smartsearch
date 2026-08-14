@@ -207,6 +207,10 @@ def _v2_evidence_markdown(evidence: Mapping[str, Any]) -> list[str]:
             lines.append(f"- Provider: {item['provider']}")
         if item.get("resource"):
             lines.append(f"- Resource: `{item['resource']}`")
+        if item.get("truncated"):
+            lines.append(
+                f"- Truncated: {item.get('returned_length', '?')}/{item.get('original_length', '?')} characters"
+            )
         if item.get("content"):
             lines.extend(_fence(str(item["content"])))
     citations = evidence.get("citations") or []
@@ -299,7 +303,17 @@ def _v2_content(payload: Mapping[str, Any]) -> str:
     candidates = evidence.get("candidates") or []
     degradation = payload.get("degradation") or []
     if command in ("search", "fetch"):
-        bodies = [str(item.get("content") or "").strip() for item in items if item.get("content")]
+        bodies: list[str] = []
+        for item in items:
+            body = str(item.get("content") or "").strip()
+            if not body:
+                continue
+            if item.get("truncated"):
+                body += (
+                    f"\n\n[truncated: {item.get('returned_length', '?')} of "
+                    f"{item.get('original_length', '?')} characters]"
+                )
+            bodies.append(body)
         if bodies:
             return "\n\n".join(bodies).rstrip() + "\n"
         snippets = [str(c.get("snippet") or "").strip() for c in candidates if c.get("snippet")]
@@ -816,7 +830,13 @@ def _workflow_markdown(payload: Mapping[str, Any]) -> str:
         lines.extend(["", "## Evidence"])
         for item in evidence:
             title = item.get("title") or item.get("resource") or item.get("id", "")
-            lines.append(f"- {title} (`{item.get('resource', '')}`) — {item.get('provider', '')}")
+            suffix = ""
+            if item.get("truncated"):
+                suffix = (
+                    f" (truncated {item.get('returned_length', '?')}/"
+                    f"{item.get('original_length', '?')} chars)"
+                )
+            lines.append(f"- {title} (`{item.get('resource', '')}`) — {item.get('provider', '')}{suffix}")
     citations = payload.get("citations") or []
     if citations:
         lines.extend(["", "## Citations"])
