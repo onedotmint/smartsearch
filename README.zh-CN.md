@@ -22,7 +22,7 @@ npm 包会在安装时创建隔离的 Python 运行时。源码 checkout 也支�
 
 - 使用 npm 包需要 Node.js 18 或更高版本。
 - 直接运行源码需要 Python 3.10 或更高版本。
-- 要运行目标命令，至少配置该命令需要的 provider。
+- `fetch` 通过匿名 Jina Reader **零配置**即可使用。运行 `search` 需要配置一个发现 provider；模型路由是可选的 LLM 合成能力，绝不是 Core 依赖。
 
 ## 第一次运行
 

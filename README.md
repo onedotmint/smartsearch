@@ -22,7 +22,9 @@ Prerequisites:
 
 - Node.js 18 or newer for the npm package.
 - Python 3.10 or newer when using the source checkout directly.
-- At least one configured provider for the command you want to run.
+- `fetch` works with **zero configuration** through anonymous Jina Reader.
+  Configure a discovery provider to run `search`; model routes are optional
+  LLM synthesis and never a Core requirement.
 
 ## First run
 

@@ -27,13 +27,47 @@ On Windows, use `py -3` when `python` is not available.
 
 ## Configure one usable path
 
-Configure keys through the config command (no interactive wizard):
+The Core evidence path needs no model configuration, and `fetch` works with
+**zero configuration** through anonymous Jina Reader. Add provider keys only
+when you need `search` or keyed Jina features.
+
+### 1. Zero-config fetch (anonymous Jina)
 
 ```sh
-smart-search config set XAI_API_KEY "your-xai-key"
+smart-search fetch "https://www.python.org/downloads/" --format markdown
+smart-search capabilities --format json
+```
+
+Anonymous Jina with the default Reader endpoint is eligible `web_fetch`;
+`provider status` and `doctor` report `anonymous_ready` without a key.
+`JINA_RESPOND_WITH` (ReaderLM-v2) still requires `JINA_API_KEY`.
+
+### 2. Add a discovery provider (needed for `search`)
+
+```sh
+smart-search config set TAVILY_API_KEY "your-tavily-key"
+smart-search config set EXA_API_KEY "your-exa-key"
 smart-search config list --format json
 smart-search doctor status --format json
 ```
+
+The complete evidence-first flow is:
+
+```text
+search → fetch → host agent writes the final answer from fetched evidence
+```
+
+`search` returns discovery candidates only; `fetch` provides the claim-level
+page text. Smart Search does not generate the answer itself — the host agent
+does.
+
+### Optional model routes
+
+Model routes are optional in v0.2.0. Core `search`, `fetch`, and
+`research run` do not require or invoke an LLM. Model configuration is
+currently used for provider connectivity/diagnostics and reserves the optional
+`llm_synthesis` extension surface. Both xAI Responses and OpenAI-compatible
+endpoints are supported; see [Providers](providers.md).
 
 `doctor status` is local readiness only: configuration storage, capability eligibility, Core evidence path, and minimum-profile health. It does not probe providers. Use `doctor probe` only when you intentionally want a live aggregate connectivity check. A command checks only the capabilities it needs. The `standard` profile is fail-closed for the Core minimum: source discovery (`web_search` or `docs_search`) plus `web_fetch`. Legacy model routes (`main_search`) are optional `llm_synthesis` state and are never a Core requirement; an absent model route is a `doctor` warning, not a Core failure.
 
@@ -48,8 +82,6 @@ Use an explicit config directory in CI, containers, and tests. Smart Search does
 For a scripted setup, set only the keys needed by the target environment:
 
 ```sh
-smart-search config set XAI_API_KEY "your-xai-key"
-smart-search config set XAI_MODEL "grok-4-fast"
 smart-search config set EXA_API_KEY "your-exa-key"
 smart-search config set JINA_API_KEY "your-jina-key"
 ```
