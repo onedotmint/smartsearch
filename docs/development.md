@@ -58,6 +58,10 @@ Do not add non-evidence operations to v2 or let evidence commands receive V3 JSO
 
 The envelopes are stable machine contracts that agents depend on. Removing an existing field or changing its type or semantics is a major breaking change; **additive optional fields are compatible** (and update the golden baselines in the same commit). Input unknown fields are rejected by strict schema validation; output shapes change only through a deliberate schema bump. Byte-wise golden snapshots for representative V2 and Workflow envelopes live in `tests/fixtures/json_compat_baselines.py` and are enforced by `tests/test_json_compat_baselines.py` through the real projection + serializer + CLI emit path, so any shape drift fails without a deliberate fixture update.
 
+### Provider canary (advisory, never blocks merges)
+
+`.github/workflows/canary.yml` runs live smoke (`dev smoke --live`), `doctor probe`, and per-provider probes (exa, tavily, jina) against real upstreams on manual dispatch and a weekly schedule. It is advisory: it never runs in the PR gate (`test.yml`) and is never a required check. Provider keys come from repository secrets (`TAVILY_API_KEY`, `EXA_API_KEY`, `JINA_API_KEY`, plus optional URL overrides); without them, probes report configuration failures and the job flags them. Each step writes a JSON envelope under `canary-results/` and `scripts/canary-check.py` aggregates them into one job-level failure. Treat a red canary as upstream drift to inspect before release, not as a PR blocker.
+
 ## Documentation boundaries
 
 | Concern | Source of truth |
