@@ -42,6 +42,18 @@ ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_SKILL_DIR = ROOT / "skills" / "smart-search-cli"
 PACKAGED_SKILL_REL = "src/smart_search/assets/skills/smart-search-cli"
 VENV_PYTHON = ROOT / ".smart-search-python" / "bin" / "python"
+
+
+def _venv_python(venv_dir: Path) -> Path:
+    """Locate the venv Python executable portably.
+
+    POSIX venvs place the interpreter at ``bin/python``; Windows venvs use
+    ``Scripts/python.exe``. The test harness must not hardcode the POSIX path
+    because ``python -m venv`` on a Windows runner creates the Windows layout.
+    """
+    if sys.platform == "win32":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
 V010_SECRETS = (
     "xai-0-1-0-secret",
     "openai-0-1-0-secret",
@@ -144,6 +156,18 @@ class InstalledRuntime:
     site_packages: str
 
 
+def test_venv_python_path_matches_platform_layout() -> None:
+    """The cross-platform venv layout assumption is explicit.
+
+    POSIX venvs use ``bin/python``; Windows venvs use ``Scripts/python.exe``.
+    The installed_runtime fixture relies on this mapping so the packed-install
+    tests run on every OS instead of failing on Windows runners.
+    """
+    expected = "python.exe" if sys.platform == "win32" else "python"
+    assert _venv_python(Path("/tmp/venv")).name == expected
+    assert _venv_python(Path("C:/venv")).name == expected
+
+
 @pytest.fixture(scope="session")
 def installed_runtime(tmp_path_factory, packed_package) -> InstalledRuntime:
     if not _pypi_reachable():
@@ -152,7 +176,8 @@ def installed_runtime(tmp_path_factory, packed_package) -> InstalledRuntime:
     venv_dir = tmp / "venv"
     created = _run([sys.executable, "-m", "venv", str(venv_dir)])
     assert created.returncode == 0, created.stdout + created.stderr
-    python = venv_dir / "bin" / "python"
+    python = _venv_python(venv_dir)
+    assert python.exists(), f"venv python missing at {python}"
     install = _run(
         [
             str(python),
