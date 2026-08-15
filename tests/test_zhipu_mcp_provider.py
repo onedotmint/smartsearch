@@ -6,6 +6,17 @@ import pytest
 from smart_search.providers.zhipu_mcp import ZhipuMCPProvider
 
 
+class _FakeStream:
+    def __init__(self, response):
+        self.response = response
+
+    async def __aenter__(self):
+        return self.response
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
 class FakeZhipuMCPClient:
     calls = []
     response: httpx.Response | None = None
@@ -21,11 +32,11 @@ class FakeZhipuMCPClient:
     async def __aexit__(self, exc_type, exc, tb):
         return None
 
-    async def post(self, url, headers, json):
+    def stream(self, method, url, headers=None, json=None, **kwargs):
         self.__class__.calls.append({"url": url, "headers": headers, "json": json, "timeout": self.timeout})
         if self.__class__.exception:
             raise self.__class__.exception
-        return self.__class__.response
+        return _FakeStream(self.__class__.response)
 
 
 @pytest.fixture(autouse=True)
@@ -192,3 +203,26 @@ async def test_zhipu_mcp_sse_response_is_parsed(monkeypatch):
 
     assert data["ok"] is True
     assert data["results"][0]["url"] == "https://example.com"
+
+
+@pytest.mark.asyncio
+async def test_zhipu_mcp_reader_oversized_body_is_too_large(monkeypatch):
+    from smart_search.evidence_budget import DEFAULT_FETCH_TRANSPORT_LIMIT
+
+    FakeZhipuMCPClient.response = httpx.Response(
+        200,
+        text='{"result": {"content": [{"type": "text", "text": "'
+        + ("z" * DEFAULT_FETCH_TRANSPORT_LIMIT)
+        + '"}]}}',
+        headers={"content-type": "application/json"},
+        request=httpx.Request("POST", "https://open.bigmodel.cn/api/mcp/web_reader/mcp"),
+    )
+    monkeypatch.setattr("smart_search.providers.zhipu_mcp.httpx.AsyncClient", FakeZhipuMCPClient)
+
+    provider = ZhipuMCPProvider(
+        "https://open.bigmodel.cn/api/mcp/web_reader/mcp", "zmcp-secret", provider_id="zhipu-mcp-reader"
+    )
+    data = json.loads(await provider.web_reader("https://example.com"))
+
+    assert data["ok"] is False
+    assert data["error_type"] == "too_large"

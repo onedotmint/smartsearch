@@ -80,6 +80,7 @@ _LEGACY_ERROR_TO_V2: Mapping[str, V2ErrorCode] = {
     "empty": V2ErrorCode.FETCH_FAILED,
     "quality_error": V2ErrorCode.FETCH_FAILED,
     "challenge": V2ErrorCode.FETCH_FAILED,
+    "too_large": V2ErrorCode.FETCH_FAILED,
     "parse_error": V2ErrorCode.PARSE_FAILED,
     "protocol_error": V2ErrorCode.PROTOCOL_ERROR,
     "budget_exhausted": V2ErrorCode.BUDGET_EXHAUSTED,

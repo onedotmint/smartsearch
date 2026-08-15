@@ -14,6 +14,7 @@ and no network.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
@@ -363,6 +364,12 @@ async def test_request_context_closes_client_when_cancelled():
     assert client.closed is True
 
 
+@asynccontextmanager
+async def _client_stream_context(response: httpx.Response):
+    """Async context manager yielding an httpx.Response for fake stream()."""
+    yield response
+
+
 @pytest.mark.asyncio
 async def test_fetch_uses_one_shared_client_and_closes_it(monkeypatch):
     """The current web-fetch path reuses the command's single shared client
@@ -380,13 +387,13 @@ async def test_fetch_uses_one_shared_client_and_closes_it(monkeypatch):
             self.calls = 0
             self.instances.append(self)
 
-        async def post(self, endpoint, headers, json, **kwargs):
+        def stream(self, method, endpoint, headers=None, json=None, **kwargs):
             self.calls += 1
-            return httpx.Response(
+            return _client_stream_context(httpx.Response(
                 200,
                 json={"results": [{"raw_content": "page content"}]},
-                request=httpx.Request("POST", endpoint),
-            )
+                request=httpx.Request(method, endpoint),
+            ))
 
         async def aclose(self):
             self.closed = True

@@ -23,6 +23,7 @@ PROVIDER_ERROR_TYPES = frozenset(
         "empty",
         "provider_error",
         "budget_exhausted",
+        "too_large",
     }
 )
 
@@ -105,6 +106,27 @@ def classify_provider_exception(exc: BaseException) -> tuple[str, str, bool]:
     result = ("protocol_error", str(exc) or "provider response violated its protocol", False)
     _logger.info("provider error classification finished")
     return result
+
+
+async def read_response_bounded(response: httpx.Response, limit: int) -> bytes:
+    """Read a response body, failing classified when it exceeds ``limit`` bytes.
+
+    Streams the body so an oversized or decompressed response is never fully
+    buffered in memory. The overflow raises a non-retryable ``too_large``
+    ProviderError; callers map it through their normal classification path.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if total > limit:
+            raise ProviderError(
+                "too_large",
+                f"response body exceeds the {limit}-byte transport limit",
+                retryable=False,
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 class ProviderError(Exception):

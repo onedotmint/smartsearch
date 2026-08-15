@@ -6,6 +6,17 @@ import pytest
 from smart_search.providers.jina import JinaReaderProvider
 
 
+class _FakeStream:
+    def __init__(self, response):
+        self.response = response
+
+    async def __aenter__(self):
+        return self.response
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
 class FakeJinaClient:
     calls = []
     response: httpx.Response | None = None
@@ -21,11 +32,11 @@ class FakeJinaClient:
     async def __aexit__(self, exc_type, exc, tb):
         return None
 
-    async def get(self, url, headers):
+    def stream(self, method, url, headers=None, **kwargs):
         self.__class__.calls.append({"url": url, "headers": headers, "timeout": self.timeout})
         if self.__class__.exception:
             raise self.__class__.exception
-        return self.__class__.response
+        return _FakeStream(self.__class__.response)
 
 
 @pytest.fixture(autouse=True)
@@ -79,7 +90,7 @@ async def test_jina_reader_anonymous_fetch_omits_authorization(monkeypatch):
 @pytest.mark.asyncio
 async def test_jina_reader_error_diagnostics_never_leak_key(monkeypatch):
     class LeakyClient(FakeJinaClient):
-        async def get(self, url, headers):
+        def stream(self, method, url, headers=None, **kwargs):
             self.__class__.calls.append({"url": url, "headers": headers, "timeout": self.timeout})
             raise httpx.HTTPStatusError(
                 "401 jina-secret leaked into message",
@@ -177,3 +188,38 @@ async def test_jina_reader_timeout_is_timeout_error(monkeypatch):
 
     assert data["ok"] is False
     assert data["error_type"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_jina_reader_oversized_body_is_too_large(monkeypatch):
+    from smart_search.evidence_budget import DEFAULT_FETCH_TRANSPORT_LIMIT
+
+    FakeJinaClient.response = httpx.Response(
+        200,
+        text="x" * (DEFAULT_FETCH_TRANSPORT_LIMIT + 10),
+        request=httpx.Request("GET", "https://r.jina.ai/https://example.com"),
+    )
+    monkeypatch.setattr("smart_search.providers.jina.httpx.AsyncClient", FakeJinaClient)
+
+    provider = JinaReaderProvider("https://r.jina.ai")
+    data = json.loads(await provider.fetch("https://example.com"))
+
+    assert data["ok"] is False
+    assert data["error_type"] == "too_large"
+    assert "transport limit" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_jina_reader_normal_size_under_limit_is_unaffected(monkeypatch):
+    FakeJinaClient.response = httpx.Response(
+        200,
+        text="Title: Example\n\n" + ("body" * 1000),
+        request=httpx.Request("GET", "https://r.jina.ai/https://example.com"),
+    )
+    monkeypatch.setattr("smart_search.providers.jina.httpx.AsyncClient", FakeJinaClient)
+
+    provider = JinaReaderProvider("https://r.jina.ai")
+    data = json.loads(await provider.fetch("https://example.com"))
+
+    assert data["ok"] is True
+    assert data["content"].startswith("Title: Example")

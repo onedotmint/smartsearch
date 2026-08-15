@@ -5,7 +5,8 @@ from typing import Any
 
 import httpx
 
-from .base import ProviderResult, classify_provider_exception
+from .base import ProviderResult, classify_provider_exception, read_response_bounded
+from ..evidence_budget import DEFAULT_FETCH_TRANSPORT_LIMIT
 from ..runtime_cache import current_context, request_client, request_timeout_kwargs
 
 
@@ -35,12 +36,12 @@ def _extract_text(result: dict[str, Any]) -> str:
     return ""
 
 
-def _parse_sse_or_json(response: httpx.Response) -> dict[str, Any]:
-    content_type = response.headers.get("content-type", "")
+def _parse_sse_or_json(body: bytes, content_type: str) -> dict[str, Any]:
     if "json" in content_type:
-        return response.json()
+        return json.loads(body)
+    text = body.decode("utf-8", errors="replace")
     data_lines = []
-    for line in response.text.splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if line.startswith("data:"):
             data_lines.append(line.removeprefix("data:").strip())
@@ -51,7 +52,7 @@ def _parse_sse_or_json(response: httpx.Response) -> dict[str, Any]:
             return json.loads(line)
         except json.JSONDecodeError:
             continue
-    return response.json()
+    return json.loads(text)
 
 
 def _parse_markdown_results(text: str, provider: str) -> list[dict[str, str]]:
@@ -146,14 +147,17 @@ class ZhipuMCPProvider:
         try:
             timeout = httpx.Timeout(connect=6.0, read=self.timeout, write=10.0, pool=None)
             async with request_client(ctx, timeout=timeout, follow_redirects=True) as client:
-                response = await client.post(
+                async with client.stream(
+                    "POST",
                     self.api_url,
                     headers=headers,
                     json=payload,
                     **request_timeout_kwargs(self.timeout, ctx),
-                )
-                response.raise_for_status()
-                data = _parse_sse_or_json(response)
+                ) as response:
+                    response.raise_for_status()
+                    content_type = response.headers.get("content-type", "")
+                    body = await read_response_bounded(response, DEFAULT_FETCH_TRANSPORT_LIMIT)
+            data = _parse_sse_or_json(body, content_type)
             output = self._normalize_response(name, arguments, data, start)
             if output.get("error"):
                 output["error"] = _mask_secret(str(output["error"]), self.api_key)

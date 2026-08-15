@@ -17,6 +17,17 @@ from smart_search.providers.base import ProviderError
 from smart_search.runtime_cache import RequestContext, request_scope
 
 
+class _FakeStream:
+    def __init__(self, response):
+        self.response = response
+
+    async def __aenter__(self):
+        return self.response
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
 class _FakeResponseClient:
     def __init__(self, response=None, exception=None):
         self.response = response
@@ -28,6 +39,12 @@ class _FakeResponseClient:
         if self.exception is not None:
             raise self.exception
         return self.response
+
+    def stream(self, method, url, headers=None, json=None, **kwargs):
+        self.calls.append({"method": method, "url": url, "headers": headers or {}, "json": json or {}, "kwargs": kwargs})
+        if self.exception is not None:
+            raise self.exception
+        return _FakeStream(self.response)
 
 
 def _install_request_client(monkeypatch, module, client: _FakeResponseClient):
@@ -353,6 +370,46 @@ async def test_firecrawl_scrape_empty_markdown_is_none_not_success(monkeypatch):
 
     result = await provider_fetch_commands.call_firecrawl_scrape("https://example.com")
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_tavily_extract_oversized_body_is_too_large(monkeypatch):
+    from smart_search.evidence_budget import DEFAULT_FETCH_TRANSPORT_LIMIT
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-secret")
+    client = _FakeResponseClient(
+        response=httpx.Response(
+            200,
+            text='{"results": [{"raw_content": "' + ("x" * DEFAULT_FETCH_TRANSPORT_LIMIT) + '"}]}',
+            request=httpx.Request("POST", "https://api.tavily.com/extract"),
+        )
+    )
+    _install_request_client(monkeypatch, provider_fetch_commands, client)
+
+    with pytest.raises(ProviderError) as exc:
+        await provider_fetch_commands.call_tavily_extract("https://example.com")
+    assert exc.value.error_type == "too_large"
+    assert exc.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_firecrawl_scrape_oversized_body_is_too_large(monkeypatch):
+    from smart_search.evidence_budget import DEFAULT_FETCH_TRANSPORT_LIMIT
+
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "firecrawl-secret")
+    monkeypatch.setenv("SMART_SEARCH_RETRY_MAX_ATTEMPTS", "1")
+    client = _FakeResponseClient(
+        response=httpx.Response(
+            200,
+            text='{"data": {"markdown": "' + ("y" * DEFAULT_FETCH_TRANSPORT_LIMIT) + '"}}',
+            request=httpx.Request("POST", "https://api.firecrawl.dev/v2/scrape"),
+        )
+    )
+    _install_request_client(monkeypatch, provider_fetch_commands, client)
+
+    with pytest.raises(ProviderError) as exc:
+        await provider_fetch_commands.call_firecrawl_scrape("https://example.com")
+    assert exc.value.error_type == "too_large"
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,8 @@ from typing import Any
 
 import httpx
 
-from .base import ProviderResult, classify_provider_exception
+from .base import ProviderResult, classify_provider_exception, read_response_bounded
+from ..evidence_budget import DEFAULT_FETCH_TRANSPORT_LIMIT
 from ..runtime_cache import current_context, request_client, request_timeout_kwargs
 
 
@@ -78,13 +79,15 @@ class JinaReaderProvider:
         try:
             timeout = httpx.Timeout(connect=6.0, read=self.timeout, write=10.0, pool=None)
             async with request_client(ctx, timeout=timeout, follow_redirects=True) as client:
-                response = await client.get(
+                async with client.stream(
+                    "GET",
                     endpoint,
                     headers=headers,
                     **request_timeout_kwargs(self.timeout, ctx),
-                )
-                response.raise_for_status()
-            content = response.text.strip()
+                ) as response:
+                    response.raise_for_status()
+                    body = await read_response_bounded(response, DEFAULT_FETCH_TRANSPORT_LIMIT)
+            content = body.decode("utf-8", errors="replace")
             quality_error = _quality_error(content)
             if quality_error:
                 return ProviderResult.from_error(

@@ -1,5 +1,6 @@
 """Fetch and site-map provider command ownership."""
 
+import json
 import time
 from typing import Any
 
@@ -11,9 +12,10 @@ from .capability_service import (
     _provider_availability,
 )
 from .config import config
+from .evidence_budget import DEFAULT_FETCH_TRANSPORT_LIMIT
 from .logger import log_info, logger
 from .provider_command_support import decode_provider_json
-from .providers.base import ProviderError, classify_provider_exception
+from .providers.base import ProviderError, classify_provider_exception, read_response_bounded
 from .providers.jina import JinaReaderProvider
 from .runtime_cache import (
     add_retry,
@@ -54,14 +56,16 @@ async def call_tavily_extract(url: str) -> str | None:
         headers = {"Authorization": f"Bearer {config.tavily_api_key}", "Content-Type": "application/json"}
         ctx = current_context()
         async with request_client(ctx, timeout=60.0) as client:
-            response = await client.post(
+            async with client.stream(
+                "POST",
                 endpoint,
                 headers=headers,
                 json={"urls": [url], "format": "markdown"},
                 **request_timeout_kwargs(60.0, ctx),
-            )
-            response.raise_for_status()
-            payload = response.json()
+            ) as response:
+                response.raise_for_status()
+                body = await read_response_bounded(response, DEFAULT_FETCH_TRANSPORT_LIMIT)
+            payload = json.loads(body)
         if not isinstance(payload, dict) or not isinstance(payload.get("results", []), list):
             raise ValueError("Tavily extract response results must be a list")
         results = payload.get("results", [])
@@ -123,7 +127,8 @@ async def call_firecrawl_scrape(url: str, ctx=None) -> str | None:
                 )
             try:
                 async with request_client(ctx, timeout=90.0) as client:
-                    response = await client.post(
+                    async with client.stream(
+                        "POST",
                         endpoint,
                         headers=headers,
                         json={
@@ -133,9 +138,10 @@ async def call_firecrawl_scrape(url: str, ctx=None) -> str | None:
                             "waitFor": (attempt + 1) * 1500,
                         },
                         **request_timeout_kwargs(90.0, ctx),
-                    )
-                    response.raise_for_status()
-                    payload = response.json()
+                    ) as response:
+                        response.raise_for_status()
+                        body = await read_response_bounded(response, DEFAULT_FETCH_TRANSPORT_LIMIT)
+                    payload = json.loads(body)
                 if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
                     raise ValueError("Firecrawl scrape response data must be an object")
                 markdown = payload["data"].get("markdown", "")

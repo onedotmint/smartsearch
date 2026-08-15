@@ -870,3 +870,21 @@ async def test_docs_request_honors_max_results_and_site_returns_candidates(monke
     assert site.status is V2Status.COMPLETE
     assert site.evidence.items == ()
     assert len(site.evidence.candidates) == 1
+
+def test_v2_too_large_attempt_maps_to_fetch_failed():
+    """A too_large provider attempt projects as FETCH_FAILED, not generic."""
+    failed = EvidenceOperationOutcome(
+        operation="content_fetch",
+        status=EvidenceOperationStatus.FAILED,
+        attempts=(
+            error_attempt("web_fetch", "jina", error_type="too_large", message="response body exceeds the 5242880-byte transport limit", elapsed_ms=2.0),
+        ),
+        error=ExecutionError("too_large", "content_fetch failed", retryable=False),
+        routing=EvidenceRouting(("content_fetch",), ("content_fetch",), "v2", ("content_fetch",)),
+        metadata=ExecutionMetadata("req-1", 3),
+    )
+    payload = serialize_result(canonical_operations._project_evidence_outcome(failed))
+    assert payload["status"] == "failed"
+    assert payload["error"]["code"] == "FETCH_FAILED"
+    assert payload["attempts"][0]["error_code"] == "FETCH_FAILED"
+    assert payload["result"] == {"total": 0, "items": []}
