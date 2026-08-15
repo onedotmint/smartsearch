@@ -120,15 +120,22 @@ def _reject(args: Any, argv: list[str] | None) -> tuple[V3OperationDescriptor | 
     return descriptor, None
 
 
-def _internal_error(descriptor: V3OperationDescriptor | None) -> int:
+def _internal_error(descriptor: V3OperationDescriptor | None, exc: BaseException | None = None) -> int:
     if descriptor is None:
         return emit_parser_error(
             command=None,
             operation=None,
             message="v3 command failed before operation selection",
         )
-    # Unknown failures must not invent write or subprocess outcomes. Reads may
-    # have already happened for the selected operation, so keep declared reads.
+    # TEMPORARY DIAGNOSTIC: surface the swallowed exception for config.list so
+    # the Windows INTERNAL_ERROR can be root-caused; revert after diagnosis.
+    import traceback as _traceback
+
+    diag = ""
+    tb = ""
+    if exc is not None and descriptor.operation == "config.list":
+        diag = f"{type(exc).__name__}: {exc}"
+        tb = "".join(_traceback.format_exception(type(exc), exc, exc.__traceback__))
     envelope = V3Envelope(
         status=V3Status.FAILED,
         command=descriptor.command,
@@ -142,9 +149,9 @@ def _internal_error(descriptor: V3OperationDescriptor | None) -> int:
         ),
         error=V3Error(
             V3ErrorCode.INTERNAL_ERROR,
-            "v3 control-plane command failed unexpectedly",
+            "v3 control-plane command failed unexpectedly" + (f": {diag}" if diag else ""),
             ERROR_RETRYABILITY[V3ErrorCode.INTERNAL_ERROR],
-            {},
+            {"diagnostic_traceback": tb} if tb else {},
         ),
         meta=V3Meta(),
     )
@@ -171,8 +178,8 @@ async def dispatch(args: Any, *, argv: list[str] | None = None) -> int:
 
         envelope = await run_operation(args, descriptor)
         payload = serialize_result(envelope)
-    except Exception:
-        return _internal_error(descriptor)
+    except Exception as exc:
+        return _internal_error(descriptor, exc)
 
     # The shared parser defaults differ per subcommand (the v1 diagnose parser
     # defaults to markdown), so the typed family honors only an explicit
