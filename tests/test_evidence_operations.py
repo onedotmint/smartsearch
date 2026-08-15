@@ -616,6 +616,66 @@ async def test_content_fetch_request_rejects_invalid_budget_inputs():
         ContentFetchRequest("https://example.com", full="yes")
 
 
+def test_web_resource_error_validator():
+    assert evidence_operations.web_resource_error("https://example.com") is None
+    assert evidence_operations.web_resource_error("http://example.com/a?b=1") is None
+    assert evidence_operations.web_resource_error("HTTPS://example.com") is None
+    assert evidence_operations.web_resource_error("") is not None
+    assert evidence_operations.web_resource_error(123) is not None
+    assert evidence_operations.web_resource_error("file:///etc/passwd") is not None
+    assert evidence_operations.web_resource_error("ftp://host/x") is not None
+    assert evidence_operations.web_resource_error("javascript:alert(1)") is not None
+    assert evidence_operations.web_resource_error("//no-scheme/path") is not None
+    assert evidence_operations.web_resource_error("localhost:8080") is not None
+
+
+@pytest.mark.asyncio
+async def test_content_fetch_rejects_non_http_resource_before_provider(monkeypatch, no_network):
+    """Non-http(s) resources fail classified with zero provider work."""
+    for resource in ("file:///etc/passwd", "ftp://host/x", "javascript:alert(1)", "localhost:8080"):
+        outcome = await evidence_operations.content_fetch(ContentFetchRequest(resource))
+        assert outcome.status is EvidenceOperationStatus.FAILED
+        assert outcome.error is not None
+        assert outcome.error.type == "parameter_error"
+        assert "http(s)" in outcome.error.message
+        assert outcome.attempts == ()
+        assert outcome.evidence_items == ()
+        assert outcome.routing.reason_codes == ("invalid_argument",)
+
+    # Validation wins even when providers are configured (zero provider calls).
+    calls = {"fetch": 0}
+
+    async def fake_fetch(*args, **kwargs):
+        calls["fetch"] += 1
+        raise AssertionError("provider must not be invoked")
+
+    monkeypatch.setattr(evidence_operations, "_qualified_providers", lambda operation: ["tavily"])
+    monkeypatch.setattr(evidence_operations, "_execute_web_fetch", fake_fetch)
+    outcome = await evidence_operations.content_fetch(ContentFetchRequest("file:///etc/passwd"))
+    assert outcome.status is EvidenceOperationStatus.FAILED
+    assert outcome.error.type == "parameter_error"
+    assert calls["fetch"] == 0
+
+
+@pytest.mark.asyncio
+async def test_site_discovery_rejects_non_http_resource_before_provider(monkeypatch, no_network):
+    calls = {"map": 0}
+
+    async def fake_map(*args, **kwargs):
+        calls["map"] += 1
+        raise AssertionError("provider must not be invoked")
+
+    monkeypatch.setattr(evidence_operations, "_qualified_providers", lambda operation: ["tavily"])
+    monkeypatch.setattr(evidence_operations, "_execute_site_map", fake_map)
+    outcome = await evidence_operations.site_discovery(SiteDiscoveryRequest("file:///etc/passwd"))
+    assert outcome.status is EvidenceOperationStatus.FAILED
+    assert outcome.error is not None
+    assert outcome.error.type == "parameter_error"
+    assert "http(s)" in outcome.error.message
+    assert outcome.attempts == ()
+    assert calls["map"] == 0
+
+
 @pytest.mark.asyncio
 async def test_content_fetch_rejects_challenge_and_missing_provenance(monkeypatch):
     monkeypatch.setattr(evidence_operations, "_qualified_providers", lambda operation: ["tavily"])

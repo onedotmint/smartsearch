@@ -63,6 +63,64 @@ def test_v2_response_mode_rejected_before_network(monkeypatch):
     assert "response_mode" in payload["error"]["message"]
 
 
+def test_v2_fetch_rejects_non_http_resource_envelope():
+    """Non-http(s) fetch resources fail with the V2 INVALID_ARGUMENT envelope."""
+    code, out, err = _run_main(["fetch", "file:///etc/passwd"])
+    assert code == 2
+    payload = json.loads(out)
+    assert payload["schema_version"] == "2"
+    assert payload["ok"] is False
+    assert payload["command"] == "fetch"
+    assert payload["operation"] == "content_fetch"
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert "http(s)" in payload["error"]["message"]
+    assert payload["attempts"] == []
+    assert payload["routing"]["reason_codes"] == ["invalid_argument"]
+    assert payload["result"] == {"total": 0, "items": []}
+
+
+def test_v2_map_rejects_non_http_resource_envelope():
+    code, out, err = _run_main(["map", "file:///etc/passwd"])
+    assert code == 2
+    payload = json.loads(out)
+    assert payload["operation"] == "site_discovery"
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert payload["attempts"] == []
+
+
+def test_v2_fetch_valid_https_resource_reaches_owner(monkeypatch):
+    """An https resource passes validation and reaches the owner path."""
+    import smart_search.evidence_operations as evidence_operations
+
+    calls = {"fetch": 0}
+
+    async def fake_fetch(url, fallback="auto", preferred_order=None, providers=None):
+        calls["fetch"] += 1
+        from smart_search.execution_primitives import ExecutionAttempt, ExecutionAttemptStatus, ExecutionOutcome
+
+        return ExecutionOutcome(
+            value={"ok": True, "url": url, "provider": "tavily", "content": "body"},
+            attempts=(
+                ExecutionAttempt(
+                    capability="web_fetch",
+                    provider="tavily",
+                    status=ExecutionAttemptStatus.OK,
+                    elapsed_ms=1.0,
+                    result_count=1,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(evidence_operations, "_qualified_providers", lambda operation: ["tavily"])
+    monkeypatch.setattr(evidence_operations, "_execute_web_fetch", fake_fetch)
+    code, out, err = _run_main(["fetch", "https://example.com/page"])
+    assert calls["fetch"] == 1
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    assert payload["operation"] == "content_fetch"
+    assert len(payload["evidence"]["items"]) == 1
+
+
 def test_v2_presentation_formats_are_one_stdout_document(monkeypatch):
     """Markdown/content select one human stdout document after validation."""
     from smart_search import api_v2

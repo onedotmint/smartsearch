@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlsplit
 
 from .capability_service import (
     _provider_status_for_capability,
@@ -97,6 +98,33 @@ def _positive_int(value: Any, name: str, default: int) -> int:
     if type(value) is bool or type(value) is not int or value < 1:
         raise CanonicalOperationError(f"{name} must be a positive integer")
     return value
+
+
+# Only web resources may enter evidence fetch/map owners. Fetching is delegated
+# to provider servers, so this is a local hygiene/validation gate (never an
+# SSRF boundary): it keeps non-web resources out of provider requests and
+# produces deterministic classified errors instead of upstream oddities.
+_WEB_RESOURCE_SCHEMES = frozenset({"http", "https"})
+
+
+def web_resource_error(resource: Any) -> str | None:
+    """Return a message when ``resource`` is not an http(s) URL with a host.
+
+    Stdlib-only validation shared by the typed Evidence owners. Returns
+    ``None`` when the resource is acceptable; the message is safe for output.
+    """
+    if not isinstance(resource, str) or not resource.strip():
+        return "resource must be a non-blank http(s) URL"
+    try:
+        parsed = urlsplit(resource.strip())
+    except ValueError:
+        return f"resource is not a valid URL: {resource!r}"
+    if parsed.scheme.lower() not in _WEB_RESOURCE_SCHEMES or not parsed.netloc:
+        return (
+            "resource must be an http(s) URL with a host "
+            f"(got scheme {parsed.scheme!r})"
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +522,23 @@ def _config_failed_outcome(
     )
 
 
+def _invalid_resource_outcome(
+    *,
+    operation: str,
+    message: str,
+    request_id: str,
+    duration_ms: int,
+) -> EvidenceOperationOutcome:
+    """Pre-execution invalid-resource failure: zero attempts, zero network."""
+    return EvidenceOperationOutcome(
+        operation=operation,
+        status=EvidenceOperationStatus.FAILED,
+        error=ExecutionError("parameter_error", message, retryable=False),
+        routing=EvidenceRouting((operation,), (), "v2", ("invalid_argument",)),
+        metadata=ExecutionMetadata(request_id, duration_ms),
+    )
+
+
 def _derive_discovery_outcome(
     *,
     operation: str,
@@ -678,6 +723,14 @@ async def content_fetch(request: ContentFetchRequest) -> EvidenceOperationOutcom
     request_id = _request_id()
     if not isinstance(request, ContentFetchRequest):
         request = ContentFetchRequest(resource=getattr(request, "resource", ""))
+    resource_error = web_resource_error(request.resource)
+    if resource_error:
+        return _invalid_resource_outcome(
+            operation="content_fetch",
+            message=resource_error,
+            request_id=request_id,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
     providers = _qualified_providers("content_fetch")
     if not providers:
         return _config_failed_outcome(
@@ -763,6 +816,14 @@ async def site_discovery(request: SiteDiscoveryRequest) -> EvidenceOperationOutc
     request_id = _request_id()
     if not isinstance(request, SiteDiscoveryRequest):
         request = SiteDiscoveryRequest(resource=getattr(request, "resource", ""))
+    resource_error = web_resource_error(request.resource)
+    if resource_error:
+        return _invalid_resource_outcome(
+            operation="site_discovery",
+            message=resource_error,
+            request_id=request_id,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
     providers = _qualified_providers("site_discovery")
     if not providers:
         return _config_failed_outcome(
@@ -1049,4 +1110,5 @@ __all__ = [
     "docs_discovery",
     "site_discovery",
     "source_discovery",
+    "web_resource_error",
 ]
