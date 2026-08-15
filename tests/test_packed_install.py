@@ -110,6 +110,11 @@ def _cli_env(config_dir: Path, home: Path) -> dict[str, str]:
             if key in os.environ:
                 env[key] = os.environ[key]
         env["PATH"] = os.environ.get("PATH", "")
+        # ``Path.home()`` on Windows ignores HOME and raises RuntimeError when
+        # neither USERPROFILE nor HOMEDRIVE+HOMEPATH is set. Point USERPROFILE
+        # at the same hermetic home as HOME so the installed CLI can determine
+        # a home without touching the real user profile.
+        env.setdefault("USERPROFILE", str(home))
     else:
         env["PATH"] = "/usr/bin:/bin:/usr/local/bin"
     env.pop("PYTHONPATH", None)
