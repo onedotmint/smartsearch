@@ -205,6 +205,17 @@ def test_publish_workflow_exact_version_duplicate_guard():
     )
 
 
+def test_publish_workflow_serializes_runs_with_concurrency_queue():
+    """Publish runs are serialized: concurrent main pushes each resolve their
+    own beta number instead of racing to publish the same version."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "concurrency:" in workflow
+    assert "group: smart-search-npm-publish" in workflow
+    assert "cancel-in-progress: false" in workflow
+    assert "queue: max" in workflow
+
+
 def test_publish_workflow_token_and_provenance_wiring_without_credential_output():
     """npm authentication uses a granular access token wired through
     NODE_AUTH_TOKEN with the matching setup-node registry-url, provenance uses

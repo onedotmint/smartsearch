@@ -27,6 +27,16 @@ permissions:
   contents: write
   id-token: write
 
+# Serialize publish runs: main pushes resolve the next beta by querying npm,
+# and two concurrent runs could resolve the same unused version and race to
+# publish it (npm versions are immutable, so the loser fails). queue: max lets
+# any number of runs line up instead of GitHub's default of keeping only one
+# pending run; cancel-in-progress: false never kills a run mid-publish.
+concurrency:
+  group: smart-search-npm-publish
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   publish:
     runs-on: ubuntu-latest
