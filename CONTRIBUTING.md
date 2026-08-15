@@ -44,6 +44,16 @@ Live provider checks are useful only when the change affects a configured provid
 
 Keep the two README files structurally aligned, but write idiomatic English and Chinese rather than literal translations. Put detailed command flags in `docs/commands.md`, provider keys and fallback rules in `docs/providers.md`, and research/evidence semantics in `docs/concepts/`.
 
+## JSON compatibility policy
+
+The V2 Evidence, V3 Control Plane, and Research Workflow envelopes are stable machine contracts that agents depend on. Treat them accordingly:
+
+- Removing an existing field or changing its type or semantics is a **major breaking change** and must be announced as such.
+- **Additive optional fields are compatible**, but the strict serializers emit them, so any additive field updates the frozen golden baselines in `tests/fixtures/json_compat_baselines.py` in the same commit.
+- Input unknown fields are rejected by strict schema validation; do not silently ignore them.
+- Output shapes change only through a deliberate schema version bump with the golden fixtures, serializers, and docs updated together.
+- Run `tests/test_json_compat_baselines.py` (byte-wise serializer snapshots for V2 and Workflow) and the contract tests for any envelope change.
+
 When changing the public skill source, synchronize the packaged asset tree and run the regression test that compares both trees. When adding a public Markdown file, add a README link and include it in the npm package whitelist when the link must work from an installed package.
 
 ## Pull requests

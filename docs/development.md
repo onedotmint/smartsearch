@@ -54,6 +54,10 @@ python -m pytest tests/test_control_plane_v3_contract.py tests/test_cli_v3.py te
 
 Do not add non-evidence operations to v2 or let evidence commands receive V3 JSON. The canonical command domain alone decides the contract family: evidence commands use V2, retained control-plane leaves use V3, and research plan/run use the Workflow family. Keep the public and packaged Skill on the canonical command boundary unless its own contract intentionally changes.
 
+### JSON compatibility policy
+
+The envelopes are stable machine contracts that agents depend on. Removing an existing field or changing its type or semantics is a major breaking change; **additive optional fields are compatible** (and update the golden baselines in the same commit). Input unknown fields are rejected by strict schema validation; output shapes change only through a deliberate schema bump. Byte-wise golden snapshots for representative V2 and Workflow envelopes live in `tests/fixtures/json_compat_baselines.py` and are enforced by `tests/test_json_compat_baselines.py` through the real projection + serializer + CLI emit path, so any shape drift fails without a deliberate fixture update.
+
 ## Documentation boundaries
 
 | Concern | Source of truth |
