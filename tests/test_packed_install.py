@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -41,9 +42,6 @@ from tests.fixtures import legacy_migration as lm
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_SKILL_DIR = ROOT / "skills" / "smart-search-cli"
 PACKAGED_SKILL_REL = "src/smart_search/assets/skills/smart-search-cli"
-VENV_PYTHON = ROOT / ".smart-search-python" / "bin" / "python"
-
-
 def _venv_python(venv_dir: Path) -> Path:
     """Locate the venv Python executable portably.
 
@@ -54,6 +52,11 @@ def _venv_python(venv_dir: Path) -> Path:
     if sys.platform == "win32":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
+
+
+# npm postinstall runtime venv; platform-aware so the wrapper-venv tests run
+# on Windows too instead of silently skipping.
+VENV_PYTHON = _venv_python(ROOT / ".smart-search-python")
 V010_SECRETS = (
     "xai-0-1-0-secret",
     "openai-0-1-0-secret",
@@ -94,8 +97,21 @@ def _cli_env(config_dir: Path, home: Path) -> dict[str, str]:
         "HOME": str(home),
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1",
-        "PATH": "/usr/bin:/bin:/usr/local/bin",
     }
+    if sys.platform == "win32":
+        # A fully stripped environment breaks Windows subprocess
+        # initialization: ``import asyncio`` -> ``asyncio.windows_events`` ->
+        # ``import _overlapped`` calls WSAStartup, and without the normal
+        # system environment (SystemRoot, ...) the Winsock service provider
+        # fails to load with WinError 10106 before Smart Search runs. Carry
+        # over only the Windows variables a normal subprocess needs, plus the
+        # real system PATH; do not inherit arbitrary developer Python config.
+        for key in ("SystemRoot", "WINDIR", "ComSpec", "TEMP", "TMP", "PATHEXT"):
+            if key in os.environ:
+                env[key] = os.environ[key]
+        env["PATH"] = os.environ.get("PATH", "")
+    else:
+        env["PATH"] = "/usr/bin:/bin:/usr/local/bin"
     env.pop("PYTHONPATH", None)
     return env
 
