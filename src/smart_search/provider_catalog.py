@@ -23,6 +23,7 @@ _REPLACEMENTS = {
     "openai-compatible": "provider routes",
     "tavily": "search | fetch | map",
     "firecrawl": "search | fetch",
+    "brave": "search (V2 source discovery)",
     "jina": "fetch",
     "zhipu-mcp-reader": "fetch",
 }

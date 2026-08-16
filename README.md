@@ -52,7 +52,7 @@ The first local check has deterministic output:
 
 ```text
 $ smart-search --version
-smart-search 0.2.0
+smart-search 0.3.0
 ```
 
 Search responses use a strict versioned JSON envelope: evidence commands return the V2 envelope, control-plane commands return the V3 envelope, and `research run` returns the Research Workflow envelope. Provider text and URLs vary; the machine contract never changes.
@@ -72,6 +72,7 @@ smart-search fetch "https://example.com/page" --full
 
 - V2 defaults to JSON, the only stable machine contract, and returns the strict envelope (`status`, `operation`, `evidence`, `routing`, `attempts`, ...). `--format markdown|content` renders a non-stable human view of the same validated envelope.
 - V2 `search` returns discovery candidates only; it never calls legacy `main_search` or accepts `--response-mode`.
+- v0.3.0: `search`/`source_discovery` runs through the multi-source retrieval gateway when Brave or Exa is configured (Tavily for research intent): one normalized candidate model, deterministic URL dedup with provenance, reciprocal-rank fusion (RRF), and optional best-effort Jina reranking. Setups without Brave/Exa/Tavily keep the exact pre-v0.3.0 behavior. See the [provider guide](docs/providers.md#retrieval-policy-and-fusion-v030).
 - Fetched evidence is bounded to 8,000 characters per item by default; every item reports `truncated`, `original_length`, and `returned_length`, and `fetch --full` bypasses the cap for the available full content. `research run` admits at most five evidence items per run.
 - Host agents write the final answer from fetched `evidence.items`; discovery candidates are not claim-level proof.
 - `capabilities` uses envelope-only meta operation `capability_status` (local inspection, no Provider network).

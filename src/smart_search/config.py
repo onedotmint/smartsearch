@@ -127,6 +127,12 @@ class Config:
         "TAVILY_API_URL",
         "TAVILY_ENABLED",
         "TAVILY_TIMEOUT_SECONDS",
+        "BRAVE_API_KEY",
+        "BRAVE_API_URL",
+        "BRAVE_ENABLED",
+        "BRAVE_TIMEOUT_SECONDS",
+        "JINA_RERANK_API_URL",
+        "JINA_RERANK_MODEL",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "ANYSEARCH_API_KEY",
@@ -1190,6 +1196,7 @@ class Config:
                 "zhipu": ("ZHIPU_API_URL", "ZHIPU_SEARCH_ENGINE", "ZHIPU_TIMEOUT_SECONDS"),
                 "zhipu-mcp": ("ZHIPU_MCP_SEARCH_API_URL", "ZHIPU_MCP_TIMEOUT_SECONDS"),
                 "tavily": ("TAVILY_API_URL", "TAVILY_ENABLED", "TAVILY_TIMEOUT_SECONDS"),
+                "brave": ("BRAVE_API_URL", "BRAVE_ENABLED", "BRAVE_TIMEOUT_SECONDS"),
                 "firecrawl": ("FIRECRAWL_API_URL",),
             },
             "docs_search": {
@@ -1293,6 +1300,36 @@ class Config:
     @property
     def tavily_timeout(self) -> float:
         return float(self._get_config_value("TAVILY_TIMEOUT_SECONDS", "30") or "30")
+
+    @property
+    def brave_enabled(self) -> bool:
+        return (self._get_config_value("BRAVE_ENABLED", "true") or "true").lower() in ("true", "1", "yes")
+
+    @property
+    def brave_api_url(self) -> str:
+        return (
+            self._get_config_value("BRAVE_API_URL", "https://api.search.brave.com/res/v1")
+            or "https://api.search.brave.com/res/v1"
+        )
+
+    @property
+    def brave_api_key(self) -> str | None:
+        return self._get_config_value("BRAVE_API_KEY")
+
+    @property
+    def brave_timeout(self) -> float:
+        return float(self._get_config_value("BRAVE_TIMEOUT_SECONDS", "30") or "30")
+
+    @property
+    def jina_rerank_api_url(self) -> str:
+        return (
+            self._get_config_value("JINA_RERANK_API_URL", "https://api.jina.ai/v1/rerank")
+            or "https://api.jina.ai/v1/rerank"
+        )
+
+    @property
+    def jina_rerank_model(self) -> str:
+        return self._get_config_value("JINA_RERANK_MODEL", "jina-reranker-v2-base-multilingual") or ""
 
     @property
     def firecrawl_api_url(self) -> str:
@@ -1638,6 +1675,12 @@ class Config:
             "TAVILY_ENABLED": self.tavily_enabled,
             "TAVILY_API_KEY": self._mask_api_key(self.tavily_api_key) if self.tavily_api_key else "未配置",
             "TAVILY_TIMEOUT_SECONDS": self.tavily_timeout,
+            "BRAVE_API_URL": self.brave_api_url,
+            "BRAVE_ENABLED": self.brave_enabled,
+            "BRAVE_API_KEY": self._mask_api_key(self.brave_api_key) if self.brave_api_key else "未配置",
+            "BRAVE_TIMEOUT_SECONDS": self.brave_timeout,
+            "JINA_RERANK_API_URL": self.jina_rerank_api_url,
+            "JINA_RERANK_MODEL": self.jina_rerank_model,
             "FIRECRAWL_API_URL": self.firecrawl_api_url,
             "FIRECRAWL_API_KEY": self._mask_api_key(self.firecrawl_api_key) if self.firecrawl_api_key else "未配置",
             "ANYSEARCH_API_URL": self.anysearch_api_url,

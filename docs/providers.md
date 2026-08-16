@@ -8,12 +8,28 @@ Provider selection is capability-first. A provider can be selected only for a ca
 | --- | --- | --- |
 | `main_search` | xAI Responses -> OpenAI-compatible | Broad live answer generation and primary synthesis |
 | `docs_search` | Context7 -> Exa | Libraries, frameworks, APIs, official docs, papers, and trusted discovery |
-| `web_search` | Zhipu Web Search API -> Zhipu Coding Plan MCP -> Tavily -> Firecrawl | General, Chinese, domestic, current, or supplemental discovery |
+| `web_search` | Zhipu Web Search API -> Zhipu Coding Plan MCP -> Tavily -> Firecrawl -> Brave | General, Chinese, domestic, current, or supplemental discovery |
 | `web_fetch` | Tavily -> Jina (anonymous or keyed) -> Zhipu Coding Plan MCP Reader -> Firecrawl | Known URL extraction and claim-level page evidence |
 | `vertical_search` | AnySearch | Experimental structured search such as CVE, finance, legal, academic, or code/docs domains |
 | `site_map` | Tavily | Site and documentation structure discovery |
 
 Fallback is same-capability only. AnySearch is not part of the `web_search` fallback and is not required by the `standard` minimum profile.
+
+## Retrieval policy and fusion (v0.3.0)
+
+Since v0.3.0, `source_discovery` can run through the multi-source retrieval gateway when a retrieval-policy provider (Brave or Exa; Tavily for research intent) is configured. The gateway normalizes every provider into one internal `DiscoveryCandidate` shape, canonicalizes URLs (lowercase scheme/host, fragment and known tracking-parameter removal, default-port and root-path normalization; no www normalization in v0.3.0), deduplicates across providers while retaining provenance, and ranks with reciprocal-rank fusion (RRF, default `k=60`). Optionally, fused candidates are reranked with the Jina Reranker (`JINA_API_KEY`) — RRF remains the final ranking on any rerank failure. Discovery candidates stay candidates; the existing `fetch` path remains the only evidence path.
+
+The retrieval policy answers only *which providers execute source discovery* for an intent; it is not an intent router. Intent routing (which capability a request needs) is unchanged.
+
+| Intent | Providers |
+| --- | --- |
+| GENERAL | Brave + Exa |
+| FRESH | Brave |
+| SEMANTIC | Exa |
+| TECHNICAL | Brave + Exa |
+| RESEARCH | Brave + Exa + Tavily |
+
+The `search`/`source_discovery` default auto-detects FRESH/TECHNICAL/GENERAL from the existing local routing rules. Setups with none of the policy providers configured (for example Tavily-only or Zhipu-only) keep the exact pre-v0.3.0 source-discovery behavior.
 
 ## Provider matrix
 
@@ -26,7 +42,9 @@ Fallback is same-capability only. AnySearch is not part of the `web_search` fall
 | Zhipu Web Search API | Chinese, domestic, current, or domain-filtered discovery | `ZHIPU_API_KEY`, `ZHIPU_API_URL`, `ZHIPU_SEARCH_ENGINE` | [Web Search API](https://docs.bigmodel.cn/cn/guide/tools/web-search), [API keys](https://open.bigmodel.cn/usercenter/apikeys) |
 | Zhipu Coding Plan Remote MCP | Coding Plan search, page reading, and repository discovery | `ZHIPU_MCP_API_KEY`, `ZHIPU_MCP_SEARCH_API_URL`, `ZHIPU_MCP_READER_API_URL`, `ZHIPU_MCP_ZREAD_API_URL` | [search MCP](https://docs.bigmodel.cn/cn/coding-plan/mcp/search-mcp-server), [reader MCP](https://docs.bigmodel.cn/cn/coding-plan/mcp/reader-mcp-server), [zread MCP](https://docs.bigmodel.cn/cn/coding-plan/mcp/zread-mcp-server) |
 | Tavily | Extra web sources, URL fetch, and site map | `TAVILY_API_URL`, `TAVILY_API_KEY`, `TAVILY_ENABLED` | [Tavily docs](https://docs.tavily.com/), [Tavily app](https://app.tavily.com/home) |
+| Brave | Fresh and general web discovery through the retrieval gateway | `BRAVE_API_KEY`, `BRAVE_API_URL`, `BRAVE_ENABLED`, `BRAVE_TIMEOUT_SECONDS` | [Brave Search API](https://brave.com/search/api/), [API keys](https://api.search.brave.com/app/keys) |
 | Jina Reader | Known URL extraction for `web_fetch`; anonymous with the default endpoint | `JINA_API_KEY`, `JINA_READER_API_URL`, `JINA_RESPOND_WITH`, `JINA_TIMEOUT_SECONDS` | [Jina Reader](https://jina.ai/reader/), [Jina AI](https://jina.ai/) |
+| Jina Reranker | Optional post-fusion reranking of retrieval candidates | `JINA_API_KEY`, `JINA_RERANK_API_URL`, `JINA_RERANK_MODEL` | [Jina Reranker](https://jina.ai/reranker/), [Jina AI](https://jina.ai/) |
 | Firecrawl | Fetch fallback and supplementary web sources | `FIRECRAWL_API_URL`, `FIRECRAWL_API_KEY` | [Firecrawl docs](https://docs.firecrawl.dev/), [API keys](https://www.firecrawl.dev/app/api-keys) |
 | AnySearch | Experimental vertical search | `ANYSEARCH_API_URL`, `ANYSEARCH_API_KEY`, `ANYSEARCH_TIMEOUT_SECONDS` | [AnySearch docs](https://www.anysearch.com/docs), [API keys](https://www.anysearch.com/console/api-keys) |
 
@@ -145,6 +163,7 @@ Only cleaned successful source/content results are cached. Synthesis answers, er
 ```sh
 smart-search config set ZHIPU_API_URL "https://open.bigmodel.cn/api"
 smart-search config set ZHIPU_SEARCH_ENGINE "search_pro_sogou"
+smart-search config set BRAVE_API_KEY "your-brave-key"
 smart-search capabilities --format json
 smart-search config list --format json
 smart-search doctor status --format json

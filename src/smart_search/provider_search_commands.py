@@ -12,6 +12,7 @@ from .config import config
 from .logger import logger
 from .provider_command_support import decode_provider_json
 from .providers.base import ProviderError, classify_provider_exception
+from .providers.brave import BraveSearchProvider
 from .providers.context7 import Context7Provider
 from .providers.exa import ExaSearchProvider
 from .providers.zhipu import ZhipuWebSearchProvider
@@ -205,6 +206,31 @@ async def exa_search(
     return result
 
 
+async def call_brave_search(query: str, max_results: int = 5) -> dict[str, Any]:
+    """Explicit Brave web-search command wrapper (v0.3.0 retrieval gateway).
+
+    Validates the named provider and the ``web_search`` capability before any
+    network I/O, then returns the normalized ProviderResult payload
+    (``{ok, query, results, total, elapsed_ms}``) with classified errors and
+    capability metadata.
+    """
+    start = time.time()
+    preflight = _capability_preflight("web_search", provider="brave")
+    if not preflight.get("ok"):
+        return _command_capability_failure(preflight, start, extra={"query": query})
+    if not config.brave_api_key:
+        return {
+            "ok": False,
+            "error_type": "config_error",
+            "error": "BRAVE_API_KEY 未配置。请运行 `smart-search config set BRAVE_API_KEY <key>`。",
+        }
+    provider = BraveSearchProvider(config.brave_api_url, config.brave_api_key, config.brave_timeout)
+    raw = await provider.search(query=query, num_results=max_results)
+    result = await decode_provider_json(raw, provider="brave", capability="web_search")
+    result.update(preflight.get("metadata") or {})
+    return result
+
+
 async def zhipu_search(
     query: str,
     count: int = 10,
@@ -266,6 +292,7 @@ async def context7_library(name: str, query: str = "") -> dict[str, Any]:
 
 
 __all__ = [
+    "call_brave_search",
     "call_firecrawl_search",
     "call_tavily_search",
     "context7_library",

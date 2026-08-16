@@ -51,13 +51,16 @@ from .execution_primitives import (
     ExecutionGap,
     ExecutionMetadata,
 )
-from .intent_router import project_evidence_routing
+from .intent_router import build_rules_route, project_evidence_routing
 from .operation_runtime import (
     _execute_docs_search,
+    _execute_retrieval_search,
     _execute_site_map,
     _execute_web_fetch,
     _execute_web_search,
+    _retrieval_eligible_providers,
 )
+from .retrieval import resolve_retrieval_policy
 from .runtime_cache import observe_command
 
 # Stable Evidence capability operation ids (schema-neutral domain vocabulary).
@@ -626,9 +629,40 @@ def _derive_discovery_outcome(
 # ---------------------------------------------------------------------------
 
 
+def _default_retrieval_intent(query: str) -> str:
+    """Deterministic retrieval-intent auto-detection for source discovery.
+
+    Reuses the existing rules signals (no new taxonomy, no router rewrite):
+    current/locale terms select the FRESH policy, docs/API terms select the
+    TECHNICAL policy, everything else is GENERAL. SEMANTIC/RESEARCH are
+    explicit caller parameters (benchmark/API) and are never auto-detected.
+    """
+    route = build_rules_route(query, mode="rules")
+    if route.web_current_intent:
+        return "fresh"
+    if route.docs_intent:
+        return "technical"
+    return "general"
+
+
 @observe_command
 async def source_discovery(request: SourceDiscoveryRequest) -> EvidenceOperationOutcome:
-    """Structured source discovery: candidates only, never citations or evidence."""
+    """Structured source discovery: candidates only, never citations or evidence.
+
+    v0.3.0 lane selection, decided once before any network work:
+
+    - when the intent-resolved retrieval policy yields at least one eligible
+      brave/exa/tavily provider, the retrieval gateway lane runs
+      (``_execute_retrieval_search``);
+    - otherwise the legacy ``_execute_web_search`` lane runs unchanged (pure
+      v0.2.0 compatibility: tavily-only and zhipu-only setups keep their
+      exact v0.2.0 source_discovery behavior, since the general/fresh/
+      technical auto-detected policies do not include tavily alone).
+
+    Gateway path exclusivity: once the gateway lane starts, runtime provider
+    failures are represented ONLY by gateway attempts/degradation and never
+    trigger a second hidden legacy search call.
+    """
     started = time.monotonic()
     request_id = _request_id()
     if not isinstance(request, SourceDiscoveryRequest):
@@ -636,22 +670,34 @@ async def source_discovery(request: SourceDiscoveryRequest) -> EvidenceOperation
             query=getattr(request, "query", ""),
             max_results=getattr(request, "max_results", 5),
         )
-    providers = _qualified_providers("source_discovery")
-    if not providers:
-        return _config_failed_outcome(
-            operation="source_discovery",
-            message="No qualified source_discovery providers configured",
-            request_id=request_id,
-            duration_ms=int((time.monotonic() - started) * 1000),
-            details={"qualified_providers": []},
+    intent = _default_retrieval_intent(request.query)
+    eligible = _retrieval_eligible_providers()
+    policy_providers = resolve_retrieval_policy(intent, eligible)
+    if policy_providers:
+        execution = await _execute_retrieval_search(
+            request.query,
+            count=request.max_results,
+            providers=policy_providers,
+            intent=intent,
         )
-    execution = await _execute_web_search(
-        request.query,
-        count=request.max_results,
-        providers=",".join(providers),
-        fallback="auto",
-    )
-    allowed = set(providers)
+        allowed = set(policy_providers)
+    else:
+        providers = _qualified_providers("source_discovery")
+        if not providers:
+            return _config_failed_outcome(
+                operation="source_discovery",
+                message="No qualified source_discovery providers configured",
+                request_id=request_id,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                details={"qualified_providers": []},
+            )
+        execution = await _execute_web_search(
+            request.query,
+            count=request.max_results,
+            providers=",".join(providers),
+            fallback="auto",
+        )
+        allowed = set(providers)
     attempts = tuple(item for item in execution.attempts if item.provider in allowed)
     candidates: list[ExecutionCandidate] = []
     for index, item in enumerate(execution.value or []):

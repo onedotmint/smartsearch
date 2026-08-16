@@ -1,0 +1,49 @@
+{"query": "what is the capital of France", "category": "general", "intent": "general"}
+{"query": "best noise cancelling headphones 2025", "category": "general", "intent": "general"}
+{"query": "how does a heat pump work", "category": "general", "intent": "general"}
+{"query": "who won the 2024 nobel prize in physics", "category": "general", "intent": "general"}
+{"query": "difference between OLED and QLED televisions", "category": "general", "intent": "general"}
+{"query": "why is the sky blue explained simply", "category": "general", "intent": "general"}
+{"query": "best practices for remote team communication", "category": "general", "intent": "general"}
+{"query": "latest news on the semiconductor chip shortage", "category": "fresh", "intent": "fresh"}
+{"query": "today's top technology headlines", "category": "fresh", "intent": "fresh"}
+{"query": "breaking news artificial intelligence regulation", "category": "fresh", "intent": "fresh"}
+{"query": "current stock market news this week", "category": "fresh", "intent": "fresh"}
+{"query": "recent climate change report findings", "category": "fresh", "intent": "fresh"}
+{"query": "this week in space exploration news", "category": "fresh", "intent": "fresh"}
+{"query": "latest developments in mRNA vaccine research", "category": "fresh", "intent": "fresh"}
+{"query": "python asyncio event loop documentation", "category": "technical", "intent": "technical"}
+{"query": "react useEffect dependency array rules", "category": "technical", "intent": "technical"}
+{"query": "postgresql index types and when to use them", "category": "technical", "intent": "technical"}
+{"query": "kubernetes horizontal pod autoscaling guide", "category": "technical", "intent": "technical"}
+{"query": "rust ownership and borrowing explained", "category": "technical", "intent": "technical"}
+{"query": "typescript type inference best practices", "category": "technical", "intent": "technical"}
+{"query": "http caching headers cache-control guide", "category": "technical", "intent": "technical"}
+{"query": "transformer attention mechanism paper", "category": "academic", "intent": "technical"}
+{"query": "retrieval augmented generation survey", "category": "academic", "intent": "technical"}
+{"query": "graph neural networks node classification", "category": "academic", "intent": "technical"}
+{"query": "causal inference in observational studies", "category": "academic", "intent": "technical"}
+{"query": "diffusion models generative AI literature", "category": "academic", "intent": "technical"}
+{"query": "reinforcement learning from human feedback paper", "category": "academic", "intent": "technical"}
+{"query": "protein structure prediction alphafold research", "category": "academic", "intent": "technical"}
+{"query": "openai company profile and funding history", "category": "company", "intent": "general"}
+{"query": "anthropic claude model releases timeline", "category": "company", "intent": "general"}
+{"query": "microsoft azure openai service overview", "category": "company", "intent": "general"}
+{"query": "nvidia data center business growth", "category": "company", "intent": "general"}
+{"query": "google deepmind leadership and projects", "category": "company", "intent": "general"}
+{"query": "meta llama open source model strategy", "category": "company", "intent": "general"}
+{"query": "samsung foundry business 2nm roadmap", "category": "company", "intent": "general"}
+{"query": "how to deploy a static site on cloudflare pages", "category": "long_tail", "intent": "general"}
+{"query": "best ergonomic keyboard for programming reviews 2025", "category": "long_tail", "intent": "general"}
+{"query": "migrate legacy monolith to microservices step by step", "category": "long_tail", "intent": "general"}
+{"query": "set up wireguard vpn on a raspberry pi", "category": "long_tail", "intent": "general"}
+{"query": "compare duckdb vs sqlite for analytics workloads", "category": "long_tail", "intent": "general"}
+{"query": "write a cron job that backs up postgres to s3", "category": "long_tail", "intent": "general"}
+{"query": "why does my wifi drop every hour troubleshooting guide", "category": "long_tail", "intent": "general"}
+{"query": "comprehensive overview of the 2026 ai safety field", "category": "research", "intent": "research"}
+{"query": "in depth analysis of ev battery supply chains", "category": "research", "intent": "research"}
+{"query": "survey of vector database benchmarks and tradeoffs", "category": "research", "intent": "research"}
+{"query": "deep dive into the causes of the 2008 financial crisis", "category": "research", "intent": "research"}
+{"query": "systematic comparison of open source llm licenses", "category": "research", "intent": "research"}
+{"query": "history and future of autonomous vehicle regulation", "category": "research", "intent": "research"}
+{"query": "evidence review of intermittent fasting health effects", "category": "research", "intent": "research"}

@@ -12,10 +12,11 @@ through the single legacy projection helper.
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import Any, Sequence
 
 from .capability_executor import CapabilityOperation, execute_capability
-from .capability_taxonomy import is_content_fetch_success
+from .capability_taxonomy import is_content_fetch_success, is_provider_qualified
 from .execution_primitives import ExecutionOutcome, project_attempts_dict
 from .provider_fetch_commands import (
     call_firecrawl_scrape as _default_call_firecrawl_scrape,
@@ -35,9 +36,66 @@ from .provider_search_commands import (
     zhipu_search as _default_zhipu_search,
 )
 from .provider_vertical_commands import anysearch_search as _default_anysearch_search
+from .retrieval import retrieve
 from .runtime_cache import add_fetch
 from .security import sanitize_text
 from .service_support import _normalize_source_results
+
+
+_logger = logging.getLogger(__name__)
+
+# The retrieval policy provider set (v0.3.0 gateway). Providers must be
+# configured+enabled AND taxonomy-qualified for source_discovery before they
+# enter the retrieval lane (no shadow "policy provider" path).
+RETRIEVAL_POLICY_PROVIDERS: tuple[str, ...] = ("brave", "exa", "tavily")
+
+
+def _retrieval_eligible_providers() -> list[str]:
+    """Eligible gateway providers in policy order (configured+enabled+qualified)."""
+    from .capability_service import _provider_availability
+
+    eligible: list[str] = []
+    for provider in RETRIEVAL_POLICY_PROVIDERS:
+        availability = _provider_availability(provider)
+        if not availability.get("eligible"):
+            continue
+        if not is_provider_qualified(provider, "source_discovery"):
+            continue
+        eligible.append(provider)
+    return eligible
+
+
+async def _execute_retrieval_search(
+    query: str,
+    count: int = 5,
+    providers: Sequence[str] | None = None,
+    intent: str = "general",
+    ctx=None,
+) -> ExecutionOutcome:
+    """Retrieval-gateway lane: parallel per-provider search + deterministic fusion.
+
+    ``providers`` is the eligible policy-provider list (defaults to
+    ``_retrieval_eligible_providers()``); the retrieval policy selects which
+    of them execute for ``intent``. Fused candidates are converted to the
+    ``_normalize_candidate``-compatible dict shape (``{url, title,
+    description, provider}`` with the first provider in policy order among
+    the merged providers) and typed attempts are preserved. This lane never
+    calls the legacy ``_execute_web_search``.
+    """
+    eligible = list(providers) if providers is not None else _retrieval_eligible_providers()
+    outcome = await retrieve(query, eligible, count, intent=intent, ctx=ctx)
+    for warning in outcome.warnings:
+        _logger.warning("retrieval: %s", warning)
+    value = [
+        {
+            "url": item.candidate.url,
+            "title": item.candidate.title,
+            "description": item.candidate.snippet,
+            "provider": item.candidate.providers[0] if item.candidate.providers else "",
+        }
+        for item in outcome.ranked
+    ]
+    return ExecutionOutcome(value=value, attempts=outcome.attempts)
 
 
 def _fetch_payload(
@@ -344,10 +402,12 @@ async def _run_site_map(
 
 __all__ = [
     "_execute_docs_search",
+    "_execute_retrieval_search",
     "_execute_site_map",
     "_execute_vertical_search",
     "_execute_web_fetch",
     "_execute_web_search",
+    "_retrieval_eligible_providers",
     "_run_docs_search_fallback",
     "_run_site_map",
     "_run_vertical_search_fallback",

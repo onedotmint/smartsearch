@@ -15,6 +15,7 @@ from .exa import ExaSearchProvider
 from .jina import JinaReaderProvider
 from .zhipu import ZhipuWebSearchProvider
 from .zhipu_mcp import ZhipuMCPProvider
+from .brave import BraveSearchProvider
 
 __all__ = [
     "BaseSearchProvider",
@@ -32,4 +33,5 @@ __all__ = [
     "JinaReaderProvider",
     "ZhipuWebSearchProvider",
     "ZhipuMCPProvider",
+    "BraveSearchProvider",
 ]

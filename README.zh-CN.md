@@ -50,7 +50,7 @@ smart-search fetch "https://www.python.org/downloads/" --format markdown
 
 ```text
 $ smart-search --version
-smart-search 0.2.0
+smart-search 0.3.0
 ```
 
 搜索响应使用带版本号的 JSON envelope：证据命令返回 V2 envelope，控制面命令返回 V3 envelope，`research run` 返回 Research Workflow envelope。provider 返回的正文和 URL 会变化；机器契约保持不变。
@@ -70,6 +70,7 @@ smart-search fetch "https://example.com/page" --full
 
 - v2 默认输出 JSON——唯一稳定的机器契约——并返回严格版本化 envelope（`status`、`operation`、`evidence`、`routing`、`attempts` 等）。`--format markdown|content` 渲染同一 validated envelope 的非稳定人类视图；这些视图不提供字段级机器兼容承诺。
 - v2 `search` 只返回 discovery candidates；不会调用 legacy `main_search`，也不接受 `--response-mode`。
+- v0.3.0：当配置 Brave 或 Exa（research intent 下含 Tavily）时，`search`/`source_discovery` 走多源检索网关：统一候选模型、带 provenance 的确定性 URL 去重、倒排融合（RRF），以及可选的 best-effort Jina 重排。未配置 Brave/Exa/Tavily 的安装保持 v0.3.0 之前的精确行为。详见 [provider 指南](docs/providers.md#retrieval-policy-and-fusion-v030)。
 - fetched evidence 默认按条目限制为 8,000 字符；每条 evidence 都会报告 `truncated`、`original_length` 和 `returned_length`，`fetch --full` 可绕过该上限保留可用全文。`research run` 每次运行最多接收五条 evidence。
 - Host Agent 基于 fetched `evidence.items` 写最终回答；discovery candidates 不是 claim-level 证据。
 - `capabilities` 使用 envelope-only 元操作 `capability_status`（本地只读检查，不发 Provider 网络请求）。

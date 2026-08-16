@@ -285,6 +285,7 @@ def test_retained_adapters_reachable_only_from_approved_owners() -> None:
     workflows still owned by later cleanup tasks -- never the CLI boundary."""
     approved = {
         "operation_runtime",  # generic Evidence owner execution path
+        "retrieval",  # v0.3.0 retrieval gateway (per-provider fan-out runners)
         "provider_diagnostics",  # V3 probe path
         "control_executors",  # V3 smoke/doctor raw executors
         "capability_executor",
@@ -474,9 +475,10 @@ def test_orphaned_internal_command_wrappers_are_deleted() -> None:
         for name in deleted:
             assert name not in source, (path.name, name)
     # __all__ keeps exactly the reachable wrappers: the generic docs executor
-    # pair (exa_search/context7_library) and the vertical pair used by the
-    # Evidence executor and the V3 probe path.
+    # pair (exa_search/context7_library), the v0.3.0 Brave gateway wrapper, and
+    # the vertical pair used by the Evidence executor and the V3 probe path.
     assert sorted(provider_search_commands.__all__) == [
+        "call_brave_search",
         "call_firecrawl_search",
         "call_tavily_search",
         "context7_library",

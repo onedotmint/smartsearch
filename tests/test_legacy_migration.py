@@ -85,7 +85,9 @@ def test_v010_config_key_fixture_matches_published_tag_shape() -> None:
     assert set(lm.V010_CONFIG_KEYS) == tag_keys
     assert "SMART_SEARCH_MODEL_ROUTES" not in lm.V010_CONFIG_KEYS
     live_keys = set(config._CONFIG_KEYS)
-    assert live_keys == tag_keys | {"SMART_SEARCH_MODEL_ROUTES"}
+    # v0.3.0 adds Brave/Jina-rerank keys; the v0.1.0 key set must remain a
+    # strict subset (backward compatible), never removed or renamed.
+    assert tag_keys | {"SMART_SEARCH_MODEL_ROUTES"} <= live_keys
     assert tuple(sorted(lm.V010_CONFIG_KEYS)) == lm.V010_CONFIG_KEYS
 
 

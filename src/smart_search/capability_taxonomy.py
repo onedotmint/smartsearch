@@ -323,6 +323,16 @@ PROVIDER_QUALIFICATIONS: dict[tuple[str, str], dict[str, Any]] = {
         reason="first-class web discovery candidate contract",
         first_class=True,
     ),
+    # Brave first-class source_discovery (v0.3.0 retrieval gateway)
+    ("brave", "source_discovery"): _qualification(
+        provider="brave",
+        capability="source_discovery",
+        qualified=True,
+        tier=TIER_CORE,
+        stability=STABILITY_STABLE,
+        reason="first-class web discovery candidate contract via the retrieval gateway",
+        first_class=True,
+    ),
     ("tavily", "content_fetch"): _qualification(
         provider="tavily",
         capability="content_fetch",
@@ -369,6 +379,18 @@ PROVIDER_QUALIFICATIONS: dict[tuple[str, str], dict[str, Any]] = {
         tier=TIER_CORE,
         stability=STABILITY_STABLE,
         reason="docs discovery promoted after candidate/error/empty contract tests",
+        first_class=False,
+    ),
+    # Exa additive source_discovery qualification (v0.3.0 retrieval policy
+    # lane). Explicit taxonomy-visible basis for policy participation; its
+    # docs_discovery semantics are unchanged and there is no shadow path.
+    ("exa", "source_discovery"): _qualification(
+        provider="exa",
+        capability="source_discovery",
+        qualified=True,
+        tier=TIER_CORE,
+        stability=STABILITY_STABLE,
+        reason="normalized discovery candidate contract for semantic/technical web discovery",
         first_class=False,
     ),
     # Optional regional/general discovery and fetch (not experimental; not first-class)

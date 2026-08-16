@@ -504,11 +504,14 @@ def test_v1_registry_profile_and_fallback_unchanged_by_taxonomy_import():
     assert service_support.PROVIDER_PROFILES["xai-responses"]["capability"] == "main_search"
 
     assert capability_service.MAIN_SEARCH_FALLBACK_CHAIN == ["xai-responses", "openai-compatible"]
+    # Brave is appended at order 4 (v0.3.0); the existing relative order is
+    # preserved exactly.
     assert capability_service._provider_chain("web_search") == [
         "zhipu",
         "zhipu-mcp",
         "tavily",
         "firecrawl",
+        "brave",
     ]
     assert capability_service._provider_chain("web_fetch") == [
         "tavily",

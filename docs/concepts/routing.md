@@ -26,6 +26,22 @@ The result contains `intent_router_mode`, `required_capabilities`, `intent_signa
 
 Classifier output cannot select providers. Unknown capabilities and provider names are ignored, and the registry still selects only providers that declare the selected capability. Fallback is same-capability only.
 
+## Retrieval policy (v0.3.0) vs intent router
+
+The intent router answers one question: *which capability does this request need?* (`source_discovery`, `docs_discovery`, `web_fetch`, ...). It never chooses providers.
+
+The v0.3.0 retrieval policy answers a second, narrower question: *when `source_discovery` runs through the multi-source gateway, which providers execute?* It is a thin deterministic table, not a router and not a model:
+
+| Intent | Providers |
+| --- | --- |
+| GENERAL | Brave + Exa |
+| FRESH | Brave |
+| SEMANTIC | Exa |
+| TECHNICAL | Brave + Exa |
+| RESEARCH | Brave + Exa + Tavily |
+
+`search`/`source_discovery` auto-detects FRESH/TECHNICAL/GENERAL from the same local rules (`web_current_intent` / `docs_intent` signals); SEMANTIC/RESEARCH are explicit caller parameters (for example the benchmark harness). Provider-native scores never become a shared ranking signal: candidates are deduplicated by canonical URL and ranked with reciprocal-rank fusion (RRF, default `k=60`), optionally reranked by the Jina Reranker without ever making RRF a fallback requirement. The gateway lane runs only when the intent-resolved policy contains a configured provider; setups without Brave/Exa/Tavily keep the exact pre-v0.3.0 source-discovery path.
+
 ## Modes and remote calls
 
 | Mode | Local rules | Embeddings | Classifier |

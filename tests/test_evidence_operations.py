@@ -339,6 +339,9 @@ def test_owner_module_forbidden_imports():
         "_execute_docs_search",
         "_execute_web_fetch",
         "_execute_site_map",
+        # v0.3.0 retrieval gateway lane consumed by source_discovery.
+        "_execute_retrieval_search",
+        "_retrieval_eligible_providers",
     }
     assert runtime_imports <= allowed_runtime
     for name in (

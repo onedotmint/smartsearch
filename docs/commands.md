@@ -204,7 +204,7 @@ Supported providers are `openai-compatible` and `xai-responses`. xAI routes may 
 
 ## Provider capability routing
 
-Provider selection is internal to the generic `search`, `fetch`, and `map` commands; there are no provider-branded public commands. Configured `docs_search` (Context7/Exa), `web_search` (Zhipu REST/MCP, Tavily, Firecrawl), `web_fetch` (Tavily, Jina, Zhipu MCP Reader, Firecrawl), and `vertical_search` (AnySearch) providers are chosen by capability and intent. Exact-provider leaves and the `provider exa|context7|zhipu` / `experimental` namespaces are removed; their spellings fail with the strict family error before any provider call.
+Provider selection is internal to the generic `search`, `fetch`, and `map` commands; there are no provider-branded public commands. Configured `docs_search` (Context7/Exa), `web_search` (Zhipu REST/MCP, Tavily, Firecrawl, Brave), `web_fetch` (Tavily, Jina, Zhipu MCP Reader, Firecrawl), and `vertical_search` (AnySearch) providers are chosen by capability and intent. Since v0.3.0, `search`/`source_discovery` uses the multi-source retrieval gateway (normalized candidates, URL dedup, RRF, optional Jina rerank) whenever Brave or Exa is configured; see [Providers](providers.md#retrieval-policy-and-fusion-v030). Exact-provider leaves and the `provider exa|context7|zhipu` / `experimental` namespaces are removed; their spellings fail with the strict family error before any provider call.
 
 Provider configuration and capability boundaries are documented in [Providers](providers.md).
 
