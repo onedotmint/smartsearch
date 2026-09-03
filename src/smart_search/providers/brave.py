@@ -15,6 +15,7 @@ import httpx
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_random_exponential
 
 from .base import BaseSearchProvider, ProviderResult, classify_provider_exception
+from ..core.models import Candidate
 from ..config import config
 from ..logger import log_info
 from ..runtime_cache import (
@@ -55,7 +56,7 @@ def _normalize_result(item: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def to_discovery_candidates(payload: Any) -> list["DiscoveryCandidate"]:
+def to_discovery_candidates(payload: Any) -> list[Candidate]:
     """Map a Brave result payload to ``DiscoveryCandidate`` values.
 
     Accepts the normalized ``call_brave_search`` payload (``{ok, results,
@@ -65,10 +66,8 @@ def to_discovery_candidates(payload: Any) -> list["DiscoveryCandidate"]:
     ranking signal. ``DiscoveryCandidate`` is imported lazily to avoid an
     import cycle with the retrieval core.
     """
-    from ..retrieval import DiscoveryCandidate
-
     results = payload.get("results") if isinstance(payload, dict) else payload
-    candidates: list[DiscoveryCandidate] = []
+    candidates: list[Candidate] = []
     for index, item in enumerate(results or []):
         if not isinstance(item, dict):
             continue
@@ -81,7 +80,7 @@ def to_discovery_candidates(payload: Any) -> list["DiscoveryCandidate"]:
             if item.get(key) is not None:
                 metadata[key] = item[key]
         candidates.append(
-            DiscoveryCandidate(
+                Candidate(
                 url=url,
                 title=title,
                 provider="brave",
@@ -96,6 +95,7 @@ def to_discovery_candidates(payload: Any) -> list["DiscoveryCandidate"]:
 class BraveSearchProvider(BaseSearchProvider):
     provider_id = "brave"
     capability = "web_search"
+    normalizer = staticmethod(to_discovery_candidates)
 
     def __init__(self, api_url: str, api_key: str, timeout: float = 30.0):
         super().__init__(api_url, api_key)

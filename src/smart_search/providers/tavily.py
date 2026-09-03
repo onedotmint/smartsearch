@@ -1,31 +1,20 @@
-"""Tavily -> DiscoveryCandidate normalization (v0.3.0 retrieval gateway).
+"""Tavily raw-result normalizer for the v1 retrieval core.
 
-Pure mapping only. Tavily transport stays in
-``provider_search_commands.call_tavily_search``; this module never performs
-network I/O and must not be imported by the transport path.
+This module performs no network I/O. The callable accepts the provider's
+original ``results`` list shape so captured responses can be replayed offline.
 """
 
 from __future__ import annotations
 
 from typing import Any, Mapping
 
+from ..core.models import Candidate
 
-def to_discovery_candidates(payload: Any) -> list["DiscoveryCandidate"]:
-    """Map a Tavily result payload to ``DiscoveryCandidate`` values.
 
-    Accepts the normalized list produced by ``call_tavily_search``
-    (``{title, url, content, score}``) or a payload mapping with a
-    ``results`` list (both shapes appear in tests and cached values). The
-    provider-native ``score`` is retained in ``metadata["tavily_score"]`` for
-    diagnostics only and never becomes a shared ranking signal.
-
-    ``DiscoveryCandidate`` is imported lazily to keep this adapter module free
-    of an import cycle with the retrieval core.
-    """
-    from ..retrieval import DiscoveryCandidate
-
+def to_discovery_candidates(payload: Any) -> list[Candidate]:
+    """Convert a raw Tavily results list (or a ``{"results": [...]}`` payload)."""
     results = payload.get("results") if isinstance(payload, Mapping) else payload
-    candidates: list[DiscoveryCandidate] = []
+    candidates: list[Candidate] = []
     for index, item in enumerate(results or []):
         if not isinstance(item, Mapping):
             continue
@@ -39,7 +28,7 @@ def to_discovery_candidates(payload: Any) -> list["DiscoveryCandidate"]:
         if isinstance(score, (int, float)) and not isinstance(score, bool):
             metadata["tavily_score"] = float(score)
         candidates.append(
-            DiscoveryCandidate(
+            Candidate(
                 url=url,
                 title=title,
                 provider="tavily",

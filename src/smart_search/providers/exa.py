@@ -6,6 +6,7 @@ import httpx
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_random_exponential
 
 from .base import BaseSearchProvider, ProviderResult, classify_provider_exception
+from ..core.models import Candidate
 from ..config import config
 from ..logger import log_info
 from ..runtime_cache import (
@@ -54,7 +55,7 @@ def _error_payload(exc: Exception) -> dict[str, Any]:
     return {"error_type": error_type, "error": error}
 
 
-def to_discovery_candidates(payload: Any) -> list["DiscoveryCandidate"]:
+def to_discovery_candidates(payload: Any) -> list[Candidate]:
     """Map an Exa result payload to ``DiscoveryCandidate`` values (v0.3.0).
 
     Accepts the normalized ``exa_search`` payload (``{ok, results, ...}`` with
@@ -64,10 +65,8 @@ def to_discovery_candidates(payload: Any) -> list["DiscoveryCandidate"]:
     signal. ``DiscoveryCandidate`` is imported lazily to avoid an import
     cycle with the retrieval core.
     """
-    from ..retrieval import DiscoveryCandidate
-
     results = payload.get("results") if isinstance(payload, dict) else payload
-    candidates: list[DiscoveryCandidate] = []
+    candidates: list[Candidate] = []
     for index, item in enumerate(results or []):
         if not isinstance(item, dict):
             continue
@@ -89,7 +88,7 @@ def to_discovery_candidates(payload: Any) -> list["DiscoveryCandidate"]:
         elif isinstance(item.get("highlights"), list):
             snippet = " ".join(str(part) for part in item["highlights"])
         candidates.append(
-            DiscoveryCandidate(
+                Candidate(
                 url=url,
                 title=title,
                 provider="exa",
@@ -105,6 +104,7 @@ def to_discovery_candidates(payload: Any) -> list["DiscoveryCandidate"]:
 class ExaSearchProvider(BaseSearchProvider):
     provider_id = "exa"
     capability = "docs_search"
+    normalizer = staticmethod(to_discovery_candidates)
 
     def __init__(self, api_url: str, api_key: str, timeout: float = 30.0):
         super().__init__(api_url, api_key)

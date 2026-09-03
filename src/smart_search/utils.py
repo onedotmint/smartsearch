@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 import os
@@ -10,8 +12,15 @@ from typing import TYPE_CHECKING, Iterator, List
 if TYPE_CHECKING:
     from .providers.base import SearchResult
 
-
 _URL_PATTERN = re.compile(r'https?://[^\s<>"\'`，。、；：！？》）】\)]+')
+
+
+def _get_version() -> str:
+    try:
+        return version("smart-search")
+    except PackageNotFoundError:
+        return "0.3.0"
+
 
 
 def extract_unique_urls(text: str) -> list[str]:

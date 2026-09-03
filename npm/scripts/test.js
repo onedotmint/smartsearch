@@ -1,6 +1,7 @@
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
 
 const packageRoot = path.resolve(__dirname, "..", "..");
 const venvDir = path.join(packageRoot, ".smart-search-python");
@@ -25,22 +26,23 @@ function run(command, args, options = {}) {
   }
 }
 
-function capture(command, args) {
+function capture(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: packageRoot,
     encoding: "utf8",
+    env: options.env,
     windowsHide: true
   });
   if (result.error) {
     console.error(result.error.message);
     process.exit(1);
   }
-  if (result.status !== 0) {
+  if (result.status !== 0 && !options.allowFailure) {
     process.stdout.write(result.stdout || "");
     process.stderr.write(result.stderr || "");
     process.exit(result.status || 1);
   }
-  return result.stdout || "";
+  return options.allowFailure ? { stdout: result.stdout || "", status: result.status } : (result.stdout || "");
 }
 
 function runNpm(args) {
@@ -60,17 +62,27 @@ run(pythonPath, ["-m", "pip", "install", "--disable-pip-version-check", "-e", ".
 run(pythonPath, ["-m", "pytest"]);
 run(process.execPath, ["npm/scripts/test-wrapper-repair.js"]);
 run(process.execPath, ["npm/bin/smart-search.js", "--help"]);
-const deepJson = capture(process.execPath, [
+const isolatedConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "smart-search-npm-"));
+const isolatedEnv = {
+  ...process.env,
+  SMART_SEARCH_CONFIG_DIR: isolatedConfigDir,
+  BRAVE_API_KEY: "",
+  EXA_API_KEY: "",
+  JINA_API_KEY: "",
+  FIRECRAWL_API_KEY: ""
+};
+const researchJson = capture(process.execPath, [
   "npm/bin/smart-search.js",
   "research",
-  "plan",
-  "深度搜索一下最近的比特币行情",
-  "--format",
-  "json"
-]);
-const deepPlan = JSON.parse(deepJson);
-if (deepPlan.plan.operations.length === 0) {
-  console.error("npm wrapper must preserve non-ASCII CLI arguments and JSON output as UTF-8.");
+  "深度搜索一下最近的比特币行情"
+], { env: isolatedEnv, allowFailure: true });
+const researchResult = JSON.parse(researchJson.stdout);
+if (researchJson.status !== 4 || researchResult.version !== 1 || researchResult.operation !== "research" ||
+    researchResult.data.query !== "深度搜索一下最近的比特币行情" ||
+    researchResult.status !== "failed" || researchResult.error == null ||
+    researchResult.error.code !== "PROVIDER_ERROR") {
+  console.error("npm wrapper must preserve v1 JSON envelopes, non-ASCII arguments, and offline failure semantics.");
   process.exit(1);
 }
+
 runNpm(["pack", "--dry-run"]);

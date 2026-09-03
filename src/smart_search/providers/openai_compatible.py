@@ -15,7 +15,7 @@ from .base import (
     SearchResult,
     classify_provider_exception,
 )
-from ..cli_constants import _get_version
+from ..utils import _get_version
 from ..utils import get_prompt
 from ..logger import log_info
 from ..config import config

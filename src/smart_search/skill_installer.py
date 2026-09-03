@@ -10,7 +10,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from .cli_constants import DEFAULT_SKILL_TARGET_IDS as _DEFAULT_SKILL_TARGET_IDS
+_DEFAULT_SKILL_TARGET_IDS = ("codex", "claude", "cursor")
 
 
 SKILL_NAME = "smart-search-cli"

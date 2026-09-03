@@ -172,3 +172,25 @@ def is_sensitive_key(key: str) -> bool:
         or normalized.endswith("_secret")
         or normalized in {"authorization", "password"}
     )
+
+
+_SAFE_ERROR_MESSAGES = {
+    "config_error": "provider configuration is invalid",
+    "auth_error": "provider authentication failed",
+    "parameter_error": "provider rejected the request",
+    "timeout": "provider request timed out",
+    "network_error": "provider request failed",
+    "rate_limited": "provider rate limit reached",
+    "protocol_error": "provider response violated its protocol",
+    "parse_error": "provider response could not be parsed",
+    "quality_error": "provider response failed quality checks",
+    "empty": "provider returned no usable result",
+    "too_large": "provider response exceeded the allowed size",
+    "budget_exhausted": "provider request budget exhausted",
+    "provider_error": "provider operation failed",
+}
+
+
+def safe_provider_message(error_type: str, fallback: str = "") -> str:
+    """Return a stable provider error message safe for machine output."""
+    return _SAFE_ERROR_MESSAGES.get(str(error_type or ""), "provider operation failed")

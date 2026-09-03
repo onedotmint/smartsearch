@@ -8,7 +8,7 @@ from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt
 
 from .base import BaseSearchProvider, ProviderResult, classify_provider_exception
 from .openai_compatible import _WaitWithRetryAfter, _is_retryable_exception, get_local_time_info
-from ..cli_constants import _get_version
+from ..utils import _get_version
 from ..config import config
 from ..logger import log_info
 from ..runtime_cache import (
