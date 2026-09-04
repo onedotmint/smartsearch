@@ -1,6 +1,10 @@
 # Pi Agent Adapter
 
-Install the shared skill under `~/.pi/agent/skills/smart-search-cli`.
+Install the Smart Search CLI, then install the native Pi package:
 
-Pi-specific integration only supplies the installation path. Run the same
-`smart-search` commands and JSON contract described by the parent skill.
+```sh
+pi install npm:@onedotmint/pi-smart-search
+```
+
+The package registers `web_search`, `web_read`, and `web_research` and delegates
+through Pi's native tool adapter to the installed `smart-search` executable.
