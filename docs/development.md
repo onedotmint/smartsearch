@@ -18,18 +18,27 @@ git diff --check
 These checks must not call live providers or publish packages. Inspect tarball
 contents in a temporary directory and keep generated archives out of commits.
 
-## v1.0.0 release
+## Release
 
-Both `@onedotmint/smart-search` and `@onedotmint/pi-smart-search` are version
-`1.0.0`, published publicly to npm `latest`. The Git tag and stable GitHub
-release are `v1.0.0` (not prerelease). Validate source and both tarballs, publish
-the root package, publish the Pi package, then create the GitHub release.
-Publication is an explicit manual operation; the workflow is not an offline
-dry run and must only be dispatched with release credentials when publication
-is authorized.
+A release is a single reviewed commit on `main` that synchronizes the root
+`package.json`/`package-lock.json`, the Pi `integrations/pi/package.json` and
+its lockfile, and `pyproject.toml` to one stable `x.y.z` version, and adds a
+non-empty `.github/releases/vX.Y.Z.md` notes file. Pushing that commit to
+`main` triggers `.github/workflows/publish-npm.yml`: it proves both manifest
+version fields changed together from the pushed commit's parent, validates the
+synchronized metadata and notes, runs the offline checks, checks fail-closed
+npm registry state, publishes the root package, publishes the Pi package (both
+with provenance to `latest`), verifies both exact versions, and only then
+creates or updates the `vX.Y.Z` Git tag and stable GitHub release bound to the
+triggering commit SHA.
 
-Do not run publication, tag pushes, or release creation without explicit user
-authorization. npm versions are immutable: if publication is partial, verify
-registry state and fix forward; use a new patch version when the immutable
-version already exists. Before publication, revert the candidate commit to
-return to the previous release.
+Ordinary documentation or code pushes without a synchronized version change do
+not publish. One-sided version bumps, metadata drift, missing or empty notes,
+prerelease versions, registry uncertainty, and mismatched existing tags stop
+before any side effect. Manual dispatch is recovery-only: a full commit SHA
+reachable from `origin/main`, with the version derived from that commit; branch
+names, short SHAs, and mutable refs are rejected.
+
+npm versions are immutable: if publication is partial, verify registry state
+and fix forward; use a new patch version when the immutable version already
+exists. Deterministic tests never publish or create tags or releases.

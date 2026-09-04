@@ -212,7 +212,36 @@ def test_v1_release_notes_and_workflow_guard_both_packages():
     assert "# v1.0.0" in notes
     assert "breaking release" in notes
     assert "no live" in notes.lower()
-    for marker in ("workflow_dispatch", 'default: 1.0.0', "id-token: write", "--provenance", "--access public", "--tag latest"):
+    # Trigger surface: every main push plus a SHA-only recovery dispatch.
+    assert "workflow_dispatch" in workflow
+    assert "branches:" in workflow
+    assert "target_sha" in workflow
+    assert "reachable from origin/main" in workflow
+    assert "fetch-depth: 0" in workflow
+    assert "actions/setup-node@v6" in workflow
+    assert 'registry-url: https://registry.npmjs.org' in workflow
+    assert "actions/setup-python@v6" in workflow
+    assert 'python-version: "3.12"' in workflow
+    assert "${{ steps.resolve.outputs.target_sha }}" in workflow
+    # The mutable fixed-1.0.0 dispatch inputs are gone.
+    assert "target_ref" not in workflow
+    assert "create_github_release" not in workflow
+    assert "default: 1.0.0" not in workflow
+    # The gate runs before any install/registry/secrets step and proves intent.
+    gate = workflow.index("Verify release intent and synchronized metadata")
+    install = workflow.index("Install and run offline checks")
+    registry = workflow.index("Check registry state for each exact version")
+    assert gate < install < registry
+    assert "release=false" in workflow
+    assert "release=true" in workflow
+    assert "merge-base --is-ancestor" in workflow
+    assert "one-sided release intent" in workflow
+    assert "git ls-remote --tags" in workflow
+    assert 'remote_tag="$(git ls-remote --tags --refs origin "refs/tags/$tag")"' in workflow
+    assert 'if [[ -n "$remote_tag" ]]; then' in workflow
+    assert 'echo "release_version=$version" >> "$GITHUB_OUTPUT"' in workflow
+    # Provenance, scoped token, ordered guarded publication, fail-closed registry.
+    for marker in ("id-token: write", "--provenance", "--access public", "--tag latest", "dist-tags.latest"):
         assert marker in workflow
     root_publish = workflow.index("npm publish --provenance --access public --tag latest")
     pi_publish = workflow.index("npm publish --provenance --access public --tag latest", root_publish + 1)
@@ -223,17 +252,54 @@ def test_v1_release_notes_and_workflow_guard_both_packages():
     assert "printf 'absent'" in workflow
     assert "printf 'unavailable'" in workflow
     assert "printf 'not_latest'" in workflow
-    assert "dist-tags.latest" in workflow
     assert "Could not verify one or more npm registry states, including latest dist-tags" in workflow
-    assert "if: steps.registry-state.outputs.root_state == 'absent'" in workflow
-    assert "if: steps.registry-state.outputs.pi_state == 'absent'" in workflow
+    assert "steps.registry-state.outputs.root_state == 'absent'" in workflow
+    assert "steps.registry-state.outputs.pi_state == 'absent'" in workflow
     post_verify = workflow.index("Verify both exact versions after publication")
-    release = workflow.index("Create stable GitHub release")
+    release = workflow.index("Create or update stable GitHub release")
     assert post_verify < release
     assert "steps.verify-published.outputs.verified == 'true'" in workflow
-    assert 'if gh release view "$tag_name"' in workflow
     assert 'gh release edit "$tag_name" --title "$tag_name" --notes-file "$notes_file"' in workflow
-    assert 'gh release create "$tag_name"' in workflow
+    assert 'gh release create "$tag_name" --target "$TARGET_SHA" --title "$tag_name" --notes-file "$notes_file"' in workflow
+    # Every side-effecting step is gated on the release-intent gate.
+    assert workflow.count("steps.release-gate.outputs.release == 'true'") == 6
+
+
+def test_release_workflow_auto_binds_to_github_sha_and_never_falls_back_to_mutable_refs():
+    workflow = (ROOT / ".github/workflows/publish-npm.yml").read_text()
+    # Automatic runs must bind checkout, tags, and releases to github.sha.
+    assert "PUSH_SHA: ${{ github.sha }}" in workflow
+    assert "PUSH_BEFORE: ${{ github.event.before }}" in workflow
+    assert "target_sha=$PUSH_SHA" in workflow
+    assert "TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}" in workflow
+    assert "--target \"$TARGET_SHA\"" in workflow
+    # Manual recovery must reject branches/short SHAs and prove main reachability.
+    assert "^[0-9a-f]{40}$" in workflow
+    assert "event_mode=manual" in workflow
+    assert "is not reachable from origin/main" in workflow
+    assert "+refs/heads/main:refs/remotes/origin/main" in workflow
+
+
+def test_release_workflow_gate_rejects_inconsistent_metadata_and_missing_notes():
+    workflow = (ROOT / ".github/workflows/publish-npm.yml").read_text()
+    # The gate compares both manifest versions against their parent commit.
+    for marker in (
+        "git show \"$base:package.json\"",
+        "git show \"$base:integrations/pi/package.json\"",
+        "Neither npm manifest version changed on main; no release intent.",
+        "Only one npm manifest changed its version on main",
+        "do not share the same new version",
+        "not a stable x.y.z release version",
+        "root manifest version mismatch",
+        "Pi manifest version mismatch",
+        "pyproject.toml version mismatch",
+        "packages[''] version mismatch",
+        "release notes missing or empty",
+        ".github/releases/v${version}.md",
+    ):
+        assert marker in workflow
+    # A prerelease version must never authorize publication.
+    assert "^[0-9]+\\.[0-9]+\\.[0-9]+$" in workflow
 
 
 def test_npm_deterministic_probe_clears_tavily_environment():

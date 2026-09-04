@@ -1,19 +1,14 @@
 name: Publish v1 npm packages
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
-      target_ref:
-        description: Commit SHA, branch, or tag to publish
+      target_sha:
+        description: Full commit SHA reachable from origin/main to publish (recovery)
         required: true
-      version:
-        description: Exact stable version (1.0.0)
-        required: true
-        default: 1.0.0
-      create_github_release:
-        description: Create the matching stable GitHub release
-        required: true
-        default: "true"
 
 permissions:
   contents: write
@@ -27,9 +22,33 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: Resolve immutable target SHA
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_SHA: ${{ github.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          INPUT_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -eu
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            echo "target_sha=$PUSH_SHA" >> "$GITHUB_OUTPUT"
+            echo "event_mode=push" >> "$GITHUB_OUTPUT"
+            echo "base_sha=$PUSH_BEFORE" >> "$GITHUB_OUTPUT"
+          else
+            if [[ ! "$INPUT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Manual dispatch requires a full 40-character commit SHA reachable from origin/main; branch and tag inputs are rejected." >&2
+              exit 1
+            fi
+            echo "target_sha=$INPUT_SHA" >> "$GITHUB_OUTPUT"
+            echo "event_mode=manual" >> "$GITHUB_OUTPUT"
+            echo "base_sha=" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout release target with full history
+        uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+          ref: ${{ steps.resolve.outputs.target_sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
@@ -37,7 +56,126 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Verify release intent and synchronized metadata
+        id: release-gate
+        env:
+          EVENT_MODE: ${{ steps.resolve.outputs.event_mode }}
+          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
+          BASE_SHA: ${{ steps.resolve.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          version=""
+          require_notes_changed=no
+          root_target="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
+          pi_target="$(python3 -c 'import json; print(json.load(open("integrations/pi/package.json"))["version"])')"
+          if [[ "$EVENT_MODE" == "push" ]]; then
+            base="$BASE_SHA"
+            target="$TARGET_SHA"
+            if [[ -z "$base" || ! "$base" =~ ^[0-9a-f]{40}$ || "$base" =~ ^0{40}$ ]]; then
+              echo "No parent commit to compare (branch creation push); not a release push."
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ! git merge-base --is-ancestor "$base" "$target"; then
+              echo "Push base is not an ancestor of the target commit; release intent cannot be proven."
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            root_base="$(git show "$base:package.json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
+            pi_base="$(git show "$base:integrations/pi/package.json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')"
+            if [[ "$root_base" == "$root_target" && "$pi_base" == "$pi_target" ]]; then
+              echo "Neither npm manifest version changed on main; no release intent."
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [[ "$root_base" == "$root_target" || "$pi_base" == "$pi_target" ]]; then
+              echo "Only one npm manifest changed its version on main; one-sided release intent rejected." >&2
+              exit 1
+            fi
+            version="$root_target"
+            if [[ "$version" != "$pi_target" ]]; then
+              echo "Root and Pi manifests do not share the same new version." >&2
+              exit 1
+            fi
+            require_notes_changed=yes
+          else
+            target="$TARGET_SHA"
+            # checkout binds the worktree to the immutable SHA; fetch main refs so
+            # reachability can be proven against origin/main.
+            git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+            if ! git merge-base --is-ancestor "$target" origin/main; then
+              echo "Manual target $target is not reachable from origin/main." >&2
+              exit 1
+            fi
+            version="$root_target"
+            if [[ "$version" != "$pi_target" ]]; then
+              echo "Root and Pi manifests do not share the same version." >&2
+              exit 1
+            fi
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version $version is not a stable x.y.z release version." >&2
+            exit 1
+          fi
+          if [[ "$require_notes_changed" == yes ]]; then
+            notes_path=".github/releases/v${version}.md"
+            if ! git diff --name-only "$base" "$target" -- .github/releases/ | grep -Fxq "$notes_path"; then
+              echo "Release notes $notes_path were not changed in the release-intent push range." >&2
+              exit 1
+            fi
+          fi
+          python3 - "$version" <<'PY'
+          import json, os, sys
+
+          version = sys.argv[1]
+
+          def fail(message):
+              print(f"::error::{message}", flush=True)
+              raise SystemExit(1)
+
+          root = json.load(open("package.json", encoding="utf-8"))
+          pi = json.load(open("integrations/pi/package.json", encoding="utf-8"))
+          if root["name"] != "@onedotmint/smart-search":
+              fail("root manifest name mismatch")
+          if pi["name"] != "@onedotmint/pi-smart-search":
+              fail("Pi manifest name mismatch")
+          if root["version"] != version:
+              fail("root manifest version mismatch")
+          if pi["version"] != version:
+              fail("Pi manifest version mismatch")
+          for lock_path, package_name in (
+              ("package-lock.json", "@onedotmint/smart-search"),
+              ("integrations/pi/package-lock.json", "@onedotmint/pi-smart-search"),
+          ):
+              data = json.load(open(lock_path, encoding="utf-8"))
+              if data.get("name") != package_name:
+                  fail(f"{lock_path} name mismatch")
+              if data.get("version") != version:
+                  fail(f"{lock_path} version mismatch")
+              entry = (data.get("packages") or {}).get("")
+              if not entry or entry.get("version") != version:
+                  fail(f"{lock_path} packages[''] version mismatch")
+          pyproject = open("pyproject.toml", encoding="utf-8").read()
+          if f'version = "{version}"' not in pyproject:
+              fail("pyproject.toml version mismatch")
+          notes_path = f".github/releases/v{version}.md"
+          if not os.path.isfile(notes_path) or os.path.getsize(notes_path) == 0:
+              fail("release notes missing or empty")
+          PY
+          tag="v$version"
+          remote_tag="$(git ls-remote --tags --refs origin "refs/tags/$tag")"
+          if [[ -n "$remote_tag" ]]; then
+            git fetch --no-tags origin "refs/tags/$tag:refs/tags/$tag"
+            tag_target="$(git rev-parse "refs/tags/$tag^{commit}")"
+            if [[ "$tag_target" != "$target" ]]; then
+              echo "Existing Git tag $tag points at $tag_target, not $target; refusing publication." >&2
+              exit 1
+            fi
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "release_version=$version" >> "$GITHUB_OUTPUT"
       - name: Install and run offline checks
+        if: steps.release-gate.outputs.release == 'true'
         run: |
           npm ci
           npm test
@@ -47,19 +185,11 @@ jobs:
           npm run typecheck
           npm test
           npm pack --dry-run
-      - name: Verify stable metadata
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-        run: |
-          test "$RELEASE_VERSION" = "1.0.0"
-          test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
-          test "$(node -p "require('./integrations/pi/package.json').version")" = "$RELEASE_VERSION"
-          test "$(node -p "require('./package.json').name")" = "@onedotmint/smart-search"
-          test "$(node -p "require('./integrations/pi/package.json').name")" = "@onedotmint/pi-smart-search"
       - name: Check registry state for each exact version
         id: registry-state
+        if: steps.release-gate.outputs.release == 'true'
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ steps.release-gate.outputs.release_version }}
         run: |
           set -eu
           state_dir="$(mktemp -d)"
@@ -100,20 +230,21 @@ jobs:
             exit 1
           fi
       - name: Publish root package when missing
-        if: steps.registry-state.outputs.root_state == 'absent'
+        if: steps.release-gate.outputs.release == 'true' && steps.registry-state.outputs.root_state == 'absent'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public --tag latest
       - name: Publish Pi package when missing
-        if: steps.registry-state.outputs.pi_state == 'absent'
+        if: steps.release-gate.outputs.release == 'true' && steps.registry-state.outputs.pi_state == 'absent'
         working-directory: integrations/pi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public --tag latest
       - name: Verify both exact versions after publication
         id: verify-published
+        if: steps.release-gate.outputs.release == 'true'
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ steps.release-gate.outputs.release_version }}
         run: |
           set -eu
           state_dir="$(mktemp -d)"
@@ -135,15 +266,17 @@ jobs:
           verify_exact_version '@onedotmint/smart-search' root
           verify_exact_version '@onedotmint/pi-smart-search' pi
           echo "verified=true" >> "$GITHUB_OUTPUT"
-      - name: Create stable GitHub release
-        if: inputs.create_github_release == 'true' && steps.verify-published.outputs.verified == 'true'
+      - name: Create or update stable GitHub release
+        if: steps.release-gate.outputs.release == 'true' && steps.verify-published.outputs.verified == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
+          RELEASE_VERSION: ${{ steps.release-gate.outputs.release_version }}
         run: |
-          tag_name="v${{ inputs.version }}"
+          tag_name="v${RELEASE_VERSION}"
           notes_file=".github/releases/${tag_name}.md"
           if gh release view "$tag_name" >/dev/null 2>&1; then
             gh release edit "$tag_name" --title "$tag_name" --notes-file "$notes_file"
           else
-            gh release create "$tag_name" --target "${{ inputs.target_ref }}" --title "$tag_name" --notes-file "$notes_file"
+            gh release create "$tag_name" --target "$TARGET_SHA" --title "$tag_name" --notes-file "$notes_file"
           fi
