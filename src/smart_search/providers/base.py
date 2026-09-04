@@ -233,6 +233,7 @@ class ProviderResult(str):
         capability: str = "",
         wire_format: str = "json",
         attempts: list[dict[str, Any]] | None = None,
+        allow_empty: bool = False,
     ) -> "ProviderResult":
         """
         /*
@@ -255,7 +256,7 @@ class ProviderResult(str):
         ok = bool(source.get("ok"))
         error_type = str(source.get("error_type") or "")
         error = str(source.get("error") or "")
-        if ok and not _has_usable_payload(source, content):
+        if ok and not allow_empty and not _has_usable_payload(source, content):
             ok = False
             error_type = "empty"
             error = error or "provider returned no usable result"
@@ -545,6 +546,7 @@ class BaseSearchProvider(ABC):
         capability: str | None = None,
         wire_format: str = "json",
         attempts: list[dict[str, Any]] | None = None,
+        allow_empty: bool = False,
     ) -> ProviderResult:
         normalized_payload = dict(payload)
         if "error" in normalized_payload:
@@ -555,6 +557,7 @@ class BaseSearchProvider(ABC):
             capability=capability or self.get_capability(),
             wire_format=wire_format,
             attempts=attempts,
+            allow_empty=allow_empty,
         )
 
     def content_result(

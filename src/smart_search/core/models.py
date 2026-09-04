@@ -83,7 +83,7 @@ class RankedCandidate:
 class RetrievalPolicy:
     """The v1 balanced policy; modes are deliberately not persisted here."""
 
-    providers: tuple[str, ...] = ("brave", "exa")
+    providers: tuple[str, ...] = ("brave", "exa", "tavily")
     max_results: int = 5
     rerank: bool = True
     intent: str = "general"

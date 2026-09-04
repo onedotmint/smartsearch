@@ -150,6 +150,12 @@ def default_registry() -> Registry:
             search.append(ExaSearchProvider(config.exa_base_url, config.exa_api_key, config.exa_timeout))
         except ModuleNotFoundError:
             pass
+    if config.tavily_api_key and config.tavily_enabled:
+        try:
+            from .tavily import TavilySearchProvider
+            search.append(TavilySearchProvider(config.tavily_api_url, config.tavily_api_key, config.tavily_timeout))
+        except ModuleNotFoundError:
+            pass
 
     readers: list[Any] = []
     # Jina is intentionally eligible anonymously; the adapter itself handles

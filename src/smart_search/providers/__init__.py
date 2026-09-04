@@ -17,6 +17,7 @@ _EXPORTS = {
     "coerce_provider_result": ("base", "coerce_provider_result"),
     "BraveSearchProvider": ("brave", "BraveSearchProvider"),
     "ExaSearchProvider": ("exa", "ExaSearchProvider"),
+    "TavilySearchProvider": ("tavily", "TavilySearchProvider"),
     "ExaReaderProvider": ("exa_reader", "ExaReaderProvider"),
     "Context7Provider": ("context7", "Context7Provider"),
     "AnySearchProvider": ("anysearch", "AnySearchProvider"),
