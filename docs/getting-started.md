@@ -1,194 +1,48 @@
 # Getting started
 
-This guide takes a new installation from zero configuration to one search and one fetched page. It does not require every provider to be configured.
-
-## Install the npm package
+## Install and configure
 
 ```sh
 npm install -g @onedotmint/smart-search@latest
-smart-search --version
+smart-search setup --format json
 ```
 
-Use the `next` channel when testing an unreleased package:
+The wrapper needs Node.js 18+. Source checkout users need Python 3.10+ and can
+run `python3 -m pip install -e ".[dev]"`. `setup` is the only configuration
+wizard; use environment variables for CI and do not store credentials in the
+repository.
+
+## First calls
 
 ```sh
-npm install -g @onedotmint/smart-search@next
+smart-search search "latest Python release" --format json
+smart-search read "https://www.python.org/downloads/" --format json
+smart-search research "Compare two current API designs" --format json
 ```
 
-The wrapper needs Node.js 18 or newer. It creates an isolated Python 3.10+ runtime inside the package installation and exposes one `smart-search` command.
+`search` returns discovery candidates. Use `read` on relevant URLs before
+making claim-level statements. `research` performs the same evidence-first
+composition and leaves final answer writing to the host agent.
 
-For source development, install Python dependencies from the repository instead:
+The v1 CLI has no `--version` promise. Use `--help` and the JSON `version` and
+`operation` fields to identify the interface. The stable envelope fields are
+`version`, `operation`, `status`, `data`, `attempts`, `warnings`, and `error`.
+There is no schema selector, legacy command alias, or old envelope compatibility
+layer.
+
+## Pi
 
 ```sh
-python -m pip install -e ".[dev]"
+pi install npm:@onedotmint/pi-smart-search@latest
 ```
 
-On Windows, use `py -3` when `python` is not available.
-
-## Configure one usable path
-
-The Core evidence path needs no model configuration, and `fetch` works with
-**zero configuration** through anonymous Jina Reader. Add provider keys only
-when you need `search` or keyed Jina features.
-
-### 1. Zero-config fetch (anonymous Jina)
-
-```sh
-smart-search fetch "https://www.python.org/downloads/" --format markdown
-smart-search capabilities --format json
-```
-
-Anonymous Jina with the default Reader endpoint is eligible `web_fetch`;
-`provider status` and `doctor` report `anonymous_ready` without a key.
-`JINA_RESPOND_WITH` (ReaderLM-v2) still requires `JINA_API_KEY`.
-
-### 2. Add a discovery provider (needed for `search`)
-
-```sh
-smart-search config set TAVILY_API_KEY "your-tavily-key"
-smart-search config set EXA_API_KEY "your-exa-key"
-smart-search config list --format json
-smart-search doctor status --format json
-```
-
-The complete evidence-first flow is:
-
-```text
-search → fetch → host agent writes the final answer from fetched evidence
-```
-
-`search` returns discovery candidates only; `fetch` provides the claim-level
-page text. Smart Search does not generate the answer itself — the host agent
-does.
-
-### Optional model routes
-
-Model routes are optional in v0.2.0. Core `search`, `fetch`, and
-`research run` do not require or invoke an LLM. Model configuration is
-currently used for provider connectivity/diagnostics and reserves the optional
-`llm_synthesis` extension surface. Both xAI Responses and OpenAI-compatible
-endpoints are supported; see [Providers](providers.md).
-
-`doctor status` is local readiness only: configuration storage, capability eligibility, Core evidence path, and minimum-profile health. It does not probe providers. Use `doctor probe` only when you intentionally want a live aggregate connectivity check. A command checks only the capabilities it needs. The `standard` profile is fail-closed for the Core minimum: source discovery (`web_search` or `docs_search`) plus `web_fetch`. Legacy model routes (`main_search`) are optional `llm_synthesis` state and are never a Core requirement; an absent model route is a `doctor` warning, not a Core failure.
-
-The configuration file is stored in the platform config directory:
-
-- Windows: `%LOCALAPPDATA%\smart-search\config.json`
-- Linux/macOS: `~/.config/smart-search/config.json`
-- Override: `SMART_SEARCH_CONFIG_DIR`
-
-Use an explicit config directory in CI, containers, and tests. Smart Search does not silently write credentials into the current repository when the configured directory cannot be protected.
-
-For a scripted setup, set only the keys needed by the target environment:
-
-```sh
-smart-search config set EXA_API_KEY "your-exa-key"
-smart-search config set JINA_API_KEY "your-jina-key"
-```
-
-See [Providers](providers.md) for the full capability and key matrix.
-
-## Run the first search
-
-Agent default evidence path:
-
-```sh
-smart-search capabilities
-smart-search search "latest Python release"
-smart-search fetch "https://www.python.org/downloads/"
-```
-
-v2 search returns discovery candidates only. Host agents write the final answer from fetched evidence items. The canonical V2 surface accepts only `--format json|markdown|content`; V1-era options such as `--output`, `--force`, `--extra-sources`, `--timeout`, and `--stream` are rejected before any provider work.
-
-A successful v2 search keeps the exact V2 envelope:
-
-```json
-{
-  "schema_version": "2",
-  "ok": true,
-  "command": "search",
-  "operation": "source_discovery",
-  "result": {
-    "total": 1,
-    "items": [
-      {"id": "candidate-id"}
-    ]
-  },
-  "evidence": {
-    "candidates": [
-      {"id": "candidate-id", "resource": "https://example.com", "provider": "tavily", "title": "Example", "snippet": "..."}
-    ],
-    "items": [],
-    "citations": [],
-    "gaps": []
-  },
-  "routing": {
-    "requested_capabilities": ["source_discovery"],
-    "executed_capabilities": [],
-    "policy_version": "v2-parser-1",
-    "reason_codes": []
-  },
-  "attempts": [],
-  "degradation": [],
-  "error": null,
-  "meta": {
-    "request_id": "...",
-    "duration_ms": 0,
-    "warnings": [],
-    "deprecations": []
-  }
-}
-```
-
-Provider content, source URLs, and observability counts are runtime values. Use [Evidence](concepts/evidence.md) to decide which sources must be fetched.
-
-## Fetch page evidence
-
-```sh
-smart-search fetch "https://www.python.org/downloads/" --format markdown
-```
-
-The strict V2/V3/Workflow families reject `--output` and `--force` before any owner work. Save evidence by capturing stdout JSON with shell redirection instead.
-
-For a site structure rather than one page:
-
-```sh
-smart-search map "https://docs.python.org/3/" --format json
-```
-
-## Plan or execute Deep Research
-
-Use the offline planner when an agent or a person should inspect the plan first:
-
-```sh
-smart-search research plan "Compare two current API designs" --budget standard --format json
-```
-
-Use the Agent-facing staged executor when the host should receive admitted evidence and write the answer itself:
-
-```sh
-smart-search research run "Compare two current API designs" --budget deep --format json
-```
-
-Bare `research`, `rs`, `deep`, and `dr` are removed spellings and fail with the workflow family's strict error; the workflow never writes an answer itself.
-
-The distinction is intentional. `research plan` is the offline planner, not an executor; `research run` is the evidence-first live staged workflow, and the host agent writes the final answer. See [Search vs Deep Research vs Research](concepts/search-vs-deep-vs-research.md).
-
-## Install the AI-agent skill
-
-Install managed skill files or refresh them after an npm upgrade:
-
-```sh
-smart-search dev skills status --targets codex,claude,cursor,hermes --format json
-smart-search dev skills update --targets codex,claude,cursor,hermes --format json
-```
-
-The skill installer writes only the managed `smart-search-cli` files under user-level tool directories. It does not create Trellis files, hooks, agents, commands, or provider configuration. Status values are `missing`, `up_to_date`, `stale`, `extra_files`, and `error`.
+Pi exposes `web_search`, `web_read`, and `web_research`, which invoke the same
+v1 paths. Keep remote content untrusted and preserve citations from read
+results.
 
 ## Next steps
 
 - [Command reference](commands.md)
 - [Provider guide](providers.md)
+- [Migration guide](migration.md)
 - [Evidence policy](concepts/evidence.md)
-- [Routing](concepts/routing.md)
-- [Development](development.md)

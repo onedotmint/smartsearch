@@ -1,16 +1,13 @@
 <#
 .SYNOPSIS
-Run isolated live checks for Smart Search Jina Reader capability.
-
+Run isolated live checks for the Smart Search Jina reader.
 .DESCRIPTION
-This script intentionally uses a temporary SMART_SEARCH_CONFIG_DIR and clears
-other web_fetch provider env vars for the current process while it runs, so
-`smart-search fetch` must use Jina instead of being satisfied by Tavily or
-Firecrawl first.
+This script uses a temporary SMART_SEARCH_CONFIG_DIR and clears other reader
+provider env vars for the current process while it runs, so `smart-search read`
+uses Jina instead of being satisfied by another configured reader first.
 
-It never prints the Jina key. By default it reads JINA_API_KEY from the current
-process env var or from the local Smart Search config file. You can also pass
-`-JinaApiKey` explicitly.
+It never prints the Jina key. Set JINA_API_KEY in the environment or pass
+`-JinaApiKey` explicitly. Use `smart-search setup` for discovery provider keys.
 
 .EXAMPLE
 powershell -ExecutionPolicy Bypass -File .\scripts\test-jina-capability.ps1
@@ -40,7 +37,7 @@ param(
 
     [string]$EvidenceDir = (Join-Path $env:TEMP ("smart-search-jina-evidence-" + (Get-Date -Format "yyyyMMdd-HHmmss"))),
 
-    [switch]$KeepOtherFetchProviders
+    [switch]$KeepOtherReaders
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,35 +54,6 @@ function Get-SafeSlug {
         return "url"
     }
     return $slug
-}
-
-function Get-SmartSearchConfigValue {
-    param([Parameter(Mandatory = $true)][string]$Name)
-
-    $pathOutput = & smart-search config path --format json 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        return $null
-    }
-
-    $pathText = ($pathOutput | Out-String).Trim()
-    try {
-        $pathData = $pathText | ConvertFrom-Json
-    }
-    catch {
-        return $null
-    }
-
-    if (-not $pathData.config_file -or -not (Test-Path -LiteralPath $pathData.config_file)) {
-        return $null
-    }
-
-    try {
-        $configData = Get-Content -LiteralPath $pathData.config_file -Raw | ConvertFrom-Json
-        return $configData.$Name
-    }
-    catch {
-        return $null
-    }
 }
 
 function ConvertFrom-SmartSearchJson {
@@ -159,10 +127,7 @@ if (-not $Urls -or $Urls.Count -eq 0) {
 }
 
 if (-not $JinaApiKey) {
-    $JinaApiKey = Get-SmartSearchConfigValue -Name "JINA_API_KEY"
-}
-if (-not $JinaApiKey) {
-    throw "JINA_API_KEY was not found. Pass -JinaApiKey or run 'smart-search config set JINA_API_KEY <key>' first."
+    throw "JINA_API_KEY was not found. Set the environment variable or pass -JinaApiKey."
 }
 
 New-Item -ItemType Directory -Path $EvidenceDir -Force | Out-Null
@@ -176,7 +141,7 @@ $envNamesToSave = @(
     "JINA_RESPOND_WITH",
     "JINA_TIMEOUT_SECONDS"
 )
-if (-not $KeepOtherFetchProviders) {
+if (-not $KeepOtherReaders) {
     $envNamesToSave += @(
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
@@ -195,40 +160,22 @@ try {
     [Environment]::SetEnvironmentVariable("JINA_READER_API_URL", $JinaReaderApiUrl, "Process")
     [Environment]::SetEnvironmentVariable("JINA_TIMEOUT_SECONDS", [string]$TimeoutSeconds, "Process")
 
-    if (-not $KeepOtherFetchProviders) {
+    if (-not $KeepOtherReaders) {
         foreach ($name in @("TAVILY_API_KEY", "FIRECRAWL_API_KEY", "ZHIPU_MCP_API_KEY")) {
             [Environment]::SetEnvironmentVariable($name, $null, "Process")
         }
     }
 
-    Write-Host "Smart Search Jina capability test"
-    Write-Host "smart-search : $((& smart-search --version 2>$null) -join ' ')"
-    Write-Host "reader api   : $JinaReaderApiUrl"
-    Write-Host "timeout      : $TimeoutSeconds seconds"
-    Write-Host "temp config  : $TempConfigDir"
-    Write-Host "evidence dir : $EvidenceDir"
-    Write-Host "modes        : $($Modes -join ', ')"
+    Write-Host "Smart Search Jina reader test"
+    Write-Host "command     : smart-search read URL --format json"
+    Write-Host "reader api  : $JinaReaderApiUrl"
+    Write-Host "timeout     : $TimeoutSeconds seconds"
+    Write-Host "temp config : $TempConfigDir"
+    Write-Host "evidence dir: $EvidenceDir"
+    Write-Host "modes       : $($Modes -join ', ')"
     Write-Host ""
 
     [Environment]::SetEnvironmentVariable("JINA_RESPOND_WITH", $null, "Process")
-    $doctor = Invoke-SmartSearchJson -Arguments @("doctor", "status", "--format", "json")
-    Save-JsonEvidence -Data $doctor -Path (Join-Path $EvidenceDir "00-doctor.json")
-
-    $jinaEntry = $null
-    if ($doctor.result -and $doctor.result.capability_status.web_fetch.provider_status) {
-        $jinaEntry = $doctor.result.capability_status.web_fetch.provider_status |
-            Where-Object { $_.provider -eq "jina" } | Select-Object -First 1
-    }
-    $doctorSummary = [pscustomobject]@{
-        ok = $doctor.ok
-        minimum_profile_ok = $doctor.result.minimum_profile_ok
-        web_fetch_configured = (($doctor.result.capability_status.web_fetch.configured | ForEach-Object { $_ }) -join ",")
-        jina_configured = if ($jinaEntry) { $jinaEntry.configured } else { $false }
-        jina_eligible = if ($jinaEntry) { $jinaEntry.eligible } else { $false }
-        missing = (($doctor.result.minimum_profile_missing | ForEach-Object { $_ }) -join ",")
-    }
-    Write-Host "Doctor summary"
-    $doctorSummary | Format-List
 
     $summaries = New-Object System.Collections.Generic.List[object]
     $caseIndex = 0
@@ -247,11 +194,11 @@ try {
             $contentPath = Join-Path $EvidenceDir ("{0:D2}-{1}-{2}.md" -f $caseIndex, $mode, $slug)
 
             Write-Host ("Running [{0}] mode={1} url={2}" -f $caseIndex, $mode, $url)
-            $result = Invoke-SmartSearchJson -Arguments @("fetch", $url, "--format", "json")
+            $result = Invoke-SmartSearchJson -Arguments @("read", $url, "--format", "json")
             Save-JsonEvidence -Data $result -Path $jsonPath
             $content = ""
-            if ($result.evidence -and $result.evidence.items) {
-                $content = (($result.evidence.items | ForEach-Object { $_.content }) -join "`n")
+            if ($result.data -and $result.data.evidence) {
+                $content = $result.data.evidence.content
             }
             if ($content) {
                 $content | Set-Content -LiteralPath $contentPath -Encoding utf8
@@ -260,7 +207,7 @@ try {
             $attempts = ""
             if ($result.attempts) {
                 $attempts = (($result.attempts | ForEach-Object {
-                    "{0}:{1}:{2}" -f $_.provider, $_.status, $_.error_code
+                    "{0}:{1}:{2}" -f $_.provider, $_.status, $_.error_type
                 }) -join ",")
             }
             $providers = ""
@@ -277,9 +224,9 @@ try {
             $summaries.Add([pscustomobject]@{
                 case = $caseIndex
                 mode = $mode
-                ok = $result.ok
+                ok = ($result.status -in @("complete", "degraded"))
                 provider = $providers
-                degraded = ($result.degradation.Count -gt 0)
+                degraded = ($result.status -eq "degraded")
                 content_len = $content.Length
                 attempts = $attempts
                 json = $jsonPath
@@ -290,7 +237,7 @@ try {
     }
 
     Write-Host ""
-    Write-Host "Fetch summary"
+    Write-Host "Read summary"
     $summaries | Format-Table case, mode, ok, provider, degraded, content_len, attempts -AutoSize
 
     Write-Host ""
@@ -305,7 +252,7 @@ try {
     Write-Host "Saved summary : $summaryPath"
     Write-Host "Saved details : $EvidenceDir"
     Write-Host ""
-    Write-Host "Expected: attempts should show provider 'jina' with ok=true. If another provider appears, rerun without -KeepOtherFetchProviders."
+    Write-Host "Expected: attempts should show provider 'jina' with status=complete. If another reader appears, rerun without -KeepOtherReaders."
 }
 finally {
     foreach ($name in $savedEnv.Keys) {

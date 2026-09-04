@@ -69,7 +69,11 @@ const isolatedEnv = {
   BRAVE_API_KEY: "",
   EXA_API_KEY: "",
   JINA_API_KEY: "",
-  FIRECRAWL_API_KEY: ""
+  FIRECRAWL_API_KEY: "",
+  TAVILY_API_KEY: "",
+  TAVILY_API_URL: "",
+  TAVILY_ENABLED: "false",
+  TAVILY_TIMEOUT_SECONDS: ""
 };
 const researchJson = capture(process.execPath, [
   "npm/bin/smart-search.js",

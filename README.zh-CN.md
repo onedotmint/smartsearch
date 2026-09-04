@@ -1,188 +1,51 @@
-# smart-search
-
 简体中文 | [English](README.md)
 
-面向 AI agent 和终端用户的 CLI-first、skill-driven 网页调研工具。`smart-search` 把实时搜索、来源发现、网页抓取、站点结构发现、provider 诊断、离线 Deep Research 规划和实时 Deep Research 执行统一成一组可复用命令。
-
-`smart-search` 是普通 CLI，不是 MCP Server。AI 工具可以安装内置的 `smart-search-cli` skill；脚本和终端用户直接调用同一个 `smart-search` 命令。
+面向 AI agent 和终端用户的 CLI-first、证据优先网页调研工具。v1 是破坏性版本：公开日常命令为 `search`、`read`、`research`；`setup` 仅用于首次配置。
 
 ## 安装
 
 ```sh
 npm install -g @onedotmint/smart-search@latest
-smart-search --version
-smart-search config path --format json
+smart-search setup
 ```
 
-npm 包会在安装时创建隔离的 Python 运行时。源码 checkout 也支持直接使用 Python，见[入门指南](docs/getting-started.md)。
+npm wrapper 需要 Node.js 18+，源码使用需要 Python 3.10+。
 
-根级 `--help` 有意只显示证据核心命令 `search`、`fetch` 和 `capabilities`。使用 `smart-search --help-all` 可查看完整规范清单（research workflow 和 V3 控制面命令）。
-
-前置条件：
-
-- 使用 npm 包需要 Node.js 18 或更高版本。
-- 直接运行源码需要 Python 3.10 或更高版本。
-- `fetch` 通过匿名 Jina Reader **零配置**即可使用。运行 `search` 需要配置一个发现 provider；模型路由是可选的 LLM 合成能力，绝不是 Core 依赖。
-
-## 第一次运行
-
-第一次调用 provider 前先运行本地 readiness 检查：
-
-```sh
-smart-search doctor status --format json
-```
-
-只有需要显式联网聚合连通性检查时，才运行 `smart-search doctor probe --format markdown`。
-
-运行一次实时搜索：
+## 日常使用
 
 ```sh
 smart-search search "latest Python release" --format json
+smart-search read "https://www.python.org/downloads/" --format json
+smart-search research "比较两个当前 API 设计" --format json
 ```
 
-需要逐页核验时，抓取原始页面：
+所有命令返回稳定的 v1 JSON 合约。`search` 发现候选来源，`read` 读取已知 URL 的证据，`research` 分阶段收集证据但不生成最终答案。由 host agent 根据已读取的证据写答案；搜索摘要不是证明。
+
+`setup` 将 discovery provider 配置保存到本地，CI 仍可使用环境变量。只有实际需要时命令才会联网；打包检查和帮助命令均离线。
+
+## Pi 工具
+
+使用 Pi 时安装独立包：
 
 ```sh
-smart-search fetch "https://www.python.org/downloads/" --format markdown
+pi install npm:@onedotmint/pi-smart-search@latest
 ```
 
-本地版本检查的输出是确定的：
+它只提供 `web_search`、`web_read`、`web_research` 三个工具，并使用同一 v1 CLI 合约。
 
-```text
-$ smart-search --version
-smart-search 0.3.0
-```
+## 迁移与文档
 
-搜索响应使用带版本号的 JSON envelope：证据命令返回 V2 envelope，控制面命令返回 V3 envelope，`research run` 返回 Research Workflow envelope。provider 返回的正文和 URL 会变化；机器契约保持不变。
+本版本移除旧命令、envelope 和 Python facade，不提供运行时别名。请阅读[迁移指南](docs/migration.md)、[入门](docs/getting-started.md)、[命令参考](docs/commands.md)和[Provider 指南](docs/providers.md)。
 
-### V2 Evidence Core JSON API
-
-证据优先的 Core API 是推荐的 Agent 默认路径，由规范命令域直接选择，无需 selector flag：
+详见[开发与发布指南](https://github.com/onedotmint/smartsearch/blob/main/docs/development.md)。
 
 ```sh
-smart-search capabilities
-smart-search search "示例查询"
-smart-search fetch "https://example.com/page"
-smart-search fetch "https://example.com/page" --full
-```
-
-`map` 作为 Advanced `site_discovery` operation 提供；v2 用法见命令参考。
-
-- v2 默认输出 JSON——唯一稳定的机器契约——并返回严格版本化 envelope（`status`、`operation`、`evidence`、`routing`、`attempts` 等）。`--format markdown|content` 渲染同一 validated envelope 的非稳定人类视图；这些视图不提供字段级机器兼容承诺。
-- v2 `search` 只返回 discovery candidates；不会调用 legacy `main_search`，也不接受 `--response-mode`。
-- v0.3.0：当配置 Brave 或 Exa（research intent 下含 Tavily）时，`search`/`source_discovery` 走多源检索网关：统一候选模型、带 provenance 的确定性 URL 去重、倒排融合（RRF），以及可选的 best-effort Jina 重排。未配置 Brave/Exa/Tavily 的安装保持 v0.3.0 之前的精确行为。详见 [provider 指南](docs/providers.md#retrieval-policy-and-fusion-v030)。
-- fetched evidence 默认按条目限制为 8,000 字符；每条 evidence 都会报告 `truncated`、`original_length` 和 `returned_length`，`fetch --full` 可绕过该上限保留可用全文。`research run` 每次运行最多接收五条 evidence。
-- Host Agent 基于 fetched `evidence.items` 写最终回答；discovery candidates 不是 claim-level 证据。
-- `capabilities` 使用 envelope-only 元操作 `capability_status`（本地只读检查，不发 Provider 网络请求）。
-- `--fail-on-degraded` 可用于 v2 和 v3。
-
-### V3 控制面 JSON API
-
-V3 是用于稳定本地管理、显式 probe、开发诊断、文件系统操作和开发质量门禁子进程的独立 JSON family。它不是 evidence envelope：
-
-```sh
-smart-search config list
-smart-search provider status
-smart-search doctor status
-smart-search dev smoke --mock
-```
-
-V3 返回 `complete` / `degraded` / `failed`，并以独立的 `network` 与 `side_effects` 对象声明实际执行影响。默认输出 JSON（唯一稳定机器契约）。`--format markdown|content` 渲染同一 validated envelope 的非稳定人类视图。完整 allowlist、错误、退出码和迁移边界见[命令参考](docs/commands.md#control-plane-v3-json-api)。
-
-## 选择工作流
-
-| 需求 | 命令 | 网络行为 |
-| --- | --- | --- |
-| Evidence-first 发现与抓取（Agent 默认） | `smart-search search\|fetch\|capabilities` | 实时 discovery/fetch；capabilities 本地 |
-| 控制面自动化 | `smart-search config\|provider\|doctor\|dev ...` | 明确的本地、网络、文件系统和子进程元数据 |
-
-
-| 阅读一个已知页面 | `smart-search fetch URL` | 实时抓取页面 |
-| 先生成调研计划 | `smart-search research plan QUERY` | 离线规划 |
-| 分阶段证据调研 | `smart-search research run QUERY` | 实时发现、抓取、gap；由 Host 写答案 |
-
-| 本地 readiness | `smart-search doctor status` | 仅本地，不 probe |
-| 联网聚合连通性 | `smart-search doctor probe` | 脱敏诊断和 provider 检查 |
-| 单 Provider 可达性 | `smart-search provider probe PROVIDER` | 只测一个 provider/family |
-
-`research plan` 只做离线规划。`research run` 是面向 Agent 的证据工作流。旧命令、别名和 schema selector 已移除，会以替换 family 的严格错误失败。
-
-## 核心示例
-
-```sh
-# Agent 默认证据路径
-smart-search capabilities
-smart-search search "React useEffect cleanup docs"
-smart-search fetch "https://react.dev/reference/react/useEffect"
-
-# 分阶段多源调研，不自动合成答案
-smart-search research run "比较两个当前 API 设计" --format json
-
-# 先离线规划
-smart-search research plan "比较两个当前 API 设计" --budget standard --format json
-
-# 先本地 readiness，再显式联网检查
-smart-search doctor status --format json
-smart-search doctor probe --format markdown
-smart-search provider probe exa --format json
-
-# 本地 provider 元数据和有序备用模型路由
-smart-search provider status --format json
-smart-search provider routes list --format markdown
-
-```
-
-给 agent 和脚本用 `--format json`，给人读报告用 `--format markdown`，终端快速阅读用 `--format content`。参数和 provider 专用命令见[命令参考](docs/commands.md)。
-
-需要多个模型服务按顺序备用时，在配置文件中加入 `SMART_SEARCH_MODEL_ROUTES` JSON 数组，或用 `smart-search provider routes add` 追加。`smart-search provider routes list` 查看顺序和模型，`smart-search provider routes current` 查看当前首选路由，`smart-search provider routes remove ROUTE_ID` 删除路由。查看命令会遮蔽 API key，原有 `XAI_*` 和 `OPENAI_COMPATIBLE_*` 配置仍可继续使用。
-
-## 证据边界
-
-搜索结果只是待发现来源。涉及高风险事实时，先抓取相关页面，再引用抓取文本。没有 fetch 的来源标为未验证候选。完整规则见[证据策略](docs/concepts/evidence.md)。
-
-## 文档
-
-- [入门指南](docs/getting-started.md)：安装、setup、第一次调用和 skill 安装。
-- [命令参考](docs/commands.md)：命令、alias、通用参数和输出格式。
-- [迁移指南](docs/migration.md)：从已发布 0.1.0 持久化数据升级。
-- [Provider 指南](docs/providers.md)：能力、兜底边界、API key 和最低配置。
-- [Search、Deep Research 和 Research](docs/concepts/search-vs-deep-vs-research.md)：规划器和执行器合约。
-- [证据策略](docs/concepts/evidence.md)：发现、抓取、引用和缺口。
-- [路由](docs/concepts/routing.md)：意图模式、远程路由调用和可观测字段。
-- [开发指南](https://github.com/onedotmint/smartsearch/blob/main/docs/development.md)：验证、打包和发布通道。
-- [贡献指南](https://github.com/onedotmint/smartsearch/blob/main/CONTRIBUTING.md)：源码修改、文档同步和 PR 要求。
-
-公开的 AI agent 合约维护在[仓库 skill 目录](https://github.com/onedotmint/smartsearch/tree/main/skills/smart-search-cli)。打包副本会随 Python runtime 发布，两份内容必须保持同步。
-
-## 排障
-
-```sh
-smart-search doctor status --format json
-smart-search doctor probe --format markdown
-smart-search provider probe exa --format json
-smart-search dev diagnose openai-compatible --format markdown
-smart-search dev regression
-smart-search dev smoke --mock --format json
-```
-
-`doctor status` 仅做本地 readiness。`doctor probe` 是联网聚合诊断（裸 `doctor` 是已移除拼写）。`provider probe PROVIDER` 检查一个指定 provider。`provider list` 和 `provider status` 仍是仅本地的元数据与资格视图。
-
-## 开发验证
-
-源码 checkout 的验证和发布说明见[开发指南](https://github.com/onedotmint/smartsearch/blob/main/docs/development.md)。最小验证集如下：
-
-```sh
-python -m compileall -q src tests
-python -m pytest tests -q
-python -m smart_search.cli dev regression
-python -m smart_search.cli dev smoke --mock --format json
+python3 -m compileall -q src tests
+PYTHONPATH=src python3 -m pytest tests -q
 npm test
 npm pack --dry-run
+(cd integrations/pi && npm run typecheck && npm test && npm pack --dry-run)
 git diff --check
 ```
 
-Windows 如果 `python` 不在 `PATH`，改用 `py -3`。
-
-## License
-
-MIT
+MIT License。

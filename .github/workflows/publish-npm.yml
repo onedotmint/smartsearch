@@ -1,25 +1,17 @@
-name: Publish npm package
+name: Publish v1 npm packages
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       target_ref:
-        description: "Commit SHA, branch, or tag to publish from"
+        description: Commit SHA, branch, or tag to publish
         required: true
       version:
-        description: "Exact npm version to publish, for example 0.1.10-beta.1"
+        description: Exact stable version (1.0.0)
         required: true
-      npm_tag:
-        description: "npm dist-tag to publish with"
-        required: true
-        default: "next"
+        default: 1.0.0
       create_github_release:
-        description: "Create or update the matching GitHub release"
+        description: Create the matching stable GitHub release
         required: true
         default: "true"
 
@@ -27,149 +19,131 @@ permissions:
   contents: write
   id-token: write
 
-# Serialize publish runs: main pushes resolve the next beta by querying npm,
-# and two concurrent runs could resolve the same unused version and race to
-# publish it (npm versions are immutable, so the loser fails). queue: max lets
-# any number of runs line up instead of GitHub's default of keeping only one
-# pending run; cancel-in-progress: false never kills a run mid-publish.
 concurrency:
-  group: smart-search-npm-publish
+  group: smart-search-stable-release
   cancel-in-progress: false
-  queue: max
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.inputs.target_ref || github.ref }}
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
+          ref: ${{ inputs.target_ref }}
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+          registry-url: https://registry.npmjs.org
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-
-      - name: Install npm package
-        run: npm ci
-
-      - name: Test package
-        run: npm test
-
-      - name: Detect stable release bump commit
-        id: stable-bump
-        if: github.event_name == 'push' && github.ref_type == 'branch'
-        shell: bash
+      - name: Install and run offline checks
         run: |
-          subject="$(git log -1 --pretty=%s)"
-          if [[ "$subject" =~ ^chore\(release\):[[:space:]]+bump[[:space:]]+version[[:space:]]+to[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Detected stable release bump commit; npm latest will be published by the matching v* tag."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Prepare npm release metadata
-        id: release
-        if: steps.stable-bump.outputs.skip != 'true'
-        shell: bash
+          npm ci
+          npm test
+          npm pack --dry-run
+          cd integrations/pi
+          npm ci
+          npm run typecheck
+          npm test
+          npm pack --dry-run
+      - name: Verify stable metadata
         env:
-          DISPATCH_VERSION: ${{ github.event.inputs.version }}
-          DISPATCH_NPM_TAG: ${{ github.event.inputs.npm_tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          base_version="$(node -p "require('./package.json').version")"
-          package_name="$(node -p "require('./package.json').name")"
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            version="${DISPATCH_VERSION}"
-            tag="${DISPATCH_NPM_TAG}"
-          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            version="${GITHUB_REF_NAME#v}"
-            if [[ "$version" == *-* ]]; then
-              tag="next"
+          test "$RELEASE_VERSION" = "1.0.0"
+          test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
+          test "$(node -p "require('./integrations/pi/package.json').version")" = "$RELEASE_VERSION"
+          test "$(node -p "require('./package.json').name")" = "@onedotmint/smart-search"
+          test "$(node -p "require('./integrations/pi/package.json').name")" = "@onedotmint/pi-smart-search"
+      - name: Check registry state for each exact version
+        id: registry-state
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          state_dir="$(mktemp -d)"
+          trap 'rm -rf "$state_dir"' EXIT
+
+          registry_state() {
+            package_name="$1"
+            error_file="$state_dir/error-${2}.log"
+            if value="$(npm_config_loglevel=error npm view "${package_name}@${RELEASE_VERSION}" version --json --fetch-retries=0 2>"$error_file")"; then
+              if node -e 'process.exit(JSON.parse(process.argv[1]) === process.argv[2] ? 0 : 1)' "$value" "$RELEASE_VERSION"; then
+                latest_error="$state_dir/latest-${2}.log"
+                if latest="$(npm_config_loglevel=error npm view "$package_name" dist-tags.latest --json --fetch-retries=0 2>"$latest_error")"; then
+                  if node -e 'process.exit(JSON.parse(process.argv[1]) === process.argv[2] ? 0 : 1)' "$latest" "$RELEASE_VERSION"; then
+                    printf 'present'
+                  else
+                    printf 'not_latest'
+                  fi
+                else
+                  printf 'unavailable'
+                fi
+              else
+                printf 'unavailable'
+              fi
+            elif grep -Eq 'E404|404 Not Found' "$error_file"; then
+              printf 'absent'
             else
-              tag="latest"
+              printf 'unavailable'
             fi
-          else
-            version="$(node npm/scripts/resolve-prerelease-version.js --package "$package_name" --base "$base_version" --id beta)"
-            tag="next"
-          fi
-          if [[ "$tag" == "latest" && "$version" == *-* ]]; then
-            echo "Refusing to publish prerelease version $version with npm dist-tag latest." >&2
+          }
+
+          root_state="$(registry_state '@onedotmint/smart-search' root)"
+          pi_state="$(registry_state '@onedotmint/pi-smart-search' pi)"
+          printf 'root_state=%s\n' "$root_state" >> "$GITHUB_OUTPUT"
+          printf 'pi_state=%s\n' "$pi_state" >> "$GITHUB_OUTPUT"
+          if test "$root_state" = unavailable || test "$pi_state" = unavailable || \
+             test "$root_state" = not_latest || test "$pi_state" = not_latest; then
+            echo "Could not verify one or more npm registry states, including latest dist-tags; refusing publication."
             exit 1
           fi
-          node npm/scripts/set-package-version.js "$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-      - name: Read package metadata
-        id: package
-        if: steps.stable-bump.outputs.skip != 'true'
-        shell: bash
-        run: |
-          echo "name=$(node -p "require('./package.json').name")" >> "$GITHUB_OUTPUT"
-          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
-
-      - name: Check whether this npm version already exists
-        id: npm-version
-        if: steps.stable-bump.outputs.skip != 'true'
-        shell: bash
-        run: |
-          if npm view "${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }}" version >/dev/null 2>&1; then
-            echo "published=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "published=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish to npm
-        if: steps.stable-bump.outputs.skip != 'true' && steps.npm-version.outputs.published != 'true'
+      - name: Publish root package when missing
+        if: steps.registry-state.outputs.root_state == 'absent'
         env:
-          # Granular access token for registry.npmjs.org; setup-node's
-          # registry-url writes the matching .npmrc auth line. Never echo it.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --provenance --tag "${{ steps.release.outputs.tag }}"
+        run: npm publish --provenance --access public --tag latest
+      - name: Publish Pi package when missing
+        if: steps.registry-state.outputs.pi_state == 'absent'
+        working-directory: integrations/pi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public --tag latest
+      - name: Verify both exact versions after publication
+        id: verify-published
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          state_dir="$(mktemp -d)"
+          trap 'rm -rf "$state_dir"' EXIT
 
-      - name: Skip existing npm version
-        if: steps.stable-bump.outputs.skip != 'true' && steps.npm-version.outputs.published == 'true'
-        run: echo "npm version ${{ steps.package.outputs.name }}@${{ steps.package.outputs.version }} already exists; skipping publish."
+          verify_exact_version() {
+            package_name="$1"
+            error_file="$state_dir/error-${2}.log"
+            if value="$(npm_config_loglevel=error npm view "${package_name}@${RELEASE_VERSION}" version --json --fetch-retries=0 2>"$error_file")"; then
+              node -e 'process.exit(JSON.parse(process.argv[1]) === process.argv[2] ? 0 : 1)' "$value" "$RELEASE_VERSION"
+              latest_error="$state_dir/latest-${2}.log"
+              latest="$(npm_config_loglevel=error npm view "$package_name" dist-tags.latest --json --fetch-retries=0 2>"$latest_error")"
+              node -e 'process.exit(JSON.parse(process.argv[1]) === process.argv[2] ? 0 : 1)' "$latest" "$RELEASE_VERSION"
+            else
+              return 1
+            fi
+          }
 
-      - name: Create or update GitHub release
-        if: steps.stable-bump.outputs.skip != 'true'
+          verify_exact_version '@onedotmint/smart-search' root
+          verify_exact_version '@onedotmint/pi-smart-search' pi
+          echo "verified=true" >> "$GITHUB_OUTPUT"
+      - name: Create stable GitHub release
+        if: inputs.create_github_release == 'true' && steps.verify-published.outputs.verified == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          CREATE_GITHUB_RELEASE: ${{ github.event.inputs.create_github_release }}
-        shell: bash
         run: |
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${CREATE_GITHUB_RELEASE}" == "false" ]]; then
-            echo "Skipping GitHub release because create_github_release=false."
-            exit 0
-          fi
-          version="${{ steps.release.outputs.version }}"
-          npm_tag="${{ steps.release.outputs.tag }}"
-          tag_name="v${version}"
-          target="$(git rev-parse HEAD)"
-          notes_footer="$(printf '\n\n---\n\nnpm package: `%s@%s`\nnpm dist-tag: `%s`\nworkflow run: %s/%s/actions/runs/%s\n' '${{ steps.package.outputs.name }}' "$version" "$npm_tag" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
-          notes_file=".github/releases/v${version}.md"
-          if [[ -f "$notes_file" ]]; then
-            notes="$(cat "$notes_file")${notes_footer}"
-          else
-            notes="$(printf 'Release notes for `%s@%s`.\n' '${{ steps.package.outputs.name }}' "$version")${notes_footer}"
-          fi
-          create_release_args=()
-          edit_release_args=()
-          if [[ "$version" == *-* ]]; then
-            create_release_args=(--prerelease --latest=false)
-            edit_release_args=(--prerelease)
-          fi
+          tag_name="v${{ inputs.version }}"
+          notes_file=".github/releases/${tag_name}.md"
           if gh release view "$tag_name" >/dev/null 2>&1; then
-            gh release edit "$tag_name" --title "$tag_name" --notes "$notes" "${edit_release_args[@]}"
+            gh release edit "$tag_name" --title "$tag_name" --notes-file "$notes_file"
           else
-            gh release create "$tag_name" --target "$target" --title "$tag_name" --notes "$notes" "${create_release_args[@]}"
+            gh release create "$tag_name" --target "${{ inputs.target_ref }}" --title "$tag_name" --notes-file "$notes_file"
           fi

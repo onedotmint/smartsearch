@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smart-search"
-version = "0.3.0"
-description = "CLI-first multi-source web research with xAI/OpenAI-compatible search, Exa, Context7, Zhipu, Tavily, Firecrawl, and Deep Research planning."
+version = "1.0.0"
+description = "Evidence-first multi-source web research CLI for AI agents and terminal users."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
