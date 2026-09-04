@@ -22,6 +22,23 @@ EXIT_PROVIDER = 4
 EXIT_INTERNAL = 5
 
 
+RETRIEVAL_PRESETS: dict[str, tuple[int, bool]] = {
+    "fast": (3, False),
+    "balanced": (5, True),
+    "research": (10, True),
+}
+
+
+def resolve_preset(mode: str) -> tuple[str, int, bool]:
+    """Return the normalized public search mode and its fixed policy."""
+    normalized = str(mode or "").strip().lower()
+    try:
+        max_results, rerank = RETRIEVAL_PRESETS[normalized]
+    except KeyError as exc:
+        raise ValueError("mode must be one of: fast, balanced, research") from exc
+    return normalized, max_results, rerank
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         raise ValueError(message)
@@ -190,18 +207,156 @@ def _status_for_research(run: ResearchRun) -> str:
     ):
         return "degraded"
     return "complete"
+
+
+class _SetupInputError(ValueError):
+    pass
+
+
+_SETUP_PROVIDERS = (("brave", "BRAVE_API_KEY"), ("exa", "EXA_API_KEY"), ("tavily", "TAVILY_API_KEY"))
+
+
+def _invoke_prompt(prompt_fn: Any, prompt: str) -> Any:
+    try:
+        return prompt_fn(prompt)
+    except TypeError:
+        return prompt_fn()
+
+
+def _parse_provider_selection(value: Any) -> list[str]:
+    if value is None:
+        raise _SetupInputError
+    providers = [item[0] for item in _SETUP_PROVIDERS]
+    selected: list[str] = []
+    for token in str(value).split(","):
+        token = token.strip().lower()
+        if not token:
+            continue
+        if token.isdigit() and 1 <= int(token) <= len(providers):
+            token = providers[int(token) - 1]
+        if token not in providers:
+            raise _SetupInputError
+        if token not in selected:
+            selected.append(token)
+    return selected
+
+
+def _setup_readiness(config_obj: Any, snapshot: Any) -> dict[str, Any]:
+    discovery: dict[str, Any] = {}
+    for provider, key in _SETUP_PROVIDERS:
+        source = "environment" if snapshot.environment_values.get(key) is not None else (
+            "config_file" if key in snapshot.file_values else "absent"
+        )
+        configured = bool(str(snapshot.values.get(key) or "").strip())
+        enabled = bool(getattr(config_obj, f"{provider}_enabled", True))
+        discovery[provider] = {
+            "source": source,
+            "configured": configured,
+            "enabled": enabled,
+            "ready": configured and enabled,
+        }
+    readers = {
+        "jina": {"configured": bool(config_obj.jina_reader_api_url), "ready": bool(config_obj.jina_reader_api_url)},
+        "exa": {"configured": bool(config_obj.exa_api_key), "ready": bool(config_obj.exa_api_key)},
+        "firecrawl": {"configured": bool(config_obj.firecrawl_api_key), "ready": bool(config_obj.firecrawl_api_key)},
+    }
+    return {"discovery": discovery, "readers": readers}
+
+
+def _setup_selection_prompt(readiness: dict[str, Any]) -> str:
+    lines = [
+        "Select discovery providers (1=Brave, 2=Exa, 3=Tavily; comma-separated, empty for none):",
+        "Current local readiness:",
+    ]
+    for index, (provider, _key) in enumerate(_SETUP_PROVIDERS, 1):
+        details = readiness["discovery"][provider]
+        status = ["configured" if details["configured"] else "not configured"]
+        if details["ready"]:
+            status.append("ready")
+        elif not details["enabled"]:
+            status.append("disabled")
+        lines.append(f"  {index}. {provider.title()} ({', '.join(status)})")
+    lines.append("Selection: ")
+    return "\n".join(lines)
+
+
+def run_setup(mode: str | None = None, *, input_fn: Any = None, secret_fn: Any = None, config_obj: Any = None) -> dict[str, Any]:
+    """Configure local discovery credentials without provider or network access."""
+    if mode is not None:
+        try:
+            selected_mode = resolve_preset(mode)[0]
+        except ValueError:
+            return _safe_envelope("setup", "failed", error=_error("INVALID_ARGUMENT", "setup input was cancelled or invalid"))
+    try:
+        from getpass import getpass
+        from .config import config as default_config
+
+        config_obj = config_obj or default_config
+        snapshot = config_obj.snapshot
+        selected_mode = config_obj.default_mode if mode is None else selected_mode
+        if input_fn is None:
+            def input_fn(prompt: str = "") -> str:
+                print(prompt, end="", file=sys.stderr)
+                return input()
+        secret_fn = secret_fn or getpass
+        readiness = _setup_readiness(config_obj, snapshot)
+        selected = _parse_provider_selection(_invoke_prompt(input_fn, _setup_selection_prompt(readiness)))
+        pending: dict[str, object] = {}
+        for provider, key in _SETUP_PROVIDERS:
+            if provider not in selected or snapshot.environment_values.get(key) is not None or str(snapshot.values.get(key) or "").strip():
+                continue
+            value = _invoke_prompt(secret_fn, f"{provider.title()} API key: ")
+            if value is None or not str(value).strip():
+                raise _SetupInputError
+            pending[key] = str(value).strip()
+        if snapshot.environment_values.get("SMART_SEARCH_DEFAULT_MODE") is None:
+            pending["SMART_SEARCH_DEFAULT_MODE"] = selected_mode
+        if pending:
+            config_obj.set_config_values(pending)
+        final_snapshot = config_obj.refresh()
+        readiness = _setup_readiness(config_obj, final_snapshot)
+        providers = [provider for provider, details in readiness["discovery"].items() if details["ready"]]
+        return _safe_envelope("setup", "complete", {
+            "mode": selected_mode,
+            "providers": providers,
+            "readiness": readiness,
+            "next_command": "smart-search search your-query",
+        })
+    except _SetupInputError:
+        return _safe_envelope("setup", "failed", error=_error("INVALID_ARGUMENT", "setup input was cancelled or invalid"))
+    except (EOFError, KeyboardInterrupt, OSError):
+        return _safe_envelope("setup", "failed", error=_error("INVALID_ARGUMENT", "setup input was cancelled or invalid"))
+    except ValueError:
+        return _safe_envelope("setup", "failed", error=_error("CONFIGURATION_ERROR", "local configuration is invalid"))
+
+
 async def run_search(
     query: str,
     *,
-    max_results: int = 5,
-    rerank: bool = True,
+    mode: str | None = None,
+    max_results: int | None = None,
+    rerank: bool | None = None,
     registry=None,
 ) -> dict[str, Any]:
     if not str(query or "").strip():
         return _safe_envelope("search", "failed", error=_error("INVALID_ARGUMENT", "query is required"))
-    if not isinstance(max_results, int) or isinstance(max_results, bool) or max_results < 1:
+    explicit_mode = mode is not None
+    try:
+        if mode is None and (max_results is not None or rerank is not None):
+            _selected_mode = "balanced"
+            policy_max = 5 if max_results is None else max_results
+            policy_rerank = True if rerank is None else rerank
+        else:
+            if mode is None:
+                from .config import config
+                mode = config.default_mode
+            _selected_mode, policy_max, policy_rerank = resolve_preset(mode)
+    except ValueError:
+        code = "INVALID_ARGUMENT" if explicit_mode else "CONFIGURATION_ERROR"
+        return _safe_envelope("search", "failed", error=_error(code, "invalid search mode configuration"))
+    if not isinstance(policy_max, int) or isinstance(policy_max, bool) or policy_max < 1:
         return _safe_envelope("search", "failed", error=_error("INVALID_ARGUMENT", "max_results must be positive"))
-    outcome = await core_search(query, RetrievalPolicy(max_results=max_results, rerank=rerank), registry=registry)
+    outcome = await core_search(query, RetrievalPolicy(max_results=policy_max, rerank=policy_rerank), registry=registry)
     status = _status_for_search(outcome)
     error = None
     if outcome.failed:
@@ -247,9 +402,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     search_parser = sub.add_parser("search", help="search for sources")
     search_parser.add_argument("query")
-    search_parser.add_argument("--max-results", type=int, default=5)
-    search_parser.add_argument("--no-rerank", action="store_true")
+    search_parser.add_argument("--mode", choices=tuple(RETRIEVAL_PRESETS))
     search_parser.add_argument("--format", choices=("json",), default="json", help=argparse.SUPPRESS)
+
+    setup_parser = sub.add_parser("setup", help="configure local discovery credentials")
+    setup_parser.add_argument("--mode", choices=tuple(RETRIEVAL_PRESETS))
+    setup_parser.add_argument("--format", choices=("json",), default="json", help=argparse.SUPPRESS)
 
     read_parser = sub.add_parser("read", help="read a URL")
     read_parser.add_argument("url")
@@ -262,14 +420,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-HELP_ALL = """smart-search v1 commands:\n  search QUERY\n  read URL\n  research QUERY\n\nAll commands emit one version-1 JSON envelope.\n"""
+HELP_ALL = """smart-search v1 commands:\n  setup [--mode fast|balanced|research]\n  search QUERY [--mode fast|balanced|research]\n  read URL\n  research QUERY\n\nAll commands emit one version-1 JSON envelope.\n"""
 
 
 def _requested_operation(argv: list[str]) -> str:
     for token in argv:
         if token == "--":
             break
-        if token in {"search", "read", "research"}:
+        if token in {"setup", "search", "read", "research"}:
             return token
     return "unknown"
 
@@ -314,11 +472,13 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_INVALID_ARGUMENT
 
     try:
-        if args.operation == "search":
-            payload = asyncio.run(run_search(args.query, max_results=args.max_results, rerank=not args.no_rerank))
+        if args.operation == "setup":
+            payload = run_setup(args.mode)
+        elif args.operation == "search":
+            payload = asyncio.run(run_search(args.query, mode=args.mode))
         elif args.operation == "read":
             payload = asyncio.run(run_read(args.url, max_chars=args.max_chars))
-        else:
+        elif args.operation == "research":
             payload = asyncio.run(run_research(args.query))
     except Exception:
         payload = _envelope(args.operation, "failed", error=_error("INTERNAL_ERROR", "operation failed"))
@@ -330,4 +490,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["EXIT_OK", "build_parser", "main", "run_read", "run_research", "run_search", "serialize"]
+__all__ = ["EXIT_OK", "RETRIEVAL_PRESETS", "build_parser", "main", "resolve_preset", "run_read", "run_research", "run_search", "run_setup", "serialize"]

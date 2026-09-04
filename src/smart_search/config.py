@@ -48,6 +48,7 @@ class Config:
     _DEFAULT_FALLBACK_MODE = "auto"
     _DEFAULT_MINIMUM_PROFILE = "standard"
     _DEFAULT_INTENT_ROUTER_MODE = "hybrid"
+    _DEFAULT_RETRIEVAL_MODE = "balanced"
     _DEFAULT_INTENT_ROUTER_TIMEOUT_SECONDS = "8"
     _DEFAULT_INTENT_EMBEDDING_THRESHOLD = "0.74"
     _DEFAULT_INTENT_EMBEDDING_MARGIN = "0.05"
@@ -65,6 +66,7 @@ class Config:
     _ALLOWED_FALLBACK_MODES = {"auto", "off"}
     _ALLOWED_MINIMUM_PROFILES = {"lite", "standard", "full", "off"}
     _ALLOWED_INTENT_ROUTER_MODES = {"hybrid", "rules", "off"}
+    _ALLOWED_RETRIEVAL_MODES = {"fast", "balanced", "research"}
     _MODEL_ROUTE_PROVIDER_ALIASES = {
         "xai": "xai-responses",
         "xai-responses": "xai-responses",
@@ -91,6 +93,7 @@ class Config:
         "SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS",
         "SMART_SEARCH_RESEARCH_DISABLED_PROVIDERS",
         "SMART_SEARCH_INTENT_ROUTER",
+        "SMART_SEARCH_DEFAULT_MODE",
         "SMART_SEARCH_PROMPT_DIR",
         "SMART_SEARCH_SEARCH_PROMPT_FILE",
         "SMART_SEARCH_FETCH_PROMPT_FILE",
@@ -842,6 +845,40 @@ class Config:
                 "Inspect and repair the file, then retry."
             )
 
+    def set_config_values(self, values: Mapping[str, object]) -> None:
+        """Atomically persist several local settings while preserving other keys."""
+        if not isinstance(values, Mapping):
+            raise ValueError("config values must be an object")
+        normalized_values = {str(key).strip().upper(): value for key, value in values.items()}
+        unknown = next((key for key in normalized_values if key not in self._CONFIG_KEYS), None)
+        if unknown:
+            raise ValueError(f"Unsupported config key: {unknown}")
+        snapshot = self._get_config_snapshot()
+        for key in normalized_values:
+            self._reject_env_owned_key(key, snapshot)
+        self._reject_malformed_write()
+        config_data = dict(snapshot.file_values)
+        for key, value in normalized_values.items():
+            if key == "SMART_SEARCH_DEFAULT_MODE":
+                mode = str(value or "").strip().lower()
+                if mode not in self._ALLOWED_RETRIEVAL_MODES:
+                    allowed = ", ".join(sorted(self._ALLOWED_RETRIEVAL_MODES))
+                    raise ValueError(f"Invalid SMART_SEARCH_DEFAULT_MODE: {mode}. Supported values: {allowed}")
+                value = mode
+            elif key == self._MODEL_ROUTES_KEY:
+                value = self._parse_model_routes_value(value)
+            config_data[key] = value
+        self._save_config_file(config_data)
+        if normalized_values.keys() & {
+            "XAI_API_URL", "XAI_API_KEY", "XAI_MODEL", "XAI_TOOLS",
+            "OPENAI_COMPATIBLE_API_URL", "OPENAI_COMPATIBLE_API_KEY",
+            "OPENAI_COMPATIBLE_MODEL", "OPENAI_COMPATIBLE_FALLBACK_MODELS",
+            "OPENAI_COMPATIBLE_STREAM", self._MODEL_ROUTES_KEY,
+            "SMART_SEARCH_VALIDATION_LEVEL", "SMART_SEARCH_FALLBACK_MODE",
+            "SMART_SEARCH_MINIMUM_PROFILE", "SMART_SEARCH_INTENT_ROUTER",
+        }:
+            self._cached_model = None
+
     def set_config_value(self, key: str, value: object) -> None:
         key = key.strip().upper()
         if key not in self._CONFIG_KEYS:
@@ -850,6 +887,12 @@ class Config:
         self._reject_env_owned_key(key, snapshot)
         self._reject_malformed_write()
         config_data = dict(snapshot.file_values)
+        if key == "SMART_SEARCH_DEFAULT_MODE":
+            mode = str(value or "").strip().lower()
+            if mode not in self._ALLOWED_RETRIEVAL_MODES:
+                allowed = ", ".join(sorted(self._ALLOWED_RETRIEVAL_MODES))
+                raise ValueError(f"Invalid SMART_SEARCH_DEFAULT_MODE: {mode}. Supported values: {allowed}")
+            value = mode
         config_data[key] = self._parse_model_routes_value(value) if key == self._MODEL_ROUTES_KEY else value
         self._save_config_file(config_data)
         if key in {
@@ -1101,6 +1144,19 @@ class Config:
             self._DEFAULT_MINIMUM_PROFILE,
             self._ALLOWED_MINIMUM_PROFILES,
         )
+
+    @property
+    def default_mode(self) -> str:
+        return self._validated_enum(
+            "SMART_SEARCH_DEFAULT_MODE",
+            self._DEFAULT_RETRIEVAL_MODE,
+            self._ALLOWED_RETRIEVAL_MODES,
+        )
+
+    @property
+    def default_retrieval_mode(self) -> str:
+        """Explicit alias for callers selecting the stored search mode."""
+        return self.default_mode
 
     @property
     def prompt_dir(self) -> str:
@@ -1531,6 +1587,11 @@ class Config:
         else:
             config_status = f"config_error: {self._SETUP_COMMAND}"
 
+        default_mode, default_mode_error = self._enum_info(
+            "SMART_SEARCH_DEFAULT_MODE",
+            self._DEFAULT_RETRIEVAL_MODE,
+            self._ALLOWED_RETRIEVAL_MODES,
+        )
         validation_level, validation_error = self._enum_info(
             "SMART_SEARCH_VALIDATION_LEVEL",
             self._DEFAULT_VALIDATION_LEVEL,
@@ -1590,6 +1651,7 @@ class Config:
             error
             for error in (
                 validation_error,
+                default_mode_error,
                 fallback_error,
                 minimum_error,
                 intent_router_error,
@@ -1643,6 +1705,7 @@ class Config:
             "OPENAI_COMPATIBLE_STREAM": self.openai_compatible_stream,
             "SMART_SEARCH_MODEL_ROUTES": self.get_model_routes(masked=True) if not model_routes_error else "<invalid SMART_SEARCH_MODEL_ROUTES>",
             "SMART_SEARCH_VALIDATION_LEVEL": validation_level,
+            "SMART_SEARCH_DEFAULT_MODE": default_mode,
             "SMART_SEARCH_FALLBACK_MODE": fallback_mode,
             "SMART_SEARCH_MINIMUM_PROFILE": minimum_profile,
             "SMART_SEARCH_PROMPT_DIR": self.prompt_dir,
