@@ -15,7 +15,7 @@ import httpx
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_random_exponential
 
 from .base import BaseSearchProvider, ProviderResult, classify_provider_exception
-from ..core.models import Candidate
+from ..core.normalizers import normalize_brave as to_discovery_candidates
 from ..config import config
 from ..logger import log_info
 from ..runtime_cache import (
@@ -54,42 +54,6 @@ def _normalize_result(item: dict[str, Any]) -> dict[str, Any]:
     if item.get("page_age"):
         out["page_age"] = item["page_age"]
     return out
-
-
-def to_discovery_candidates(payload: Any) -> list[Candidate]:
-    """Map a Brave result payload to ``DiscoveryCandidate`` values.
-
-    Accepts the normalized ``call_brave_search`` payload (``{ok, results,
-    ...}``) or a plain results list. ``provider_rank`` is the item index;
-    native fields (``age``, ``language``, ``family_friendly``, ``page_age``)
-    are kept in ``metadata`` for diagnostics only and never become a shared
-    ranking signal. ``DiscoveryCandidate`` is imported lazily to avoid an
-    import cycle with the retrieval core.
-    """
-    results = payload.get("results") if isinstance(payload, dict) else payload
-    candidates: list[Candidate] = []
-    for index, item in enumerate(results or []):
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("url") or "").strip()
-        title = str(item.get("title") or "").strip()
-        if not url or not title:
-            continue
-        metadata: dict[str, Any] = {}
-        for key in ("age", "language", "family_friendly", "page_age"):
-            if item.get(key) is not None:
-                metadata[key] = item[key]
-        candidates.append(
-                Candidate(
-                url=url,
-                title=title,
-                provider="brave",
-                snippet=str(item.get("description") or "").strip(),
-                provider_rank=index,
-                metadata=metadata,
-            )
-        )
-    return candidates
 
 
 class BraveSearchProvider(BaseSearchProvider):

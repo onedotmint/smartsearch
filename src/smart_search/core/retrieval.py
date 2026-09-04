@@ -5,9 +5,10 @@ import asyncio
 import inspect
 import math
 from dataclasses import dataclass, replace
-from typing import Any, Mapping, TYPE_CHECKING
+from typing import Any, Mapping, Sequence, TYPE_CHECKING
 
 from .models import Candidate, RankedCandidate, RetrievalPolicy
+from .normalizers import normalize_brave, normalize_exa, normalize_tavily
 from .ranking import deduplicate_candidates, reciprocal_rank_fusion
 from ..security import safe_provider_message
 
@@ -102,28 +103,9 @@ def _results(value: Any) -> list[Any]:
     return list(payload)
 
 
-def _normalizer(provider_id: str, provider: Any = None):
-    if provider is not None:
-        normalizer = getattr(provider, "normalizer", None) or getattr(provider, "normalize", None)
-        if callable(normalizer):
-            return normalizer
-    try:
-        if provider_id == "brave":
-            from ..providers.brave import to_discovery_candidates
-        elif provider_id == "exa":
-            from ..providers.exa import to_discovery_candidates
-        elif provider_id == "tavily":
-            from ..providers.tavily import to_discovery_candidates
-        else:
-            return lambda value: []
-        return to_discovery_candidates
-    except ModuleNotFoundError:
-        return _generic_normalizer(provider_id)
-
-
 def _generic_normalizer(provider_id: str):
     def normalize(value: Any) -> list[Candidate]:
-        result = []
+        result: list[Candidate] = []
         for index, item in enumerate(value or []):
             if isinstance(item, Candidate):
                 result.append(item)
@@ -134,12 +116,48 @@ def _generic_normalizer(provider_id: str):
             title = str(item.get("title") or "").strip()
             if url and title:
                 score = item.get("score")
-                metadata = {"native_score": score} if isinstance(score, (int, float)) and not isinstance(score, bool) else {}
-                result.append(Candidate(url, title, provider_id,
-                                        str(item.get("content") or item.get("description") or "").strip(),
-                                        str(item.get("publishedDate") or ""), index, metadata))
+                metadata = (
+                    {"native_score": score}
+                    if isinstance(score, (int, float)) and not isinstance(score, bool)
+                    else {}
+                )
+                result.append(
+                    Candidate(
+                        url,
+                        title,
+                        provider_id,
+                        str(item.get("content") or item.get("description") or "").strip(),
+                        str(item.get("publishedDate") or ""),
+                        index,
+                        metadata,
+                    )
+                )
         return result
+
     return normalize
+
+
+def _normalizer(provider_id: str, provider: Any = None):
+    if provider is not None:
+        normalizer = getattr(provider, "normalizer", None) or getattr(provider, "normalize", None)
+        if callable(normalizer):
+            return normalizer
+    builtins = {
+        "brave": normalize_brave,
+        "exa": normalize_exa,
+        "tavily": normalize_tavily,
+    }
+    return builtins.get(provider_id) or _generic_normalizer(provider_id)
+
+
+def normalize_provider_results(
+    provider_id: str, raw_results: Sequence[Any], *, provider: Any | None = None
+) -> list[Candidate]:
+    """Normalize one provider's raw, ordered results into core candidates."""
+    normalized = _normalizer(provider_id, provider)(raw_results)
+    if not isinstance(normalized, (list, tuple)) or not all(isinstance(item, Candidate) for item in normalized):
+        raise ValueError("provider normalizer must return candidates")
+    return list(normalized)
 
 
 async def search(
@@ -180,9 +198,7 @@ async def search(
             if not ok:
                 attempts.append(ProviderAttempt(provider_id, "search", "failed", error_type or "provider_error", safe_provider_message(error_type), elapsed_ms=elapsed))
                 continue
-            normalized = _normalizer(provider_id, provider)(raw)
-            if not isinstance(normalized, (list, tuple)) or not all(isinstance(item, Candidate) for item in normalized):
-                raise ValueError("provider normalizer must return candidates")
+            normalized = normalize_provider_results(provider_id, raw, provider=provider)
             candidates.extend(normalized)
             attempts.append(ProviderAttempt(provider_id, "search", "complete", result_count=len(normalized), elapsed_ms=elapsed))
         except Exception as exc:
@@ -221,4 +237,4 @@ async def search(
 
 retrieve = search
 
-__all__ = ["RetrievalOutcome", "search", "retrieve"]
+__all__ = ["RetrievalOutcome", "normalize_provider_results", "search", "retrieve"]

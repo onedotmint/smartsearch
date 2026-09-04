@@ -119,3 +119,31 @@ npm test
 ```
 
 Describe behavior changes, affected docs, deterministic verification, and any live-provider limitation. Do not include API keys or local configuration files.
+
+## Offline retrieval replay
+
+Maintainers can replay sanitized, manually captured provider search results without
+credentials or network access:
+
+```sh
+python benchmarks/retrieval_replay.py \
+  --fixtures benchmarks/fixtures/retrieval_replay --format markdown --top-k 5
+```
+
+Each JSON fixture is one query and stores the ordered raw `results` list at the
+provider normalizer-input boundary. v1 accepts Brave, Exa, and Tavily entries;
+fixtures also record `fixture_id`, `captured_at`, `capture_mode`, `query`, and
+`intent`. Keep committed fixtures manually sanitized: never include API keys,
+authorization headers, cookies, signed URLs, private query text, or
+provider/account identifiers. Replay validation rejects a small set of known
+secret field names (including client-secret/token variants) and credential-like
+URL userinfo, query, or fragment forms; it is not a complete secret scanner.
+Review fixture literals manually before committing. The replay reports per-provider
+raw/normalized/invalid counts, deduplication, canonical URLs, complete pre-rerank RRF ordering, top-k results, and
+provider contributions in JSON or Markdown.
+
+Replay output is historical regression evidence from the capture date, not a
+measurement of current provider quality. Automated recording, live probes, and
+Jina rerank replay are intentionally deferred. This is repository-only maintainer
+tooling; it does not add a public CLI command or run in CI. The existing
+`benchmarks/retrieval_benchmark.py` remains the explicitly manual live benchmark.

@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "fixture_id": "brave-exa-shared-url",
+  "captured_at": "2026-08-17T00:00:00Z",
+  "capture_mode": "manual-sanitized",
+  "query": "example retrieval query",
+  "intent": "general",
+  "providers": [
+    {
+      "provider": "brave",
+      "results": [
+        {
+          "title": "Shared example page",
+          "url": "https://example.test/shared?utm_source=brave",
+          "description": "A shared result from the Brave fixture.",
+          "age": "2d"
+        },
+        {
+          "title": "Alpha example page",
+          "url": "https://example.test/alpha",
+          "description": "The first deterministic tie candidate."
+        },
+        {
+          "title": "Missing URL is ignored",
+          "description": "This deliberately represents an invalid raw result."
+        }
+      ]
+    },
+    {
+      "provider": "exa",
+      "results": [
+        {
+          "id": "exa-shared-example",
+          "title": "Shared example page from Exa",
+          "url": "https://example.test/shared",
+          "highlights": ["The shared Exa highlight."],
+          "score": 0.87
+        },
+        {
+          "id": "exa-beta-example",
+          "title": "Beta example page",
+          "url": "https://example.test/beta",
+          "highlights": ["The second deterministic tie candidate."],
+          "score": 0.71
+        }
+      ]
+    }
+  ]
+}

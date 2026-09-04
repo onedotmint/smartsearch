@@ -5,7 +5,8 @@ import asyncio
 import json
 
 from smart_search.core.models import Candidate, Evidence, RetrievalPolicy
-from smart_search.core.retrieval import search
+from smart_search.core.normalizers import normalize_brave, normalize_exa, normalize_tavily
+from smart_search.core.retrieval import normalize_provider_results, search
 from smart_search.evidence.fetch import FetchOutcome, read
 from smart_search.providers.registry import Registry
 from smart_search.research.runner import run
@@ -34,6 +35,35 @@ class ReaderStub:
         if isinstance(self.result, BaseException):
             raise self.result
         return self.result
+
+
+def test_normalize_provider_results_is_the_shared_raw_boundary():
+    class CustomProvider:
+        normalizer = staticmethod(lambda rows: [Candidate(row["url"], row["title"], "custom") for row in rows])
+
+    normalized = normalize_provider_results(
+        "custom", [{"url": "https://example.com", "title": "Example"}], provider=CustomProvider()
+    )
+    assert normalized == [Candidate("https://example.com", "Example", "custom")]
+
+
+def test_provider_adapters_reexport_core_normalizers():
+    assert brave_normalize is normalize_brave
+    assert exa_normalize is normalize_exa
+    assert tavily_normalize is normalize_tavily
+
+
+def test_search_keeps_unknown_provider_results_with_generic_normalizer():
+    provider = SearchStub("custom", [
+        Candidate("https://example.com/candidate", "Candidate result", "custom"),
+        {"id": "https://example.com/raw", "title": "Raw result", "description": "snippet"},
+    ])
+    outcome = asyncio.run(search("query", RetrievalPolicy(providers=("custom",), rerank=False), registry=Registry(search=[provider])))
+
+    assert {item.candidate.url for item in outcome.ranked} == {
+        "https://example.com/candidate", "https://example.com/raw",
+    }
+    assert outcome.attempts[0].status == "complete"
 
 
 def test_normalizers_accept_raw_results_lists():

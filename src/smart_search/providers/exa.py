@@ -6,7 +6,7 @@ import httpx
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_random_exponential
 
 from .base import BaseSearchProvider, ProviderResult, classify_provider_exception
-from ..core.models import Candidate
+from ..core.normalizers import normalize_exa as to_discovery_candidates
 from ..config import config
 from ..logger import log_info
 from ..runtime_cache import (
@@ -53,52 +53,6 @@ def _normalize_result(item: dict[str, Any], *, include_text: bool, include_highl
 def _error_payload(exc: Exception) -> dict[str, Any]:
     error_type, error, _retryable = classify_provider_exception(exc)
     return {"error_type": error_type, "error": error}
-
-
-def to_discovery_candidates(payload: Any) -> list[Candidate]:
-    """Map an Exa result payload to ``DiscoveryCandidate`` values (v0.3.0).
-
-    Accepts the normalized ``exa_search`` payload (``{ok, results, ...}`` with
-    ``_normalize_result`` items) or a plain results list. ``provider_rank`` is
-    the item index; native fields (``score``, ``author``, ``id``) are kept in
-    ``metadata`` for diagnostics only and never become a shared ranking
-    signal. ``DiscoveryCandidate`` is imported lazily to avoid an import
-    cycle with the retrieval core.
-    """
-    results = payload.get("results") if isinstance(payload, dict) else payload
-    candidates: list[Candidate] = []
-    for index, item in enumerate(results or []):
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("url") or item.get("id") or "").strip()
-        title = str(item.get("title") or "").strip()
-        if not url or not title:
-            continue
-        metadata: dict[str, Any] = {}
-        score = item.get("score")
-        if isinstance(score, (int, float)) and not isinstance(score, bool):
-            metadata["exa_score"] = float(score)
-        if item.get("author"):
-            metadata["author"] = str(item["author"])
-        if item.get("id"):
-            metadata["id"] = str(item["id"])
-        snippet = ""
-        if isinstance(item.get("text"), str):
-            snippet = item["text"]
-        elif isinstance(item.get("highlights"), list):
-            snippet = " ".join(str(part) for part in item["highlights"])
-        candidates.append(
-                Candidate(
-                url=url,
-                title=title,
-                provider="exa",
-                snippet=snippet.strip(),
-                published_at=str(item.get("publishedDate") or ""),
-                provider_rank=index,
-                metadata=metadata,
-            )
-        )
-    return candidates
 
 
 class ExaSearchProvider(BaseSearchProvider):
