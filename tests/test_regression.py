@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -8,6 +9,62 @@ from fixtures.v1_cli_inventory import CANONICAL_TOP_LEVEL_COMMANDS, inventory_fr
 ROOT = Path(__file__).resolve().parent.parent
 PUBLIC_SKILL = ROOT / "skills/smart-search-cli/SKILL.md"
 PACKAGED_SKILL = ROOT / "src/smart_search/assets/skills/smart-search-cli/SKILL.md"
+
+_WINDOWS_HELP_ENV_KEYS = ("SystemRoot", "WINDIR", "ComSpec", "TEMP", "TMP", "PATHEXT")
+_HERMETIC_WINDOWS_HOME = ROOT / ".test-home"
+
+
+def _root_help_env(*, platform=sys.platform, environ=None):
+    """Build the isolated environment used by the root-help subprocess."""
+    if environ is None:
+        environ = os.environ
+    env = {"PYTHONPATH": str(ROOT / "src")}
+    if platform == "win32":
+        # A stripped Windows environment can make importing asyncio fail in
+        # ``_overlapped`` before the CLI starts. Carry only the known startup
+        # variables and the host PATH; never copy provider/application values.
+        env.update({key: environ[key] for key in _WINDOWS_HELP_ENV_KEYS if key in environ})
+        env["PATH"] = environ.get("PATH", "")
+        env["USERPROFILE"] = str(_HERMETIC_WINDOWS_HOME)
+    return env
+
+
+def test_root_help_env_is_unchanged_and_isolated_on_posix():
+    env = _root_help_env(
+        platform="linux",
+        environ={
+            "PATH": "/suspicious/host/path",
+            "PYTHONPATH": "/suspicious/source",
+            "BRAVE_API_KEY": "provider-secret",
+            "PYTHONHOME": "/suspicious/python",
+        },
+    )
+    assert env == {"PYTHONPATH": str(ROOT / "src")}
+
+
+def test_root_help_env_keeps_only_minimal_windows_startup_values():
+    host_env = {
+        "SystemRoot": r"C:\Windows",
+        "WINDIR": r"C:\Windows",
+        "ComSpec": r"C:\Windows\System32\cmd.exe",
+        "TEMP": r"C:\Users\runner\AppData\Local\Temp",
+        "TMP": r"C:\Users\runner\AppData\Local\Temp",
+        "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+        "PATH": r"C:\Windows\System32;C:\Windows",
+        "USERPROFILE": r"C:\Users\runner",
+        "PYTHONPATH": r"C:\suspicious\source",
+        "BRAVE_API_KEY": "provider-secret",
+    }
+    env = _root_help_env(platform="win32", environ=host_env)
+
+    assert env == {
+        "PYTHONPATH": str(ROOT / "src"),
+        **{key: host_env[key] for key in _WINDOWS_HELP_ENV_KEYS},
+        "PATH": host_env["PATH"],
+        "USERPROFILE": str(_HERMETIC_WINDOWS_HOME),
+    }
+    assert "BRAVE_API_KEY" not in env
+    assert env["USERPROFILE"] != host_env["USERPROFILE"]
 
 
 def test_public_and_packaged_skill_are_v1_and_identical():
@@ -43,7 +100,7 @@ def test_root_help_is_exactly_the_four_v1_commands():
     output = subprocess.check_output(
         [sys.executable, "-m", "smart_search.cli", "--help"],
         cwd=ROOT,
-        env={"PYTHONPATH": str(ROOT / "src")},
+        env=_root_help_env(),
         text=True,
     )
     commands = output.split("positional arguments:", 1)[1]
