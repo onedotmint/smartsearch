@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -13,12 +14,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _read_json(path: Path):
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _npm_pack_files(directory: Path) -> set[str]:
+    npm = "npm.cmd" if os.name == "nt" else "npm"
     result = subprocess.run(
-        ["npm", "pack", "--dry-run", "--json"],
+        [npm, "pack", "--dry-run", "--json"],
         cwd=directory,
         check=True,
         capture_output=True,
@@ -30,9 +32,22 @@ def _npm_pack_files(directory: Path) -> set[str]:
     return {entry["path"] for entry in metadata["files"]}
 
 
+def test_npm_pack_uses_windows_executable(monkeypatch):
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout='[{"files": []}]', stderr="")
+
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    _npm_pack_files(ROOT)
+    assert commands == [["npm.cmd", "pack", "--dry-run", "--json"]]
+
+
 def test_v1_cli_emits_exact_single_envelope_without_provider_access():
     result = subprocess.run(
-        ["python3", "-m", "smart_search.cli", "read", "not-a-url", "--format", "json"],
+        [sys.executable, "-m", "smart_search.cli", "read", "not-a-url", "--format", "json"],
         cwd=ROOT,
         check=False,
         capture_output=True,
@@ -49,7 +64,7 @@ def test_v1_cli_emits_exact_single_envelope_without_provider_access():
     assert isinstance(payload["error"], dict)
     for operation, arguments in (("setup", ["setup", "--unknown"]), ("search", ["search"]), ("read", ["read"]), ("research", ["research"])):
         invalid = subprocess.run(
-            ["python3", "-m", "smart_search.cli", *arguments],
+            [sys.executable, "-m", "smart_search.cli", *arguments],
             cwd=ROOT,
             check=False,
             capture_output=True,
@@ -81,7 +96,7 @@ def test_current_public_docs_do_not_advertise_retired_command_invocations():
     )
     violations = {}
     for path in paths:
-        for line_number, line in enumerate(path.read_text().splitlines(), 1):
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if retired_invocation.search(line) and not re.search(r"\b(no|not|removed|retired|without)\b", line, re.I):
                 violations[f"{path.relative_to(ROOT)}:{line_number}"] = line.strip()
     assert not violations, violations
@@ -92,7 +107,7 @@ def test_public_markdown_relative_links_resolve():
     link_pattern = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
     broken = []
     for path in markdown_files:
-        for target in link_pattern.findall(path.read_text()):
+        for target in link_pattern.findall(path.read_text(encoding="utf-8")):
             if target.startswith(("http://", "https://", "mailto:", "#")):
                 continue
             target_path = (path.parent / target.split("#", 1)[0]).resolve()
@@ -103,7 +118,7 @@ def test_public_markdown_relative_links_resolve():
 
 def test_readmes_have_valid_v1_entrypoints_and_links():
     for name in ("README.md", "README.zh-CN.md"):
-        text = (ROOT / name).read_text()
+        text = (ROOT / name).read_text(encoding="utf-8")
         assert "docs/migration.md" in text
         assert "docs/getting-started.md" in text
         assert "smart-search search" in text
@@ -112,7 +127,7 @@ def test_readmes_have_valid_v1_entrypoints_and_links():
 
 
 def test_migration_explicitly_covers_retired_namespaces_and_replacements():
-    migration = (ROOT / "docs/migration.md").read_text()
+    migration = (ROOT / "docs/migration.md").read_text(encoding="utf-8")
     required_rows = {
         "`map`": "no replacement",
         "`capabilities`": "setup",
@@ -132,7 +147,7 @@ def test_migration_explicitly_covers_retired_namespaces_and_replacements():
 
 def test_root_help_is_exactly_the_four_v1_commands():
     output = subprocess.check_output(
-        ["python3", "-m", "smart_search.cli", "--help"],
+        [sys.executable, "-m", "smart_search.cli", "--help"],
         cwd=ROOT,
         env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
         text=True,
@@ -147,7 +162,7 @@ def test_both_manifests_and_locks_are_synchronized_for_v1():
     root_lock = _read_json(ROOT / "package-lock.json")
     pi = _read_json(ROOT / "integrations/pi/package.json")
     pi_lock = _read_json(ROOT / "integrations/pi/package-lock.json")
-    pyproject = (ROOT / "pyproject.toml").read_text()
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert root["name"] == root_lock["name"] == "@onedotmint/smart-search"
     assert pi["name"] == pi_lock["name"] == "@onedotmint/pi-smart-search"
     assert root["version"] == root_lock["version"] == root_lock["packages"][""]["version"] == "1.0.0"
@@ -201,14 +216,14 @@ def test_pi_package_whitelist_and_exact_native_tool_contents():
         "src/cli.ts",
         "src/result.ts",
     }
-    extension = (ROOT / "integrations/pi/extensions/index.ts").read_text()
+    extension = (ROOT / "integrations/pi/extensions/index.ts").read_text(encoding="utf-8")
     assert extension.count('name: "web_') == 3
     assert all(tool in extension for tool in ("web_search", "web_read", "web_research"))
 
 
 def test_v1_release_notes_and_workflow_guard_both_packages():
-    notes = (ROOT / ".github/releases/v1.0.0.md").read_text()
-    workflow = (ROOT / ".github/workflows/publish-npm.yml").read_text()
+    notes = (ROOT / ".github/releases/v1.0.0.md").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github/workflows/publish-npm.yml").read_text(encoding="utf-8")
     assert "# v1.0.0" in notes
     assert "breaking release" in notes
     assert "no live" in notes.lower()
@@ -266,7 +281,7 @@ def test_v1_release_notes_and_workflow_guard_both_packages():
 
 
 def test_release_workflow_auto_binds_to_github_sha_and_never_falls_back_to_mutable_refs():
-    workflow = (ROOT / ".github/workflows/publish-npm.yml").read_text()
+    workflow = (ROOT / ".github/workflows/publish-npm.yml").read_text(encoding="utf-8")
     # Automatic runs must bind checkout, tags, and releases to github.sha.
     assert "PUSH_SHA: ${{ github.sha }}" in workflow
     assert "PUSH_BEFORE: ${{ github.event.before }}" in workflow
@@ -281,7 +296,7 @@ def test_release_workflow_auto_binds_to_github_sha_and_never_falls_back_to_mutab
 
 
 def test_release_workflow_gate_rejects_inconsistent_metadata_and_missing_notes():
-    workflow = (ROOT / ".github/workflows/publish-npm.yml").read_text()
+    workflow = (ROOT / ".github/workflows/publish-npm.yml").read_text(encoding="utf-8")
     # The gate compares both manifest versions against their parent commit.
     for marker in (
         "git show \"$base:package.json\"",
@@ -303,7 +318,7 @@ def test_release_workflow_gate_rejects_inconsistent_metadata_and_missing_notes()
 
 
 def test_npm_deterministic_probe_clears_tavily_environment():
-    script = (ROOT / "npm/scripts/test.js").read_text()
+    script = (ROOT / "npm/scripts/test.js").read_text(encoding="utf-8")
     for key in ("TAVILY_API_KEY", "TAVILY_API_URL", "TAVILY_ENABLED", "TAVILY_TIMEOUT_SECONDS"):
         assert f"  {key}:" in script
     assert 'TAVILY_API_KEY: ""' in script
