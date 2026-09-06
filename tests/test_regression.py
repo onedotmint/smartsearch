@@ -112,7 +112,11 @@ def test_root_help_is_exactly_the_four_v1_commands():
 def test_package_metadata_and_release_workflow_are_stable():
     root = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
     pi = json.loads((ROOT / "integrations/pi/package.json").read_text(encoding="utf-8"))
-    assert root["version"] == pi["version"] == "1.0.0"
+    expected_version = root["version"]
+    assert root["version"] == pi["version"] == expected_version
+    release_note = (ROOT / f".github/releases/v{expected_version}.md").read_text(encoding="utf-8")
+    heading, separator, body = release_note.partition("\n")
+    assert separator and heading.startswith(f"# v{expected_version} ") and body.strip()
     workflow = (ROOT / ".github/workflows/publish-npm.yml").read_text(encoding="utf-8")
     assert "workflow_dispatch" in workflow
     assert "--tag latest" in workflow

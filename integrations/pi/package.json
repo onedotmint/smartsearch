@@ -1,6 +1,6 @@
 {
   "name": "@onedotmint/pi-smart-search",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Pi tools for the Smart Search v1 CLI",
   "license": "MIT",
   "type": "module",

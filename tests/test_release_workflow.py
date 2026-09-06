@@ -159,18 +159,18 @@ def test_root_help_is_exactly_the_four_v1_commands():
 
 def test_both_manifests_and_locks_are_synchronized_for_v1():
     root = _read_json(ROOT / "package.json")
+    expected_version = root["version"]
     root_lock = _read_json(ROOT / "package-lock.json")
     pi = _read_json(ROOT / "integrations/pi/package.json")
     pi_lock = _read_json(ROOT / "integrations/pi/package-lock.json")
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert root["name"] == root_lock["name"] == "@onedotmint/smart-search"
     assert pi["name"] == pi_lock["name"] == "@onedotmint/pi-smart-search"
-    assert root["version"] == root_lock["version"] == root_lock["packages"][""]["version"] == "1.0.0"
-    assert pi["version"] == pi_lock["version"] == pi_lock["packages"][""]["version"] == "1.0.0"
-    assert 'version = "1.0.0"' in pyproject
+    assert root["version"] == root_lock["version"] == root_lock["packages"][""]["version"] == expected_version
+    assert pi["version"] == pi_lock["version"] == pi_lock["packages"][""]["version"] == expected_version
+    assert re.search(rf'^version = "{re.escape(expected_version)}"$', pyproject, re.MULTILINE)
     assert "Deep Research planning" not in root["description"]
     assert "Deep Research planning" not in pyproject
-
 
 def test_root_package_whitelist_and_dry_pack_contents():
     manifest = _read_json(ROOT / "package.json")
@@ -222,12 +222,16 @@ def test_pi_package_whitelist_and_exact_native_tool_contents():
 
 
 def test_v1_release_notes_and_workflow_guard_both_packages():
-    notes = (ROOT / ".github/releases/v1.0.0.md").read_text(encoding="utf-8")
+    expected_version = _read_json(ROOT / "package.json")["version"]
+    notes_path = ROOT / f".github/releases/v{expected_version}.md"
+    notes = notes_path.read_text(encoding="utf-8")
     workflow = (ROOT / ".github/workflows/publish-npm.yml").read_text(encoding="utf-8")
-    assert "# v1.0.0" in notes
-    assert "breaking release" in notes
+    heading = re.search(rf"^# v{re.escape(expected_version)}(?:\s|$)", notes, re.MULTILINE)
+    assert notes_path.is_file()
+    assert heading
+    assert notes[heading.end():].strip()
+    assert "validated offline" in notes.lower()
     assert "no live" in notes.lower()
-    # Trigger surface: every main push plus a SHA-only recovery dispatch.
     assert "workflow_dispatch" in workflow
     assert "branches:" in workflow
     assert "target_sha" in workflow
