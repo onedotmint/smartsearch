@@ -231,14 +231,10 @@ jobs:
           fi
       - name: Publish root package when missing
         if: steps.release-gate.outputs.release == 'true' && steps.registry-state.outputs.root_state == 'absent'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public --tag latest
       - name: Publish Pi package when missing
         if: steps.release-gate.outputs.release == 'true' && steps.registry-state.outputs.pi_state == 'absent'
         working-directory: integrations/pi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public --tag latest
       - name: Verify both exact versions after publication
         id: verify-published

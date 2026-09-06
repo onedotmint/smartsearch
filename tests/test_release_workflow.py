@@ -259,13 +259,13 @@ def test_v1_release_notes_and_workflow_guard_both_packages():
     assert 'remote_tag="$(git ls-remote --tags --refs origin "refs/tags/$tag")"' in workflow
     assert 'if [[ -n "$remote_tag" ]]; then' in workflow
     assert 'echo "release_version=$version" >> "$GITHUB_OUTPUT"' in workflow
-    # Provenance, scoped token, ordered guarded publication, fail-closed registry.
+    # OIDC-only publication, provenance, ordered guarded publication, fail-closed registry.
     for marker in ("id-token: write", "--provenance", "--access public", "--tag latest", "dist-tags.latest"):
         assert marker in workflow
     root_publish = workflow.index("npm publish --provenance --access public --tag latest")
     pi_publish = workflow.index("npm publish --provenance --access public --tag latest", root_publish + 1)
     assert root_publish < pi_publish
-    assert workflow.count("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}") == 2
+    assert "NODE_AUTH_TOKEN" not in workflow
     assert "root_state=\"$(registry_state '@onedotmint/smart-search' root)\"" in workflow
     assert "pi_state=\"$(registry_state '@onedotmint/pi-smart-search' pi)\"" in workflow
     assert "printf 'absent'" in workflow

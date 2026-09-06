@@ -119,8 +119,10 @@ def test_package_metadata_and_release_workflow_are_stable():
     assert separator and heading.startswith(f"# v{expected_version} ") and body.strip()
     workflow = (ROOT / ".github/workflows/publish-npm.yml").read_text(encoding="utf-8")
     assert "workflow_dispatch" in workflow
+    assert "--provenance" in workflow
+    assert "--access public" in workflow
     assert "--tag latest" in workflow
-    assert workflow.count("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}") == 2
+    assert "NODE_AUTH_TOKEN" not in workflow
 
 
 def test_provider_guide_keeps_v1_setup_keys_and_document_links():
