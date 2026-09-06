@@ -167,6 +167,10 @@ def test_both_manifests_and_locks_are_synchronized_for_v1():
     assert root["name"] == root_lock["name"] == "@onedotmint/smart-search"
     assert pi["name"] == pi_lock["name"] == "@onedotmint/pi-smart-search"
     assert root["version"] == root_lock["version"] == root_lock["packages"][""]["version"] == expected_version
+    assert pi["repository"] == {
+        "type": "git",
+        "url": "git+https://github.com/onedotmint/smartsearch.git",
+    }
     assert pi["version"] == pi_lock["version"] == pi_lock["packages"][""]["version"] == expected_version
     assert re.search(rf'^version = "{re.escape(expected_version)}"$', pyproject, re.MULTILINE)
     assert "Deep Research planning" not in root["description"]
