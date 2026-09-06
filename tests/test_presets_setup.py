@@ -45,7 +45,7 @@ def test_setup_saves_multiple_selected_keys_without_transport(monkeypatch, tmp_p
     config._config_file = tmp_path / "config.json"
     config._config_dir_source = "override"
     config._config_snapshot = None
-    answers = iter(("1,3", "brave-secret", "tavily-secret"))
+    answers = iter(("1,3", "brave-secret", "tavily-secret", ""))
     payload = cli.run_setup(
         mode="balanced",
         input_fn=lambda _prompt: next(answers),
@@ -71,8 +71,9 @@ def test_setup_does_not_prompt_for_environment_owned_key(monkeypatch, tmp_path):
     config._config_snapshot = None
     monkeypatch.setenv("BRAVE_API_KEY", "environment-secret")
     prompted = []
+    answers = iter(("1", ""))
     payload = cli.run_setup(
-        input_fn=lambda _prompt: "1",
+        input_fn=lambda _prompt: next(answers),
         secret_fn=lambda _prompt: prompted.append(True),
         config_obj=config,
     )
@@ -149,11 +150,12 @@ def test_setup_selection_shows_non_secret_existing_readiness(tmp_path):
     )
 
     assert payload["status"] == "complete"
-    assert len(prompts) == 1
+    assert len(prompts) == 2
     prompt = prompts[0]
     assert "Brave (configured, ready)" in prompt
     assert "Exa (not configured)" in prompt
     assert "Tavily (configured, disabled)" in prompt
+    assert "source=config_file" in prompt
     assert "saved-brave-secret" not in prompt
     assert "saved-tavily-secret" not in prompt
 
@@ -265,3 +267,125 @@ def test_setup_constructs_no_registry_or_http_transport(monkeypatch, tmp_path):
     payload = cli.run_setup(input_fn=lambda _prompt: "", config_obj=config)
 
     assert payload["status"] == "complete"
+
+
+def test_setup_selection_disables_saved_exa_without_deleting_key(tmp_path):
+    from smart_search import cli
+    from smart_search.providers.registry import default_registry
+
+    config = Config()
+    config._config_file = tmp_path / "config.json"
+    config._config_dir_source = "override"
+    config._config_snapshot = None
+    config._save_config_file({
+        "EXA_API_KEY": "saved-exa-secret",
+        "TAVILY_API_KEY": "saved-tavily-secret",
+    })
+    answers = iter(("3", ""))
+    payload = cli.run_setup(
+        input_fn=lambda _prompt: next(answers),
+        secret_fn=lambda _prompt: pytest.fail("saved selected providers need no key prompt"),
+        config_obj=config,
+    )
+
+    saved = config.get_saved_config(masked=False)
+    assert payload["status"] == "complete"
+    assert saved["EXA_API_KEY"] == "saved-exa-secret"
+    assert saved["EXA_ENABLED"] == "false"
+    assert saved["TAVILY_ENABLED"] == "true"
+    registry = default_registry()
+    assert "exa" not in registry.search_ids
+    assert "exa" not in registry.reader_ids
+
+
+def test_setup_selection_enables_exa_search_and_reader_without_secret_output(tmp_path):
+    from smart_search import cli
+    from smart_search.providers.registry import default_registry
+
+    config = Config()
+    config._config_file = tmp_path / "config.json"
+    config._config_dir_source = "override"
+    config._config_snapshot = None
+    answers = iter(("2", ""))
+    payload = cli.run_setup(
+        input_fn=lambda _prompt: next(answers),
+        secret_fn=lambda _prompt: "new-exa-secret",
+        config_obj=config,
+    )
+
+    saved = config.get_saved_config(masked=False)
+    assert payload["status"] == "complete"
+    assert payload["data"]["providers"] == ["exa"]
+    assert saved["EXA_ENABLED"] == "true"
+    assert "new-exa-secret" not in json.dumps(payload)
+    registry = default_registry()
+    assert "exa" in registry.search_ids
+    assert "exa" in registry.reader_ids
+
+
+def test_setup_can_collect_optional_jina_key(tmp_path):
+    from smart_search import cli
+
+    config = Config()
+    config._config_file = tmp_path / "config.json"
+    config._config_dir_source = "override"
+    config._config_snapshot = None
+    answers = iter(("", "y"))
+    payload = cli.run_setup(
+        input_fn=lambda _prompt: next(answers),
+        secret_fn=lambda _prompt: "new-jina-secret",
+        config_obj=config,
+    )
+
+    saved = config.get_saved_config(masked=False)
+    jina = payload["data"]["readiness"]["readers"]["jina"]
+    assert payload["status"] == "complete"
+    assert saved["JINA_API_KEY"] == "new-jina-secret"
+    assert jina == {
+        "source": "config_file",
+        "configured": True,
+        "anonymous_available": True,
+        "ready": True,
+    }
+    assert "new-jina-secret" not in json.dumps(payload)
+
+
+def test_setup_declining_optional_jina_keeps_anonymous_reader_ready(tmp_path):
+    from smart_search import cli
+
+    config = Config()
+    config._config_file = tmp_path / "config.json"
+    config._config_dir_source = "override"
+    config._config_snapshot = None
+    answers = iter(("", ""))
+    payload = cli.run_setup(input_fn=lambda _prompt: next(answers), config_obj=config)
+
+    jina = payload["data"]["readiness"]["readers"]["jina"]
+    assert payload["status"] == "complete"
+    assert "JINA_API_KEY" not in config.get_saved_config(masked=False)
+    assert jina == {
+        "source": "absent",
+        "configured": False,
+        "anonymous_available": True,
+        "ready": True,
+    }
+
+
+def test_setup_preserves_file_enablement_when_environment_owns_exa(monkeypatch, tmp_path):
+    from smart_search import cli
+
+    config = Config()
+    config._config_file = tmp_path / "config.json"
+    config._config_dir_source = "override"
+    config._config_snapshot = None
+    config._save_config_file({"EXA_API_KEY": "saved-exa-secret", "EXA_ENABLED": "true"})
+    monkeypatch.setenv("EXA_ENABLED", "false")
+    answers = iter(("2", ""))
+    payload = cli.run_setup(input_fn=lambda _prompt: next(answers), config_obj=config)
+
+    assert payload["status"] == "complete"
+    assert config.get_saved_config(masked=False)["EXA_ENABLED"] == "true"
+    exa = payload["data"]["readiness"]["discovery"]["exa"]
+    assert exa["enabled_source"] == "environment"
+    assert exa["enabled"] is False
+    assert exa["ready"] is False

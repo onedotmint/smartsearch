@@ -9,9 +9,15 @@ smart-search setup --format json
 ```
 
 `setup` is the only configuration wizard. It writes local settings and does not
-call providers. Use environment variables for CI and keep credentials outside
-the repository. The selected `fast`, `balanced`, or `research` mode controls
-search policy; it is not a compatibility namespace.
+call providers. It asks you to choose the enabled discovery set: selected Brave,
+Exa, and Tavily entries are enabled, while omitted entries are disabled but keep
+saved credentials. Environment-owned credentials and enablement values are
+never overwritten. Exa's `EXA_ENABLED` defaults to true when absent. Setup
+securely collects selected missing discovery keys, then offers optional `JINA_API_KEY` setup. Declining it is valid because the
+anonymous Jina Reader remains available for public URLs. Use environment
+variables for CI and keep credentials outside the repository. The selected
+`fast`, `balanced`, or `research` mode controls search policy; it is not a
+compatibility namespace.
 
 ## Environment and local files
 

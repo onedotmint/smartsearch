@@ -131,9 +131,10 @@ def test_provider_guide_keeps_v1_setup_keys_and_document_links():
     assert "[getting started](getting-started.md)" in text
     assert "migration.md" in text
     assert "[the\nmigration guide](migration.md)" in text
-    assert "`setup` prompts only for the supported discovery keys" in text
-    assert "Reader keys, model keys" in text
-    assert "they are not setup prompts" in text
+    assert "`setup` lets you choose the enabled discovery set" in text
+    assert "omitted" in text and "disabled" in text
+    assert "environment-owned keys and enablement remain untouched" in text
+    assert "optional" in text and "`JINA_API_KEY`" in text
     for retired in ("`smart-search config", "`smart-search doctor", "`smart-search capabilities"):
         assert retired not in text
 

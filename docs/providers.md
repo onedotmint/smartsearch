@@ -11,13 +11,15 @@ exist.
 | Fetch | Reads a known URL for `read` and evidence stages |
 | Optional model | Supports configured provider-specific enhancements; not required for the evidence core |
 
-`setup` prompts only for the supported discovery keys `BRAVE_API_KEY`,
-`EXA_API_KEY`, and `TAVILY_API_KEY`. Reader keys, model keys, and other
-provider-specific settings (including `JINA_API_KEY`, `ZHIPU_API_KEY`, and
-`FIRECRAWL_API_KEY`) must be supplied through environment variables or supported
-local configuration; they are not setup prompts. Exact keys and provider
-availability vary by installation. Missing credentials produce a structured
-result, not a silent provider substitution.
+`setup` lets you choose the enabled discovery set (Brave, Exa, and Tavily;
+`BRAVE_API_KEY`, `EXA_API_KEY`, and `TAVILY_API_KEY`), not
+just which missing keys to collect. Selected providers are enabled; omitted
+providers keep any saved key but are disabled. File-owned enablement is updated
+atomically, while environment-owned keys and enablement remain untouched.
+Exa's `EXA_ENABLED` defaults to true when absent for backward compatibility.
+It securely prompts for selected missing discovery keys and then offers optional
+`JINA_API_KEY` setup. Declining Jina setup is valid: the anonymous Jina Reader
+remains available for public URLs.
 
 Jina Reader is a fetch provider, not search. Anonymous Reader may support a
 known public URL; a key enables keyed features. Discovery snippets remain

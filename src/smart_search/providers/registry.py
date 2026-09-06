@@ -144,7 +144,7 @@ def default_registry() -> Registry:
             search.append(BraveSearchProvider(config.brave_api_url, config.brave_api_key, config.brave_timeout))
         except ModuleNotFoundError:
             pass
-    if config.exa_api_key:
+    if config.exa_api_key and config.exa_enabled:
         try:
             from .exa import ExaSearchProvider
             search.append(ExaSearchProvider(config.exa_base_url, config.exa_api_key, config.exa_timeout))
@@ -173,7 +173,7 @@ def default_registry() -> Registry:
             readers.append(FirecrawlReaderProvider(config.firecrawl_api_url, config.firecrawl_api_key, 90.0))
         except ModuleNotFoundError:
             pass
-    if config.exa_api_key:
+    if config.exa_api_key and config.exa_enabled:
         try:
             from .exa_reader import ExaReaderProvider
             readers.append(ExaReaderProvider(config.exa_base_url, config.exa_api_key, config.exa_timeout))

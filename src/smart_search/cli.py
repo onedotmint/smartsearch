@@ -213,7 +213,11 @@ class _SetupInputError(ValueError):
     pass
 
 
-_SETUP_PROVIDERS = (("brave", "BRAVE_API_KEY"), ("exa", "EXA_API_KEY"), ("tavily", "TAVILY_API_KEY"))
+_SETUP_PROVIDERS = (
+    ("brave", "BRAVE_API_KEY", "BRAVE_ENABLED"),
+    ("exa", "EXA_API_KEY", "EXA_ENABLED"),
+    ("tavily", "TAVILY_API_KEY", "TAVILY_ENABLED"),
+)
 
 
 def _invoke_prompt(prompt_fn: Any, prompt: str) -> Any:
@@ -243,22 +247,51 @@ def _parse_provider_selection(value: Any) -> list[str]:
 
 def _setup_readiness(config_obj: Any, snapshot: Any) -> dict[str, Any]:
     discovery: dict[str, Any] = {}
-    for provider, key in _SETUP_PROVIDERS:
+    for provider, key, enabled_key in _SETUP_PROVIDERS:
         source = "environment" if snapshot.environment_values.get(key) is not None else (
             "config_file" if key in snapshot.file_values else "absent"
+        )
+        enabled_source = "environment" if snapshot.environment_values.get(enabled_key) is not None else (
+            "config_file" if enabled_key in snapshot.file_values else "default"
         )
         configured = bool(str(snapshot.values.get(key) or "").strip())
         enabled = bool(getattr(config_obj, f"{provider}_enabled", True))
         discovery[provider] = {
             "source": source,
             "configured": configured,
+            "enabled_source": enabled_source,
             "enabled": enabled,
             "ready": configured and enabled,
         }
+
+    def key_status(key: str) -> tuple[str, bool]:
+        source = "environment" if snapshot.environment_values.get(key) is not None else (
+            "config_file" if key in snapshot.file_values else "absent"
+        )
+        return source, bool(str(snapshot.values.get(key) or "").strip())
+
+    jina_source, jina_configured = key_status("JINA_API_KEY")
+    jina_anonymous = bool(str(config_obj.jina_reader_api_url or "").strip())
+    firecrawl_source, firecrawl_configured = key_status("FIRECRAWL_API_KEY")
+    exa = discovery["exa"]
     readers = {
-        "jina": {"configured": bool(config_obj.jina_reader_api_url), "ready": bool(config_obj.jina_reader_api_url)},
-        "exa": {"configured": bool(config_obj.exa_api_key), "ready": bool(config_obj.exa_api_key)},
-        "firecrawl": {"configured": bool(config_obj.firecrawl_api_key), "ready": bool(config_obj.firecrawl_api_key)},
+        "jina": {
+            "source": jina_source,
+            "configured": jina_configured,
+            "anonymous_available": jina_anonymous,
+            "ready": jina_configured or jina_anonymous,
+        },
+        "exa": {
+            "source": exa["source"],
+            "configured": exa["configured"],
+            "enabled": exa["enabled"],
+            "ready": exa["ready"],
+        },
+        "firecrawl": {
+            "source": firecrawl_source,
+            "configured": firecrawl_configured,
+            "ready": firecrawl_configured,
+        },
     }
     return {"discovery": discovery, "readers": readers}
 
@@ -268,16 +301,36 @@ def _setup_selection_prompt(readiness: dict[str, Any]) -> str:
         "Select discovery providers (1=Brave, 2=Exa, 3=Tavily; comma-separated, empty for none):",
         "Current local readiness:",
     ]
-    for index, (provider, _key) in enumerate(_SETUP_PROVIDERS, 1):
+    for index, (provider, _key, _enabled_key) in enumerate(_SETUP_PROVIDERS, 1):
         details = readiness["discovery"][provider]
         status = ["configured" if details["configured"] else "not configured"]
         if details["ready"]:
             status.append("ready")
         elif not details["enabled"]:
             status.append("disabled")
-        lines.append(f"  {index}. {provider.title()} ({', '.join(status)})")
+        lines.append(f"  {index}. {provider.title()} ({', '.join(status)}) [source={details['source']}]")
     lines.append("Selection: ")
     return "\n".join(lines)
+
+
+def _setup_jina_prompt(readiness: dict[str, Any]) -> str:
+    details = readiness["readers"]["jina"]
+    if details["configured"]:
+        status = "configured"
+    elif details["anonymous_available"]:
+        status = "anonymous available"
+    else:
+        status = "not configured"
+    return (
+        "Configure optional Jina Reader API key? (y/N) "
+        f"Current status: {status}, source={details['source']}: "
+    )
+
+
+def _parse_optional_confirmation(value: Any) -> bool:
+    if value is None:
+        raise _SetupInputError
+    return str(value).strip().lower() in {"y", "yes"}
 
 
 def run_setup(mode: str | None = None, *, input_fn: Any = None, secret_fn: Any = None, config_obj: Any = None) -> dict[str, Any]:
@@ -302,13 +355,26 @@ def run_setup(mode: str | None = None, *, input_fn: Any = None, secret_fn: Any =
         readiness = _setup_readiness(config_obj, snapshot)
         selected = _parse_provider_selection(_invoke_prompt(input_fn, _setup_selection_prompt(readiness)))
         pending: dict[str, object] = {}
-        for provider, key in _SETUP_PROVIDERS:
+        for provider, key, enabled_key in _SETUP_PROVIDERS:
+            if snapshot.environment_values.get(enabled_key) is None:
+                pending[enabled_key] = "true" if provider in selected else "false"
             if provider not in selected or snapshot.environment_values.get(key) is not None or str(snapshot.values.get(key) or "").strip():
                 continue
             value = _invoke_prompt(secret_fn, f"{provider.title()} API key: ")
             if value is None or not str(value).strip():
                 raise _SetupInputError
             pending[key] = str(value).strip()
+
+        configure_jina = _parse_optional_confirmation(_invoke_prompt(input_fn, _setup_jina_prompt(readiness)))
+        if (
+            configure_jina
+            and snapshot.environment_values.get("JINA_API_KEY") is None
+            and not str(snapshot.values.get("JINA_API_KEY") or "").strip()
+        ):
+            value = _invoke_prompt(secret_fn, "Jina Reader API key (optional): ")
+            if value is None or not str(value).strip():
+                raise _SetupInputError
+            pending["JINA_API_KEY"] = str(value).strip()
         if snapshot.environment_values.get("SMART_SEARCH_DEFAULT_MODE") is None:
             pending["SMART_SEARCH_DEFAULT_MODE"] = selected_mode
         if pending:

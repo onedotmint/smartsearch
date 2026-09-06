@@ -39,8 +39,9 @@ class Config:
     _instance = None
     _SETUP_COMMAND = (
         "Run `smart-search setup --format json` to configure BRAVE_API_KEY, "
-        "EXA_API_KEY, and/or TAVILY_API_KEY, or provide provider keys through "
-        "the environment for CI. Then use `smart-search search ... --format json`."
+        "EXA_API_KEY, and/or TAVILY_API_KEY, optionally JINA_API_KEY, or provide "
+        "provider keys through the environment for CI. Setup selections control "
+        "which discovery providers are enabled. Then use `smart-search search ... --format json`."
     )
     _DEFAULT_MODEL = "grok-4-fast"
     _DEFAULT_XAI_TOOLS = "web_search,x_search"
@@ -108,6 +109,7 @@ class Config:
         "INTENT_CLASSIFIER_MODEL",
         "INTENT_ROUTER_TIMEOUT_SECONDS",
         "EXA_API_KEY",
+        "EXA_ENABLED",
         "EXA_BASE_URL",
         "EXA_TIMEOUT_SECONDS",
         "CONTEXT7_API_KEY",
@@ -1462,6 +1464,10 @@ class Config:
         return self._get_config_value("EXA_API_KEY")
 
     @property
+    def exa_enabled(self) -> bool:
+        return self._bool_value("EXA_ENABLED", "true")
+
+    @property
     def exa_base_url(self) -> str:
         return self._get_config_value("EXA_BASE_URL", "https://api.exa.ai") or "https://api.exa.ai"
 
@@ -1753,6 +1759,7 @@ class Config:
             "SMART_SEARCH_LOG_TO_FILE": self.log_to_file_enabled,
             "SSL_VERIFY": self.ssl_verify_enabled,
             "EXA_API_KEY": self._mask_api_key(self.exa_api_key) if self.exa_api_key else "未配置",
+            "EXA_ENABLED": self.exa_enabled,
             "EXA_BASE_URL": self.exa_base_url,
             "EXA_TIMEOUT_SECONDS": self.exa_timeout,
             "CONTEXT7_API_KEY": self._mask_api_key(self.context7_api_key) if self.context7_api_key else "未配置",
