@@ -1,4 +1,4 @@
-name: Publish v1 npm packages
+name: Stage v1 npm packages
 
 on:
   push:
@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       target_sha:
-        description: Full commit SHA reachable from origin/main to publish (recovery)
+        description: Full commit SHA reachable from origin/main to stage (recovery)
         required: true
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
 
 concurrency:
@@ -19,8 +19,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
+      release: ${{ steps.release-gate.outputs.release }}
+      release_version: ${{ steps.release-gate.outputs.release_version }}
     steps:
       - name: Resolve immutable target SHA
         id: resolve
@@ -100,8 +104,6 @@ jobs:
             require_notes_changed=yes
           else
             target="$TARGET_SHA"
-            # checkout binds the worktree to the immutable SHA; fetch main refs so
-            # reachability can be proven against origin/main.
             git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
             if ! git merge-base --is-ancestor "$target" origin/main; then
               echo "Manual target $target is not reachable from origin/main." >&2
@@ -125,7 +127,7 @@ jobs:
             fi
           fi
           python3 - "$version" <<'PY'
-          import json, os, sys
+          import json, os, re, sys
 
           version = sys.argv[1]
 
@@ -161,6 +163,12 @@ jobs:
           notes_path = f".github/releases/v{version}.md"
           if not os.path.isfile(notes_path) or os.path.getsize(notes_path) == 0:
               fail("release notes missing or empty")
+          notes = open(notes_path, encoding="utf-8").read()
+          heading = re.search(rf"^# v{re.escape(version)}(?:\s|$)", notes, re.MULTILINE)
+          if not heading:
+              fail("release notes heading mismatch")
+          if not notes[heading.end():].strip():
+              fail("release notes body missing or empty")
           PY
           tag="v$version"
           remote_tag="$(git ls-remote --tags --refs origin "refs/tags/$tag")"
@@ -168,7 +176,7 @@ jobs:
             git fetch --no-tags origin "refs/tags/$tag:refs/tags/$tag"
             tag_target="$(git rev-parse "refs/tags/$tag^{commit}")"
             if [[ "$tag_target" != "$target" ]]; then
-              echo "Existing Git tag $tag points at $tag_target, not $target; refusing publication." >&2
+              echo "Existing Git tag $tag points at $tag_target, not $target; refusing staging." >&2
               exit 1
             fi
           fi
@@ -185,11 +193,23 @@ jobs:
           npm run typecheck
           npm test
           npm pack --dry-run
-      - name: Check registry state for each exact version
-        id: registry-state
-        if: steps.release-gate.outputs.release == 'true'
+
+  registry-state:
+    needs: prepare
+    if: needs.prepare.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      root_state: ${{ steps.registry.outputs.root_state }}
+      pi_state: ${{ steps.registry.outputs.pi_state }}
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      - name: Check public registry state for each exact version
+        id: registry
         env:
-          RELEASE_VERSION: ${{ steps.release-gate.outputs.release_version }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
         run: |
           set -eu
           state_dir="$(mktemp -d)"
@@ -226,53 +246,74 @@ jobs:
           printf 'pi_state=%s\n' "$pi_state" >> "$GITHUB_OUTPUT"
           if test "$root_state" = unavailable || test "$pi_state" = unavailable || \
              test "$root_state" = not_latest || test "$pi_state" = not_latest; then
-            echo "Could not verify one or more npm registry states, including latest dist-tags; refusing publication."
+            echo "Could not verify one or more npm registry states, including latest dist-tags; refusing staging."
             exit 1
           fi
-      - name: Publish root package when missing
-        if: steps.release-gate.outputs.release == 'true' && steps.registry-state.outputs.root_state == 'absent'
-        run: npm publish --provenance --access public --tag latest
-      - name: Publish Pi package when missing
-        if: steps.release-gate.outputs.release == 'true' && steps.registry-state.outputs.pi_state == 'absent'
+
+  stage-root:
+    needs: [prepare, registry-state]
+    if: needs.prepare.outputs.release == 'true' && needs.registry-state.outputs.root_state == 'absent'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.target_sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      - name: Use supported npm CLI
+        run: npm install --global npm@11.15.0
+      - name: Stage root package when absent
+        run: npm stage publish --provenance --access public --tag latest
+
+  stage-pi:
+    needs: [prepare, registry-state]
+    if: needs.prepare.outputs.release == 'true' && needs.registry-state.outputs.pi_state == 'absent'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.target_sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      - name: Use supported npm CLI
+        run: npm install --global npm@11.15.0
+      - name: Stage Pi package when absent
         working-directory: integrations/pi
-        run: npm publish --provenance --access public --tag latest
-      - name: Verify both exact versions after publication
-        id: verify-published
-        if: steps.release-gate.outputs.release == 'true'
-        env:
-          RELEASE_VERSION: ${{ steps.release-gate.outputs.release_version }}
-        run: |
-          set -eu
-          state_dir="$(mktemp -d)"
-          trap 'rm -rf "$state_dir"' EXIT
+        run: npm stage publish --provenance --access public --tag latest
 
-          verify_exact_version() {
-            package_name="$1"
-            error_file="$state_dir/error-${2}.log"
-            if value="$(npm_config_loglevel=error npm view "${package_name}@${RELEASE_VERSION}" version --json --fetch-retries=0 2>"$error_file")"; then
-              node -e 'process.exit(JSON.parse(process.argv[1]) === process.argv[2] ? 0 : 1)' "$value" "$RELEASE_VERSION"
-              latest_error="$state_dir/latest-${2}.log"
-              latest="$(npm_config_loglevel=error npm view "$package_name" dist-tags.latest --json --fetch-retries=0 2>"$latest_error")"
-              node -e 'process.exit(JSON.parse(process.argv[1]) === process.argv[2] ? 0 : 1)' "$latest" "$RELEASE_VERSION"
-            else
-              return 1
-            fi
-          }
-
-          verify_exact_version '@onedotmint/smart-search' root
-          verify_exact_version '@onedotmint/pi-smart-search' pi
-          echo "verified=true" >> "$GITHUB_OUTPUT"
-      - name: Create or update stable GitHub release
-        if: steps.release-gate.outputs.release == 'true' && steps.verify-published.outputs.verified == 'true'
+  approval-summary:
+    needs: [prepare, registry-state, stage-root, stage-pi]
+    if: always() && needs.prepare.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain staged release approval and finalization
         env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
-          RELEASE_VERSION: ${{ steps.release-gate.outputs.release_version }}
+          ROOT_STATE: ${{ needs.registry-state.outputs.root_state }}
+          PI_STATE: ${{ needs.registry-state.outputs.pi_state }}
+          ROOT_RESULT: ${{ needs.stage-root.result }}
+          PI_RESULT: ${{ needs.stage-pi.result }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+          TARGET_SHA: ${{ needs.prepare.outputs.target_sha }}
         run: |
-          tag_name="v${RELEASE_VERSION}"
-          notes_file=".github/releases/${tag_name}.md"
-          if gh release view "$tag_name" >/dev/null 2>&1; then
-            gh release edit "$tag_name" --title "$tag_name" --notes-file "$notes_file"
-          else
-            gh release create "$tag_name" --target "$TARGET_SHA" --title "$tag_name" --notes-file "$notes_file"
-          fi
+          {
+            echo "## npm staged release requires maintainer approval"
+            echo
+            echo "Target: \`$TARGET_SHA\`"
+            echo "Version: \`$RELEASE_VERSION\`"
+            echo
+            echo "Public registry state before staging: root=\`$ROOT_STATE\`, Pi=\`$PI_STATE\`."
+            echo "Stage job results: root=\`$ROOT_RESULT\`, Pi=\`$PI_RESULT\`."
+            echo
+            echo "1. Review each staged package on npmjs.com."
+            echo "2. Approve the staged packages with npm 2FA."
+            echo "3. Wait until both exact versions are public and both \`latest\` tags point to \`$RELEASE_VERSION\`."
+            echo "4. Manually run \`Finalize npm release\` for this full SHA to create or update the GitHub release."
+            echo
+            echo "This workflow does not inspect npm staging-queue state, verify staged packages, create tags, or create GitHub releases."
+          } >> "$GITHUB_STEP_SUMMARY"
