@@ -123,6 +123,61 @@ class Registry:
         return {"search": self.search_ids, "read": self.reader_ids, "rerank": tuple(self._rerankers)}
 
 
+@dataclass(frozen=True)
+class _DirectDiscoveryProvider:
+    provider_id: str
+    setup_key: str
+    enabled_key: str
+    builder: Callable[[Any], Any | None]
+
+
+def _build_brave(config: Any) -> Any | None:
+    api_key = config.brave_api_key
+    if not api_key or not config.brave_enabled:
+        return None
+    try:
+        from .brave import BraveSearchProvider
+        return BraveSearchProvider(config.brave_api_url, api_key, config.brave_timeout)
+    except ModuleNotFoundError:
+        return None
+
+
+def _build_exa(config: Any) -> Any | None:
+    api_key = config.exa_api_key
+    if not api_key or not config.exa_enabled:
+        return None
+    try:
+        from .exa import ExaSearchProvider
+        return ExaSearchProvider(config.exa_base_url, api_key, config.exa_timeout)
+    except ModuleNotFoundError:
+        return None
+
+
+def _build_tavily(config: Any) -> Any | None:
+    api_key = config.tavily_api_key
+    if not api_key or not config.tavily_enabled:
+        return None
+    try:
+        from .tavily import TavilySearchProvider
+        return TavilySearchProvider(config.tavily_api_url, api_key, config.tavily_timeout)
+    except ModuleNotFoundError:
+        return None
+
+
+_DIRECT_DISCOVERY_CATALOG = (
+    _DirectDiscoveryProvider("brave", "BRAVE_API_KEY", "BRAVE_ENABLED", _build_brave),
+    _DirectDiscoveryProvider("exa", "EXA_API_KEY", "EXA_ENABLED", _build_exa),
+    _DirectDiscoveryProvider("tavily", "TAVILY_API_KEY", "TAVILY_ENABLED", _build_tavily),
+)
+
+
+def _direct_discovery_setup_metadata() -> tuple[tuple[str, str, str], ...]:
+    return tuple(
+        (item.provider_id, item.setup_key, item.enabled_key)
+        for item in _DIRECT_DISCOVERY_CATALOG
+    )
+
+
 def _callable_provider(provider_id: str, role: str, fn: Callable[..., Any]) -> Any:
     async def call(*args: Any, **kwargs: Any) -> Any:
         result = fn(*args, **kwargs)
@@ -138,24 +193,10 @@ def default_registry() -> Registry:
     from ..config import config
 
     search: list[Any] = []
-    if config.brave_api_key and config.brave_enabled:
-        try:
-            from .brave import BraveSearchProvider
-            search.append(BraveSearchProvider(config.brave_api_url, config.brave_api_key, config.brave_timeout))
-        except ModuleNotFoundError:
-            pass
-    if config.exa_api_key and config.exa_enabled:
-        try:
-            from .exa import ExaSearchProvider
-            search.append(ExaSearchProvider(config.exa_base_url, config.exa_api_key, config.exa_timeout))
-        except ModuleNotFoundError:
-            pass
-    if config.tavily_api_key and config.tavily_enabled:
-        try:
-            from .tavily import TavilySearchProvider
-            search.append(TavilySearchProvider(config.tavily_api_url, config.tavily_api_key, config.tavily_timeout))
-        except ModuleNotFoundError:
-            pass
+    for entry in _DIRECT_DISCOVERY_CATALOG:
+        provider = entry.builder(config)
+        if provider is not None:
+            search.append(provider)
 
     readers: list[Any] = []
     # Jina is intentionally eligible anonymously; the adapter itself handles

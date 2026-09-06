@@ -213,11 +213,11 @@ class _SetupInputError(ValueError):
     pass
 
 
-_SETUP_PROVIDERS = (
-    ("brave", "BRAVE_API_KEY", "BRAVE_ENABLED"),
-    ("exa", "EXA_API_KEY", "EXA_ENABLED"),
-    ("tavily", "TAVILY_API_KEY", "TAVILY_ENABLED"),
-)
+def _setup_provider_metadata() -> tuple[tuple[str, str, str], ...]:
+    # Keep provider imports out of parser/help-only paths.
+    from .providers.registry import _direct_discovery_setup_metadata
+
+    return _direct_discovery_setup_metadata()
 
 
 def _invoke_prompt(prompt_fn: Any, prompt: str) -> Any:
@@ -230,7 +230,7 @@ def _invoke_prompt(prompt_fn: Any, prompt: str) -> Any:
 def _parse_provider_selection(value: Any) -> list[str]:
     if value is None:
         raise _SetupInputError
-    providers = [item[0] for item in _SETUP_PROVIDERS]
+    providers = [item[0] for item in _setup_provider_metadata()]
     selected: list[str] = []
     for token in str(value).split(","):
         token = token.strip().lower()
@@ -247,7 +247,7 @@ def _parse_provider_selection(value: Any) -> list[str]:
 
 def _setup_readiness(config_obj: Any, snapshot: Any) -> dict[str, Any]:
     discovery: dict[str, Any] = {}
-    for provider, key, enabled_key in _SETUP_PROVIDERS:
+    for provider, key, enabled_key in _setup_provider_metadata():
         source = "environment" if snapshot.environment_values.get(key) is not None else (
             "config_file" if key in snapshot.file_values else "absent"
         )
@@ -297,11 +297,15 @@ def _setup_readiness(config_obj: Any, snapshot: Any) -> dict[str, Any]:
 
 
 def _setup_selection_prompt(readiness: dict[str, Any]) -> str:
+    metadata = _setup_provider_metadata()
+    provider_labels = ", ".join(
+        f"{index}={provider.title()}" for index, (provider, _key, _enabled_key) in enumerate(metadata, 1)
+    )
     lines = [
-        "Select discovery providers (1=Brave, 2=Exa, 3=Tavily; comma-separated, empty for none):",
+        f"Select discovery providers ({provider_labels}; comma-separated, empty for none):",
         "Current local readiness:",
     ]
-    for index, (provider, _key, _enabled_key) in enumerate(_SETUP_PROVIDERS, 1):
+    for index, (provider, _key, _enabled_key) in enumerate(metadata, 1):
         details = readiness["discovery"][provider]
         status = ["configured" if details["configured"] else "not configured"]
         if details["ready"]:
@@ -355,7 +359,7 @@ def run_setup(mode: str | None = None, *, input_fn: Any = None, secret_fn: Any =
         readiness = _setup_readiness(config_obj, snapshot)
         selected = _parse_provider_selection(_invoke_prompt(input_fn, _setup_selection_prompt(readiness)))
         pending: dict[str, object] = {}
-        for provider, key, enabled_key in _SETUP_PROVIDERS:
+        for provider, key, enabled_key in _setup_provider_metadata():
             if snapshot.environment_values.get(enabled_key) is None:
                 pending[enabled_key] = "true" if provider in selected else "false"
             if provider not in selected or snapshot.environment_values.get(key) is not None or str(snapshot.values.get(key) or "").strip():

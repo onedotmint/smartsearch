@@ -389,3 +389,39 @@ def test_setup_preserves_file_enablement_when_environment_owns_exa(monkeypatch, 
     assert exa["enabled_source"] == "environment"
     assert exa["enabled"] is False
     assert exa["ready"] is False
+
+
+def test_setup_metadata_matches_the_direct_discovery_catalog_projection():
+    from smart_search import cli
+    from smart_search.providers.registry import _DIRECT_DISCOVERY_CATALOG
+
+    expected = tuple(
+        (entry.provider_id, entry.setup_key, entry.enabled_key)
+        for entry in _DIRECT_DISCOVERY_CATALOG
+    )
+    metadata = cli._setup_provider_metadata()
+
+    assert metadata == expected
+    assert tuple(provider for provider, _key, _enabled_key in metadata) == tuple(
+        entry.provider_id for entry in _DIRECT_DISCOVERY_CATALOG
+    )
+    assert not hasattr(cli, "_SETUP_PROVIDERS")
+
+
+def test_default_registry_does_not_construct_excluded_catalog_adapters(monkeypatch):
+    from smart_search.providers import brave, exa, tavily
+    from smart_search.providers.registry import default_registry
+
+    for key in ("BRAVE_API_KEY", "EXA_API_KEY", "TAVILY_API_KEY"):
+        monkeypatch.setenv(key, "")
+    for key in ("BRAVE_ENABLED", "EXA_ENABLED", "TAVILY_ENABLED"):
+        monkeypatch.setenv(key, "false")
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("excluded provider adapter was constructed")
+
+    monkeypatch.setattr(brave, "BraveSearchProvider", unexpected)
+    monkeypatch.setattr(exa, "ExaSearchProvider", unexpected)
+    monkeypatch.setattr(tavily, "TavilySearchProvider", unexpected)
+
+    assert default_registry().search_ids == ()
