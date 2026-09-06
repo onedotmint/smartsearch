@@ -10,18 +10,11 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from .security import redact_url_credentials
-
-
 logger = logging.getLogger(__name__)
 
 
 class ConfigStorageError(ValueError):
     """Raised when the local configuration cannot be safely persisted."""
-
-
-class ModelRoutesConfigurationError(ValueError):
-    """Raised when a saved or effective SMART_SEARCH_MODEL_ROUTES value is invalid."""
 
 
 @dataclass(frozen=True)
@@ -43,8 +36,6 @@ class Config:
         "provider keys through the environment for CI. Setup selections control "
         "which discovery providers are enabled. Then use `smart-search search ... --format json`."
     )
-    _DEFAULT_MODEL = "grok-4-fast"
-    _DEFAULT_XAI_TOOLS = "web_search,x_search"
     _DEFAULT_VALIDATION_LEVEL = "balanced"
     _DEFAULT_FALLBACK_MODE = "auto"
     _DEFAULT_MINIMUM_PROFILE = "standard"
@@ -57,40 +48,19 @@ class Config:
     _DEFAULT_SEARCH_CACHE_TTL_SECONDS = "30"
     _DEFAULT_FETCH_CACHE_TTL_SECONDS = "300"
     _DEFAULT_CACHE_MAX_SIZE = "256"
-    _MODEL_ROUTES_KEY = "SMART_SEARCH_MODEL_ROUTES"
     _CACHE_TTL_BOUNDS = (1, 604800)
     _CACHE_MAX_SIZE_BOUNDS = (1, 10000)
     _CONFIG_DIR_MODE = 0o700
     _CONFIG_FILE_MODE = 0o600
-    _ALLOWED_XAI_TOOLS = {"web_search", "x_search"}
     _ALLOWED_VALIDATION_LEVELS = {"fast", "balanced", "strict"}
     _ALLOWED_FALLBACK_MODES = {"auto", "off"}
     _ALLOWED_MINIMUM_PROFILES = {"lite", "standard", "full", "off"}
     _ALLOWED_INTENT_ROUTER_MODES = {"hybrid", "rules", "off"}
     _ALLOWED_RETRIEVAL_MODES = {"fast", "balanced", "research"}
-    _MODEL_ROUTE_PROVIDER_ALIASES = {
-        "xai": "xai-responses",
-        "xai-responses": "xai-responses",
-        "grok": "xai-responses",
-        "openai": "openai-compatible",
-        "openai-compatible": "openai-compatible",
-        "chat-completions": "openai-compatible",
-    }
-    _MODEL_ROUTE_XAI_TOOLS = {"web_search", "x_search"}
     _CONFIG_KEYS = {
-        "XAI_API_URL",
-        "XAI_API_KEY",
-        "XAI_MODEL",
-        "XAI_TOOLS",
-        "OPENAI_COMPATIBLE_API_URL",
-        "OPENAI_COMPATIBLE_API_KEY",
-        "OPENAI_COMPATIBLE_MODEL",
-        "OPENAI_COMPATIBLE_FALLBACK_MODELS",
-        "OPENAI_COMPATIBLE_STREAM",
         "SMART_SEARCH_VALIDATION_LEVEL",
         "SMART_SEARCH_FALLBACK_MODE",
         "SMART_SEARCH_MINIMUM_PROFILE",
-        "SMART_SEARCH_MODEL_ROUTES",
         "SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS",
         "SMART_SEARCH_RESEARCH_DISABLED_PROVIDERS",
         "SMART_SEARCH_INTENT_ROUTER",
@@ -161,8 +131,7 @@ class Config:
         key
         for key in _CONFIG_KEYS
         if "KEY" in key or "TOKEN" in key or "SECRET" in key
-    } | {"SMART_SEARCH_MODEL_ROUTES"}
-    _LEGACY_CONFIG_KEYS: dict[str, str] = {}
+    }
 
     def __new__(cls):
         if cls._instance is None:
@@ -170,7 +139,6 @@ class Config:
             cls._instance._config_file = None
             cls._instance._config_dir_source = None
             cls._instance._config_snapshot = None
-            cls._instance._cached_model = None
             cls._instance._credential_state_digest = None
             cls._instance._credential_epoch = 0
             cls._instance._load_error = None
@@ -354,370 +322,6 @@ class Config:
             self._load_error = {"kind": "io", "path": str(self.config_file), "detail": str(exc)}
             return {}
 
-    @classmethod
-    def _parse_model_routes_value(cls, raw: object) -> list[dict[str, Any]]:
-        """
-        /*
-         * ================================================================================
-         * 步骤1：解析并校验模型路由
-         * ================================================================================
-         * 目标：把配置文件或环境变量中的模型路由转换为统一的内部结构。
-         * 数据源：SMART_SEARCH_MODEL_ROUTES JSON 数组。
-         * 操作：
-         * 1) 校验数组、路由 ID、provider、地址、密钥和模型字段。
-         * 2) 规范 provider 别名、OpenRouter 模型后缀和可选 fallback 字段。
-         * 3) 拒绝重复 ID、未知 provider 和不完整路由，避免运行时猜测配置意图。
-         * ================================================================================
-         */
-        """
-        logger.info("步骤1开始：解析模型路由配置")
-        value = raw
-        try:
-            if isinstance(value, str):
-                try:
-                    value = json.loads(value)
-                except json.JSONDecodeError as exc:
-                    raise ValueError("Invalid SMART_SEARCH_MODEL_ROUTES: expected a JSON array.") from exc
-            if not isinstance(value, list):
-                raise ValueError("Invalid SMART_SEARCH_MODEL_ROUTES: expected a JSON array.")
-
-            routes: list[dict[str, Any]] = []
-            seen_ids: set[str] = set()
-            for index, item in enumerate(value, start=1):
-                if not isinstance(item, Mapping):
-                    raise ValueError(f"Invalid SMART_SEARCH_MODEL_ROUTES route {index}: expected an object.")
-
-                route_id = str(item.get("id") or "").strip()
-                if not route_id:
-                    raise ValueError(f"Invalid SMART_SEARCH_MODEL_ROUTES route {index}: missing id.")
-                if route_id in seen_ids:
-                    raise ValueError(f"Invalid SMART_SEARCH_MODEL_ROUTES: duplicate id: {route_id}.")
-
-                provider_value = str(item.get("provider") or "").strip().lower()
-                provider = cls._MODEL_ROUTE_PROVIDER_ALIASES.get(provider_value, "")
-                if not provider:
-                    allowed = ", ".join(sorted({"xai-responses", "openai-compatible"}))
-                    raise ValueError(
-                        f"Invalid SMART_SEARCH_MODEL_ROUTES route {route_id}: "
-                        f"unsupported provider {provider_value or '<empty>'}; supported: {allowed}."
-                    )
-
-                api_url = str(item.get("api_url") or "").strip()
-                api_key = str(item.get("api_key") or "").strip()
-                model = str(item.get("model") or "").strip()
-                if not api_url or not api_key or not model:
-                    raise ValueError(
-                        f"Invalid SMART_SEARCH_MODEL_ROUTES route {route_id}: "
-                        "api_url, api_key, and model are required."
-                    )
-
-                normalized_model = cls.apply_model_suffix_for_url(model, api_url)
-                route: dict[str, Any] = {
-                    "id": route_id,
-                    "provider": provider,
-                    "api_url": api_url,
-                    "api_key": api_key,
-                    "model": normalized_model,
-                }
-                if provider == "xai-responses":
-                    tools_value = item.get("tools")
-                    if tools_value is None:
-                        tools = ["web_search", "x_search"]
-                    elif isinstance(tools_value, str):
-                        tools = [part.strip().lower() for part in tools_value.split(",") if part.strip()]
-                    elif isinstance(tools_value, list):
-                        tools = [str(part).strip().lower() for part in tools_value if str(part).strip()]
-                    else:
-                        raise ValueError(f"Invalid SMART_SEARCH_MODEL_ROUTES route {route_id}: tools must be a list or string.")
-                    invalid_tools = [tool for tool in tools if tool not in cls._MODEL_ROUTE_XAI_TOOLS]
-                    if invalid_tools:
-                        allowed = ", ".join(sorted(cls._MODEL_ROUTE_XAI_TOOLS))
-                        raise ValueError(
-                            f"Invalid SMART_SEARCH_MODEL_ROUTES route {route_id}: "
-                            f"unsupported tools {', '.join(invalid_tools)}; supported: {allowed}."
-                        )
-                    route["tools"] = list(dict.fromkeys(tools))
-                else:
-                    stream_value = item.get("stream", False)
-                    if isinstance(stream_value, bool):
-                        stream = stream_value
-                    elif isinstance(stream_value, str) and stream_value.strip().lower() in {"true", "1", "yes"}:
-                        stream = True
-                    elif isinstance(stream_value, str) and stream_value.strip().lower() in {"false", "0", "no", ""}:
-                        stream = False
-                    else:
-                        raise ValueError(f"Invalid SMART_SEARCH_MODEL_ROUTES route {route_id}: stream must be boolean.")
-                    fallback_value = item.get("fallback_models", [])
-                    if isinstance(fallback_value, str):
-                        fallback_models = [part.strip() for part in fallback_value.split(",") if part.strip()]
-                    elif isinstance(fallback_value, list):
-                        fallback_models = [str(part).strip() for part in fallback_value if str(part).strip()]
-                    else:
-                        raise ValueError(
-                            f"Invalid SMART_SEARCH_MODEL_ROUTES route {route_id}: fallback_models must be a list or string."
-                        )
-                    normalized_fallbacks: list[str] = []
-                    for fallback_model in fallback_models:
-                        candidate = cls.apply_model_suffix_for_url(fallback_model, api_url)
-                        if candidate != normalized_model and candidate not in normalized_fallbacks:
-                            normalized_fallbacks.append(candidate)
-                    route["stream"] = stream
-                    route["fallback_models"] = normalized_fallbacks
-
-                routes.append(route)
-                seen_ids.add(route_id)
-        except ValueError:
-            logger.info("步骤1结束：模型路由配置校验失败")
-            raise
-        logger.info("步骤1结束：模型路由配置解析完成，条数=%s", len(routes))
-        return routes
-
-    @classmethod
-    def _mask_nested_secrets(cls, value: object) -> object:
-        """
-        /*
-         * ================================================================================
-         * 步骤2：脱敏模型路由
-         * ================================================================================
-         * 目标：让 config、model 和 doctor 输出可以展示路由，但不泄露嵌套密钥。
-         * 数据源：已规范化的模型路由对象。
-         * 操作：递归复制字典和列表，对密钥字段和携带凭据的 URL 使用统一掩码。
-         * ================================================================================
-         */
-        """
-        logger.info("步骤2开始：脱敏模型路由")
-        if isinstance(value, Mapping):
-            masked: dict[str, object] = {}
-            for key, item in value.items():
-                normalized_key = str(key)
-
-                # 2.1 密钥字段和 URL 字段分别走对应的展示脱敏规则。
-                if any(marker in normalized_key.upper() for marker in ("KEY", "TOKEN", "SECRET")):
-                    masked[normalized_key] = cls._mask_api_key(str(item))
-                elif normalized_key.lower().endswith("url") and isinstance(item, str):
-                    masked[normalized_key] = redact_url_credentials(item)
-                else:
-                    masked[normalized_key] = cls._mask_nested_secrets(item)
-            logger.info("步骤2结束：模型路由字典脱敏完成")
-            return masked
-        if isinstance(value, list):
-            masked_list = [cls._mask_nested_secrets(item) for item in value]
-            logger.info("步骤2结束：模型路由列表脱敏完成，条数=%s", len(masked_list))
-            return masked_list
-        logger.info("步骤2结束：模型路由标量无需脱敏")
-        return value
-
-    @property
-    def model_routes_configured(self) -> bool:
-        snapshot = self._get_config_snapshot()
-        return self._MODEL_ROUTES_KEY in snapshot.values
-
-    @property
-    def model_routes(self) -> list[dict[str, Any]]:
-        snapshot = self._get_config_snapshot()
-        if self._MODEL_ROUTES_KEY not in snapshot.values:
-            return []
-        try:
-            return self._parse_model_routes_value(snapshot.values.get(self._MODEL_ROUTES_KEY))
-        except ValueError as exc:
-            raise ModelRoutesConfigurationError(str(exc)) from exc
-
-    def get_model_routes(self, *, masked: bool = True) -> list[dict[str, Any]]:
-        routes = self.model_routes
-        if not masked:
-            return routes
-        return self._mask_nested_secrets(routes)  # type: ignore[return-value]
-
-    def validate_saved_model_routes(self) -> None:
-        """
-        /*
-         * ================================================================================
-         * 步骤3：校验已保存模型路由
-         * ================================================================================
-         * 目标：让 config list 把损坏的本地路由文件识别为配置错误。
-         * 数据源：config.json 中未合并环境变量的 SMART_SEARCH_MODEL_ROUTES。
-         * 操作：
-         * 1) 路由键不存在时保持 legacy 配置兼容。
-         * 2) 路由键存在时复用统一解析器，并保留配置错误分类。
-         * ================================================================================
-        */
-        """
-        logger.info("步骤3开始：校验已保存模型路由")
-        snapshot = self._get_config_snapshot()
-        if self._MODEL_ROUTES_KEY not in snapshot.file_values:
-            logger.info("步骤3结束：未保存模型路由，无需校验")
-            return
-        try:
-            self._parse_model_routes_value(snapshot.file_values[self._MODEL_ROUTES_KEY])
-        except ValueError as exc:
-            logger.info("步骤3结束：已保存模型路由校验失败")
-            raise ModelRoutesConfigurationError(str(exc)) from exc
-        logger.info("步骤3结束：已保存模型路由校验完成")
-
-    def validate_effective_model_routes(self) -> None:
-        """
-        /*
-         * ================================================================================
-         * 步骤4：校验生效模型路由
-         * ================================================================================
-         * 目标：让 config list 把环境覆盖中的损坏路由识别为配置错误。
-         * 数据源：合并 config.json 和环境变量后的 SMART_SEARCH_MODEL_ROUTES。
-         * 操作：
-         * 1) 路由键不存在时保持 legacy 配置兼容。
-         * 2) 路由键存在时复用统一解析器，环境值优先于文件值。
-         * ================================================================================
-        */
-        """
-        logger.info("步骤4开始：校验生效模型路由")
-        snapshot = self._get_config_snapshot()
-        if self._MODEL_ROUTES_KEY not in snapshot.values:
-            logger.info("步骤4结束：未配置生效模型路由，无需校验")
-            return
-        try:
-            self._parse_model_routes_value(snapshot.values[self._MODEL_ROUTES_KEY])
-        except ValueError as exc:
-            logger.info("步骤4结束：生效模型路由校验失败")
-            raise ModelRoutesConfigurationError(str(exc)) from exc
-        logger.info("步骤4结束：生效模型路由校验完成")
-
-    def set_model_routes(self, routes: object) -> list[dict[str, Any]]:
-        """
-        /*
-         * ================================================================================
-         * 步骤3：持久化模型路由
-         * ================================================================================
-         * 目标：用原子配置写入保存经过校验的有序路由列表。
-         * 数据源：model add、model remove 或 config set 提交的路由对象。
-         * 操作：校验路由、保留其他配置项、写入 SMART_SEARCH_MODEL_ROUTES 并刷新快照。
-         * ================================================================================
-         */
-        """
-        logger.info("步骤3开始：保存模型路由")
-        snapshot = self._get_config_snapshot()
-        if snapshot.environment_values.get(self._MODEL_ROUTES_KEY) is not None:
-            raise ValueError("SMART_SEARCH_MODEL_ROUTES is controlled by the environment and cannot be edited locally.")
-        normalized = self._parse_model_routes_value(routes)
-        config_data = dict(snapshot.file_values)
-        config_data[self._MODEL_ROUTES_KEY] = normalized
-        self._save_config_file(config_data)
-        self._cached_model = None
-        logger.info("步骤3结束：模型路由保存完成，条数=%s", len(normalized))
-        return normalized
-
-    def _legacy_model_routes_for_migration(self, snapshot: ConfigSnapshot) -> list[dict[str, Any]]:
-        """
-        /*
-         * ==============================================================================
-         * 步骤4：构造旧主搜索模型路由
-         * ==============================================================================
-         * 目标：首次 model add 时保留本地 legacy 主搜索配置。
-         * 数据源：同一配置快照中的 XAI_* 与 OPENAI_COMPATIBLE_* 文件值。
-         * 操作：
-         * 1) 拒绝活跃 provider 的环境覆盖，避免把环境凭据写入 config.json。
-         * 2) 按 legacy fallback 顺序构造稳定 ID 的独立 route。
-         * ==============================================================================
-        */
-        """
-        logger.info("步骤4开始：构造旧主搜索模型路由")
-        xai_api_key = self.xai_api_key
-        openai_api_url = self.openai_compatible_api_url
-        openai_api_key = self.openai_compatible_api_key
-        active_providers = (
-            (
-                "xai-responses",
-                bool(xai_api_key),
-                ("XAI_API_URL", "XAI_API_KEY", "XAI_MODEL", "XAI_TOOLS"),
-            ),
-            (
-                "openai-compatible",
-                bool(openai_api_url and openai_api_key),
-                (
-                    "OPENAI_COMPATIBLE_API_URL",
-                    "OPENAI_COMPATIBLE_API_KEY",
-                    "OPENAI_COMPATIBLE_MODEL",
-                    "OPENAI_COMPATIBLE_STREAM",
-                    "OPENAI_COMPATIBLE_FALLBACK_MODELS",
-                ),
-            ),
-        )
-        environment_keys = [
-            key
-            for _, configured, keys in active_providers
-            if configured
-            for key in keys
-            if snapshot.environment_values.get(key) is not None
-        ]
-        if environment_keys:
-            logger.info("步骤4结束：旧主搜索迁移被环境配置阻止")
-            raise ValueError(
-                "Cannot migrate legacy main-search configuration controlled by the environment "
-                f"({', '.join(environment_keys)}). Set SMART_SEARCH_MODEL_ROUTES in the environment instead."
-            )
-
-        routes: list[dict[str, Any]] = []
-        if xai_api_key:
-            routes.append(
-                {
-                    "id": "legacy-xai-responses",
-                    "provider": "xai-responses",
-                    "api_url": self.xai_api_url,
-                    "api_key": xai_api_key,
-                    "model": self.xai_model,
-                    "tools": self.parse_xai_tools(self.xai_tools_raw),
-                }
-            )
-        if openai_api_url and openai_api_key:
-            routes.append(
-                {
-                    "id": "legacy-openai-compatible",
-                    "provider": "openai-compatible",
-                    "api_url": openai_api_url,
-                    "api_key": openai_api_key,
-                    "model": self.openai_compatible_model,
-                    "stream": self.openai_compatible_stream,
-                    "fallback_models": self.openai_compatible_fallback_models,
-                }
-            )
-        logger.info("步骤4结束：旧主搜索模型路由构造完成，条数=%s", len(routes))
-        return routes
-
-    def add_model_route(self, route: Mapping[str, object]) -> list[dict[str, Any]]:
-        """
-        /*
-         * ==============================================================================
-         * 步骤5：追加模型路由并迁移旧配置
-         * ==============================================================================
-         * 目标：保留已保存的 legacy 主搜索配置，再追加用户提交的 route。
-         * 数据源：当前快照、legacy provider 配置与 model add 参数。
-         * 操作：
-         * 1) route list 存在时保留其顺序；缺失时构造 legacy routes。
-         * 2) 统一交给 set_model_routes 校验并原子持久化。
-         * ==============================================================================
-        */
-        """
-        logger.info("步骤5开始：添加模型路由")
-        snapshot = self._get_config_snapshot()
-        routes = (
-            list(self.model_routes)
-            if self.model_routes_configured
-            else self._legacy_model_routes_for_migration(snapshot)
-        )
-        routes.append(dict(route))
-        result = self.set_model_routes(routes)
-        logger.info("步骤5结束：模型路由添加完成，条数=%s", len(result))
-        return result
-
-    def remove_model_route(self, route_id: str) -> list[dict[str, Any]]:
-        logger.info("开始删除模型路由: id=%s", route_id)
-        normalized_id = str(route_id or "").strip()
-        routes = self.model_routes
-        remaining = [route for route in routes if route.get("id") != normalized_id]
-        if len(remaining) == len(routes):
-            raise ValueError(f"Model route not found: {normalized_id}")
-        result = self.set_model_routes(remaining)
-        logger.info("模型路由删除完成，条数=%s", len(result))
-        return result
-
     def _save_config_file(self, config_data: dict) -> None:
         target = self.config_file
         temp_path: Path | None = None
@@ -768,35 +372,20 @@ class Config:
         if value is None and key not in snapshot.environment_values:
             value = os.getenv(key)
         if value is None:
-            legacy_key = next((old for old, new in self._LEGACY_CONFIG_KEYS.items() if new == key), None)
-            if legacy_key:
-                value = snapshot.file_values.get(legacy_key)
-        if value is None:
             return default
         return str(value)
 
     def get_saved_config(self, masked: bool = True) -> dict:
         data = self._get_config_snapshot().file_values
         normalized: dict[str, Any] = {}
-        for old_key, new_key in self._LEGACY_CONFIG_KEYS.items():
-            if old_key in data and new_key not in data:
-                normalized[new_key] = str(data[old_key])
         for key, value in data.items():
             if key in self._CONFIG_KEYS and value is not None:
-                if key == self._MODEL_ROUTES_KEY:
-                    try:
-                        normalized[key] = self._parse_model_routes_value(value)
-                    except ValueError:
-                        normalized[key] = "<invalid SMART_SEARCH_MODEL_ROUTES>"
-                else:
-                    normalized[key] = str(value)
+                normalized[key] = str(value)
         if not masked:
             return normalized
         masked_config: dict[str, Any] = {}
         for key, value in normalized.items():
-            if key == self._MODEL_ROUTES_KEY and isinstance(value, list):
-                masked_config[key] = self._mask_nested_secrets(value)
-            elif isinstance(value, str):
+            if isinstance(value, str):
                 masked_config[key] = self._mask_if_secret(key, value)
             else:
                 masked_config[key] = value
@@ -811,9 +400,6 @@ class Config:
             return "environment"
         if key in snapshot.file_values:
             return "config_file"
-        legacy_key = next((old for old, new in self._LEGACY_CONFIG_KEYS.items() if new == key), None)
-        if legacy_key and legacy_key in snapshot.file_values:
-            return "config_file"
         return "default"
 
     def get_config_sources(self) -> dict[str, str]:
@@ -825,8 +411,7 @@ class Config:
             elif key in snapshot.file_values:
                 sources[key] = "config_file"
             else:
-                legacy_key = next((old for old, new in self._LEGACY_CONFIG_KEYS.items() if new == key), None)
-                sources[key] = "config_file" if legacy_key and legacy_key in snapshot.file_values else "default"
+                sources[key] = "default"
         return sources
 
     def config_load_error(self) -> dict | None:
@@ -867,19 +452,10 @@ class Config:
                     allowed = ", ".join(sorted(self._ALLOWED_RETRIEVAL_MODES))
                     raise ValueError(f"Invalid SMART_SEARCH_DEFAULT_MODE: {mode}. Supported values: {allowed}")
                 value = mode
-            elif key == self._MODEL_ROUTES_KEY:
-                value = self._parse_model_routes_value(value)
+
             config_data[key] = value
         self._save_config_file(config_data)
-        if normalized_values.keys() & {
-            "XAI_API_URL", "XAI_API_KEY", "XAI_MODEL", "XAI_TOOLS",
-            "OPENAI_COMPATIBLE_API_URL", "OPENAI_COMPATIBLE_API_KEY",
-            "OPENAI_COMPATIBLE_MODEL", "OPENAI_COMPATIBLE_FALLBACK_MODELS",
-            "OPENAI_COMPATIBLE_STREAM", self._MODEL_ROUTES_KEY,
-            "SMART_SEARCH_VALIDATION_LEVEL", "SMART_SEARCH_FALLBACK_MODE",
-            "SMART_SEARCH_MINIMUM_PROFILE", "SMART_SEARCH_INTENT_ROUTER",
-        }:
-            self._cached_model = None
+
 
     def set_config_value(self, key: str, value: object) -> None:
         key = key.strip().upper()
@@ -895,25 +471,9 @@ class Config:
                 allowed = ", ".join(sorted(self._ALLOWED_RETRIEVAL_MODES))
                 raise ValueError(f"Invalid SMART_SEARCH_DEFAULT_MODE: {mode}. Supported values: {allowed}")
             value = mode
-        config_data[key] = self._parse_model_routes_value(value) if key == self._MODEL_ROUTES_KEY else value
+        config_data[key] = value
         self._save_config_file(config_data)
-        if key in {
-            "XAI_API_URL",
-            "XAI_API_KEY",
-            "XAI_MODEL",
-            "XAI_TOOLS",
-            "OPENAI_COMPATIBLE_API_URL",
-            "OPENAI_COMPATIBLE_API_KEY",
-            "OPENAI_COMPATIBLE_MODEL",
-            "OPENAI_COMPATIBLE_FALLBACK_MODELS",
-            "OPENAI_COMPATIBLE_STREAM",
-            "SMART_SEARCH_MODEL_ROUTES",
-            "SMART_SEARCH_VALIDATION_LEVEL",
-            "SMART_SEARCH_FALLBACK_MODE",
-            "SMART_SEARCH_MINIMUM_PROFILE",
-            "SMART_SEARCH_INTENT_ROUTER",
-        }:
-            self._cached_model = None
+
 
     def unset_config_value(self, key: str) -> None:
         key = key.strip().upper()
@@ -924,27 +484,8 @@ class Config:
         self._reject_malformed_write()
         config_data = dict(snapshot.file_values)
         config_data.pop(key, None)
-        for old_key, new_key in self._LEGACY_CONFIG_KEYS.items():
-            if new_key == key:
-                config_data.pop(old_key, None)
         self._save_config_file(config_data)
-        if key in {
-            "XAI_API_URL",
-            "XAI_API_KEY",
-            "XAI_MODEL",
-            "XAI_TOOLS",
-            "OPENAI_COMPATIBLE_API_URL",
-            "OPENAI_COMPATIBLE_API_KEY",
-            "OPENAI_COMPATIBLE_MODEL",
-            "OPENAI_COMPATIBLE_FALLBACK_MODELS",
-            "OPENAI_COMPATIBLE_STREAM",
-            "SMART_SEARCH_MODEL_ROUTES",
-            "SMART_SEARCH_VALIDATION_LEVEL",
-            "SMART_SEARCH_FALLBACK_MODE",
-            "SMART_SEARCH_MINIMUM_PROFILE",
-            "SMART_SEARCH_INTENT_ROUTER",
-        }:
-            self._cached_model = None
+
 
     def config_path_info(self) -> dict:
         self._get_config_snapshot()
@@ -983,78 +524,6 @@ class Config:
     @property
     def retry_max_wait(self) -> int:
         return int(self._get_config_value("SMART_SEARCH_RETRY_MAX_WAIT", "10") or "10")
-
-    @property
-    def xai_api_url(self) -> str:
-        return self._get_config_value("XAI_API_URL", "https://api.x.ai/v1") or "https://api.x.ai/v1"
-
-    @property
-    def xai_api_key(self) -> str | None:
-        return self._get_config_value("XAI_API_KEY")
-
-    @property
-    def xai_model(self) -> str:
-        return self._get_config_value("XAI_MODEL") or self._base_model_value()
-
-    @property
-    def xai_tools_raw(self) -> str:
-        return self._get_config_value("XAI_TOOLS", self._DEFAULT_XAI_TOOLS) or self._DEFAULT_XAI_TOOLS
-
-    @property
-    def openai_compatible_api_url(self) -> str | None:
-        return self._get_config_value("OPENAI_COMPATIBLE_API_URL")
-
-    @property
-    def openai_compatible_api_key(self) -> str | None:
-        return self._get_config_value("OPENAI_COMPATIBLE_API_KEY")
-
-    @property
-    def openai_compatible_model(self) -> str:
-        model = self._get_config_value("OPENAI_COMPATIBLE_MODEL") or self._base_model_value()
-        return self.apply_model_suffix_for_url(model, self.openai_compatible_api_url or "")
-
-    @property
-    def openai_compatible_fallback_models(self) -> list[str]:
-        raw = self._get_config_value("OPENAI_COMPATIBLE_FALLBACK_MODELS", "") or ""
-        models: list[str] = []
-        seen: set[str] = set()
-        api_url = self.openai_compatible_api_url or ""
-        primary = self.openai_compatible_model
-        for item in raw.split(","):
-            model = item.strip()
-            if not model:
-                continue
-            model = self.apply_model_suffix_for_url(model, api_url)
-            if model == primary or model in seen:
-                continue
-            seen.add(model)
-            models.append(model)
-        return models
-
-    @property
-    def openai_compatible_stream(self) -> bool:
-        return (self._get_config_value("OPENAI_COMPATIBLE_STREAM", "false") or "false").lower() in ("true", "1", "yes")
-
-    def parse_xai_tools(self, raw: str | None = None) -> list[str]:
-        raw = raw or self.xai_tools_raw
-        tools: list[str] = []
-        invalid: list[str] = []
-        seen: set[str] = set()
-        for item in raw.split(","):
-            tool = item.strip().lower()
-            if not tool:
-                continue
-            if tool not in self._ALLOWED_XAI_TOOLS:
-                invalid.append(tool)
-                continue
-            if tool not in seen:
-                seen.add(tool)
-                tools.append(tool)
-        if invalid:
-            allowed = ", ".join(sorted(self._ALLOWED_XAI_TOOLS))
-            invalid_text = ", ".join(invalid)
-            raise ValueError(f"Invalid XAI_TOOLS: {invalid_text}. Supported values: {allowed}")
-        return tools
 
     def _validated_enum(self, key: str, default: str, allowed: set[str]) -> str:
         value = (self._get_config_value(key, default) or default).strip().lower()
@@ -1427,15 +896,6 @@ class Config:
         return self._get_config_value("SMART_SEARCH_LOG_DIR", "logs") or "logs"
 
     @staticmethod
-    def apply_model_suffix_for_url(model: str, api_url: str) -> str:
-        if "openrouter" in api_url and ":online" not in model:
-            return f"{model}:online"
-        return model
-
-    def _base_model_value(self) -> str:
-        return self._DEFAULT_MODEL
-
-    @staticmethod
     def _mask_api_key(key: str) -> str:
         if not key or len(key) <= 8:
             return "***"
@@ -1549,45 +1009,11 @@ class Config:
         return float(self._get_config_value("JINA_TIMEOUT_SECONDS", "30") or "30")
 
     def get_config_info(self) -> dict:
-        """
-        /*
-         * ==============================================================================
-         * 步骤1：聚合配置诊断状态
-         * ==============================================================================
-         * 目标：让路由配置、旧主搜索配置和诊断状态使用同一优先级规则。
-         * 数据源：配置快照中的 SMART_SEARCH_MODEL_ROUTES、XAI_* 与
-         * OPENAI_COMPATIBLE_*。
-         * 操作：
-         * 1) 先识别模型路由键是否存在，空数组也属于显式路由配置。
-         * 2) 仅在路由键缺失时使用旧主搜索配置计算可用状态。
-         * 3) 输出与搜索和模型管理一致的主模型诊断字段。
-         * ==============================================================================
-        */
-        """
-        logger.info("步骤1开始：聚合配置诊断状态")
+        """Return active configuration values and storage diagnostics."""
+        logger.info("开始聚合配置诊断状态")
         config_parameter_errors: list[str] = []
         config_path = self.config_path_info()
-        model_routes: list[dict[str, Any]] = []
-        model_routes_error = ""
-        model_routes_configured = False
-        try:
-            # 1.1 路由键存在时，即使数组为空也必须屏蔽旧配置兜底。
-            model_routes_configured = self.model_routes_configured
-            if model_routes_configured:
-                model_routes = self.model_routes
-        except ValueError as exc:
-            model_routes_error = str(exc)
-
-        # 1.2 只有未进入路由模式时，旧主搜索配置才可作为有效主模型。
-        legacy_main_configured = bool(
-            self.xai_api_key
-            or (self.openai_compatible_api_url and self.openai_compatible_api_key)
-        )
-        explicit_main_configured = (
-            bool(model_routes)
-            if model_routes_configured
-            else legacy_main_configured
-        )
+        explicit_main_configured = bool(self.brave_api_key or self.exa_api_key or self.tavily_api_key)
         if explicit_main_configured:
             config_status = "ok: 配置完整"
         else:
@@ -1668,7 +1094,6 @@ class Config:
                 search_cache_ttl_error,
                 fetch_cache_ttl_error,
                 cache_max_size_error,
-                model_routes_error,
             )
             if error
         )
@@ -1682,34 +1107,8 @@ class Config:
                 f"({config_path['config_load_error'].get('kind')}); repair the file"
             )
 
-        # 1.3 诊断展示沿用同一优先级，避免空路由显示旧模型仍可用。
-        if model_routes:
-            primary_api_mode = model_routes[0]["provider"]
-        elif model_routes_configured:
-            primary_api_mode = "未配置"
-        elif self.xai_api_key:
-            primary_api_mode = "xai-responses"
-        elif self.openai_compatible_api_url and self.openai_compatible_api_key:
-            primary_api_mode = "chat-completions"
-        else:
-            primary_api_mode = "未配置"
-
-        logger.info(
-            "步骤1结束：配置诊断状态聚合完成，routes_configured=%s routes=%s",
-            model_routes_configured,
-            len(model_routes),
-        )
+        logger.info("配置诊断状态聚合完成")
         return {
-            "XAI_API_URL": self.xai_api_url,
-            "XAI_API_KEY": self._mask_api_key(self.xai_api_key) if self.xai_api_key else "未配置",
-            "XAI_MODEL": self.xai_model,
-            "XAI_TOOLS": self.xai_tools_raw,
-            "OPENAI_COMPATIBLE_API_URL": self.openai_compatible_api_url or "未配置",
-            "OPENAI_COMPATIBLE_API_KEY": self._mask_api_key(self.openai_compatible_api_key) if self.openai_compatible_api_key else "未配置",
-            "OPENAI_COMPATIBLE_MODEL": self.openai_compatible_model,
-            "OPENAI_COMPATIBLE_FALLBACK_MODELS": ",".join(self.openai_compatible_fallback_models),
-            "OPENAI_COMPATIBLE_STREAM": self.openai_compatible_stream,
-            "SMART_SEARCH_MODEL_ROUTES": self.get_model_routes(masked=True) if not model_routes_error else "<invalid SMART_SEARCH_MODEL_ROUTES>",
             "SMART_SEARCH_VALIDATION_LEVEL": validation_level,
             "SMART_SEARCH_DEFAULT_MODE": default_mode,
             "SMART_SEARCH_FALLBACK_MODE": fallback_mode,
@@ -1778,8 +1177,6 @@ class Config:
             "JINA_READER_API_URL": self.jina_reader_api_url,
             "JINA_RESPOND_WITH": self.jina_respond_with,
             "JINA_TIMEOUT_SECONDS": self.jina_timeout,
-            "primary_api_mode": primary_api_mode,
-            "primary_api_mode_source": "config_file" if explicit_main_configured else "default",
             "config_file": str(self.config_file),
             "config_dir": str(self.config_file.parent),
             "config_dir_source": self.config_dir_source,

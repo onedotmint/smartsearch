@@ -141,7 +141,7 @@ def test_tavily_timeout_can_be_configured(monkeypatch):
 
 def test_config_snapshot_reads_file_once_for_config_info(monkeypatch, tmp_path):
     config = _fresh_config_file(monkeypatch, tmp_path)
-    config._save_config_file({"XAI_API_KEY": "file-secret", "XAI_MODEL": "file-model"})
+    config._save_config_file({"TAVILY_API_KEY": "file-secret", "TAVILY_API_URL": "https://file.example"})
     calls = 0
     original_load = config._load_config_file
 
@@ -153,50 +153,50 @@ def test_config_snapshot_reads_file_once_for_config_info(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "_load_config_file", counted_load)
     info = config.get_config_info()
 
-    assert info["XAI_MODEL"] == "file-model"
-    assert info["config_sources"]["XAI_API_KEY"] == "config_file"
+    assert info["TAVILY_API_URL"] == "https://file.example"
+    assert info["config_sources"]["TAVILY_API_KEY"] == "config_file"
     assert calls == 1
 
 
 def test_config_snapshot_merges_environment_and_is_immutable(monkeypatch, tmp_path):
     config = _fresh_config_file(monkeypatch, tmp_path)
-    config._save_config_file({"XAI_API_KEY": "file-secret"})
-    monkeypatch.setenv("XAI_API_KEY", "environment-secret")
+    config._save_config_file({"TAVILY_API_KEY": "file-secret"})
+    monkeypatch.setenv("TAVILY_API_KEY", "environment-secret")
 
     snapshot = config.refresh()
 
-    assert snapshot.values["XAI_API_KEY"] == "environment-secret"
-    assert snapshot.file_values["XAI_API_KEY"] == "file-secret"
-    assert config.xai_api_key == "environment-secret"
-    assert config.get_config_source("XAI_API_KEY") == "environment"
+    assert snapshot.values["TAVILY_API_KEY"] == "environment-secret"
+    assert snapshot.file_values["TAVILY_API_KEY"] == "file-secret"
+    assert config.tavily_api_key == "environment-secret"
+    assert config.get_config_source("TAVILY_API_KEY") == "environment"
     with pytest.raises(TypeError):
-        snapshot.values["XAI_API_KEY"] = "changed"
+        snapshot.values["TAVILY_API_KEY"] = "changed"
 
 
 def test_config_snapshot_refresh_reads_external_file_changes(monkeypatch, tmp_path):
     config = _fresh_config_file(monkeypatch, tmp_path)
     config.config_file.parent.mkdir(parents=True, exist_ok=True)
-    config.config_file.write_text(json.dumps({"XAI_MODEL": "old-model"}), encoding="utf-8")
+    config.config_file.write_text(json.dumps({"TAVILY_API_URL": "https://old.example"}), encoding="utf-8")
 
     first = config.refresh()
-    config.config_file.write_text(json.dumps({"XAI_MODEL": "new-model"}), encoding="utf-8")
+    config.config_file.write_text(json.dumps({"TAVILY_API_URL": "https://new.example"}), encoding="utf-8")
 
-    assert first.values["XAI_MODEL"] == "old-model"
-    assert config.xai_model == "old-model"
+    assert first.values["TAVILY_API_URL"] == "https://old.example"
+    assert config.tavily_api_url == "https://old.example"
     config.refresh()
-    assert config.xai_model == "new-model"
+    assert config.tavily_api_url == "https://new.example"
 
 
 def test_config_write_invalidates_snapshot(monkeypatch, tmp_path):
     config = _fresh_config_file(monkeypatch, tmp_path)
-    config._save_config_file({"XAI_MODEL": "old-model"})
-    assert config.xai_model == "old-model"
+    config._save_config_file({"TAVILY_API_URL": "https://old.example"})
+    assert config.tavily_api_url == "https://old.example"
 
-    config.set_config_value("XAI_MODEL", "new-model")
+    config.set_config_value("TAVILY_API_URL", "https://new.example")
 
-    assert config.xai_model == "new-model"
-    config.unset_config_value("XAI_MODEL")
-    assert config.xai_model == config._DEFAULT_MODEL
+    assert config.tavily_api_url == "https://new.example"
+    config.unset_config_value("TAVILY_API_URL")
+    assert config.tavily_api_url == "https://api.tavily.com"
 
 
 def test_absolute_log_dir_is_resolved_without_creation(monkeypatch, tmp_path):
@@ -227,32 +227,32 @@ def test_config_storage_uses_owner_only_modes(monkeypatch, tmp_path):
     monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(target))
     config = _fresh_config_file(monkeypatch)
 
-    config._save_config_file({"XAI_API_KEY": "secret"})
+    config._save_config_file({"TAVILY_API_KEY": "secret"})
 
     assert stat.S_IMODE(target.stat().st_mode) == 0o700
     assert stat.S_IMODE(config.config_file.stat().st_mode) == 0o600
 
     config.config_file.chmod(0o644)
-    config._save_config_file({"XAI_API_KEY": "rotated"})
+    config._save_config_file({"TAVILY_API_KEY": "rotated"})
 
     assert stat.S_IMODE(config.config_file.stat().st_mode) == 0o600
-    assert json.loads(config.config_file.read_text(encoding="utf-8"))["XAI_API_KEY"] == "rotated"
+    assert json.loads(config.config_file.read_text(encoding="utf-8"))["TAVILY_API_KEY"] == "rotated"
 
 
 def test_atomic_config_replace_preserves_previous_file_on_failure(monkeypatch, tmp_path):
     target = tmp_path / "secure-config"
     monkeypatch.setenv("SMART_SEARCH_CONFIG_DIR", str(target))
     config = _fresh_config_file(monkeypatch)
-    config._save_config_file({"XAI_API_KEY": "old"})
+    config._save_config_file({"TAVILY_API_KEY": "old"})
 
     def fail_replace(source, destination):
         raise OSError("replace failed")
 
     monkeypatch.setattr("smart_search.config.os.replace", fail_replace)
     with pytest.raises(ValueError, match="无法保存"):
-        config._save_config_file({"XAI_API_KEY": "new"})
+        config._save_config_file({"TAVILY_API_KEY": "new"})
 
-    assert json.loads(config.config_file.read_text(encoding="utf-8"))["XAI_API_KEY"] == "old"
+    assert json.loads(config.config_file.read_text(encoding="utf-8"))["TAVILY_API_KEY"] == "old"
     assert list(target.glob(".config.json.*.tmp")) == []
 
 
@@ -278,7 +278,7 @@ def test_unavailable_default_dir_does_not_fall_back_to_cwd(monkeypatch, tmp_path
     assert "SMART_SEARCH_CONFIG_DIR" in config_info["config_storage_error"]
     assert config_info["config_status"].startswith("config_error:")
     with pytest.raises(ValueError, match="SMART_SEARCH_CONFIG_DIR"):
-        config._save_config_file({"XAI_API_KEY": "secret"})
+        config._save_config_file({"TAVILY_API_KEY": "secret"})
 
 
 def test_setup_command_recovery_text_uses_only_v1_guidance():
