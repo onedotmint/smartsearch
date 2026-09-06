@@ -3,6 +3,10 @@
   "version": "1.0.2",
   "description": "Pi tools for the Smart Search v1 CLI",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/onedotmint/smartsearch.git"
+  },
   "type": "module",
   "keywords": [
     "pi-package",
