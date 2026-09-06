@@ -1,0 +1,144 @@
+name: Finalize npm release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Full commit SHA reachable from origin/main to finalize
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: smart-search-stable-release
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate immutable target input
+        id: resolve
+        env:
+          INPUT_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -eu
+          if [[ ! "$INPUT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Finalize requires a full 40-character commit SHA reachable from origin/main; branch and tag inputs are rejected." >&2
+            exit 1
+          fi
+          echo "target_sha=$INPUT_SHA" >> "$GITHUB_OUTPUT"
+      - name: Checkout release target with full history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.resolve.outputs.target_sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Verify reachable target, synchronized metadata, notes, and tag
+        id: release-gate
+        env:
+          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          if ! git merge-base --is-ancestor "$TARGET_SHA" origin/main; then
+            echo "Manual target $TARGET_SHA is not reachable from origin/main." >&2
+            exit 1
+          fi
+          version="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
+          pi_version="$(python3 -c 'import json; print(json.load(open("integrations/pi/package.json"))["version"])')"
+          if [[ "$version" != "$pi_version" ]]; then
+            echo "Root and Pi manifests do not share the same version." >&2
+            exit 1
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version $version is not a stable x.y.z release version." >&2
+            exit 1
+          fi
+          python3 - "$version" <<'PY'
+          import json, os, re, sys
+
+          version = sys.argv[1]
+
+          def fail(message):
+              print(f"::error::{message}", flush=True)
+              raise SystemExit(1)
+
+          root = json.load(open("package.json", encoding="utf-8"))
+          pi = json.load(open("integrations/pi/package.json", encoding="utf-8"))
+          if root["name"] != "@onedotmint/smart-search":
+              fail("root manifest name mismatch")
+          if pi["name"] != "@onedotmint/pi-smart-search":
+              fail("Pi manifest name mismatch")
+          if root["version"] != version or pi["version"] != version:
+              fail("manifest version mismatch")
+          for lock_path, package_name in (
+              ("package-lock.json", "@onedotmint/smart-search"),
+              ("integrations/pi/package-lock.json", "@onedotmint/pi-smart-search"),
+          ):
+              data = json.load(open(lock_path, encoding="utf-8"))
+              if data.get("name") != package_name or data.get("version") != version:
+                  fail(f"{lock_path} metadata mismatch")
+              entry = (data.get("packages") or {}).get("")
+              if not entry or entry.get("version") != version:
+                  fail(f"{lock_path} packages[''] version mismatch")
+          pyproject = open("pyproject.toml", encoding="utf-8").read()
+          if f'version = "{version}"' not in pyproject:
+              fail("pyproject.toml version mismatch")
+          notes_path = f".github/releases/v{version}.md"
+          if not os.path.isfile(notes_path) or os.path.getsize(notes_path) == 0:
+              fail("release notes missing or empty")
+          notes = open(notes_path, encoding="utf-8").read()
+          heading = re.search(rf"^# v{re.escape(version)}(?:\s|$)", notes, re.MULTILINE)
+          if not heading:
+              fail("release notes heading mismatch")
+          if not notes[heading.end():].strip():
+              fail("release notes body missing or empty")
+          PY
+          tag="v$version"
+          remote_tag="$(git ls-remote --tags --refs origin "refs/tags/$tag")"
+          if [[ -n "$remote_tag" ]]; then
+            git fetch --no-tags origin "refs/tags/$tag:refs/tags/$tag"
+            tag_target="$(git rev-parse "refs/tags/$tag^{commit}")"
+            if [[ "$tag_target" != "$TARGET_SHA" ]]; then
+              echo "Existing Git tag $tag points at $tag_target, not $TARGET_SHA; refusing finalization." >&2
+              exit 1
+            fi
+          fi
+          echo "release_version=$version" >> "$GITHUB_OUTPUT"
+      - name: Verify both public exact versions and latest tags
+        id: verify-public
+        env:
+          RELEASE_VERSION: ${{ steps.release-gate.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          verify_exact_version() {
+            package_name="$1"
+            value="$(npm_config_loglevel=error npm view "${package_name}@${RELEASE_VERSION}" version --json --fetch-retries=0)"
+            node -e 'process.exit(JSON.parse(process.argv[1]) === process.argv[2] ? 0 : 1)' "$value" "$RELEASE_VERSION"
+            latest="$(npm_config_loglevel=error npm view "$package_name" dist-tags.latest --json --fetch-retries=0)"
+            node -e 'process.exit(JSON.parse(process.argv[1]) === process.argv[2] ? 0 : 1)' "$latest" "$RELEASE_VERSION"
+          }
+          verify_exact_version '@onedotmint/smart-search'
+          verify_exact_version '@onedotmint/pi-smart-search'
+          echo "verified=true" >> "$GITHUB_OUTPUT"
+      - name: Create or update stable GitHub release
+        if: steps.verify-public.outputs.verified == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.resolve.outputs.target_sha }}
+          RELEASE_VERSION: ${{ steps.release-gate.outputs.release_version }}
+        run: |
+          tag_name="v${RELEASE_VERSION}"
+          notes_file=".github/releases/${tag_name}.md"
+          if gh release view "$tag_name" >/dev/null 2>&1; then
+            gh release edit "$tag_name" --title "$tag_name" --notes-file "$notes_file"
+          else
+            gh release create "$tag_name" --target "$TARGET_SHA" --title "$tag_name" --notes-file "$notes_file"
+          fi
