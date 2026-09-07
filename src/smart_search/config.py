@@ -1,4 +1,3 @@
-import hashlib
 import json
 import logging
 import os
@@ -36,64 +35,16 @@ class Config:
         "provider keys through the environment for CI. Setup selections control "
         "which discovery providers are enabled. Then use `smart-search search ... --format json`."
     )
-    _DEFAULT_VALIDATION_LEVEL = "balanced"
-    _DEFAULT_FALLBACK_MODE = "auto"
-    _DEFAULT_MINIMUM_PROFILE = "standard"
-    _DEFAULT_INTENT_ROUTER_MODE = "hybrid"
     _DEFAULT_RETRIEVAL_MODE = "balanced"
-    _DEFAULT_INTENT_ROUTER_TIMEOUT_SECONDS = "8"
-    _DEFAULT_INTENT_EMBEDDING_THRESHOLD = "0.74"
-    _DEFAULT_INTENT_EMBEDDING_MARGIN = "0.05"
-    _DEFAULT_CACHE_ENABLED = "false"
-    _DEFAULT_SEARCH_CACHE_TTL_SECONDS = "30"
-    _DEFAULT_FETCH_CACHE_TTL_SECONDS = "300"
-    _DEFAULT_CACHE_MAX_SIZE = "256"
-    _CACHE_TTL_BOUNDS = (1, 604800)
-    _CACHE_MAX_SIZE_BOUNDS = (1, 10000)
     _CONFIG_DIR_MODE = 0o700
     _CONFIG_FILE_MODE = 0o600
-    _ALLOWED_VALIDATION_LEVELS = {"fast", "balanced", "strict"}
-    _ALLOWED_FALLBACK_MODES = {"auto", "off"}
-    _ALLOWED_MINIMUM_PROFILES = {"lite", "standard", "full", "off"}
-    _ALLOWED_INTENT_ROUTER_MODES = {"hybrid", "rules", "off"}
     _ALLOWED_RETRIEVAL_MODES = {"fast", "balanced", "research"}
     _CONFIG_KEYS = {
-        "SMART_SEARCH_VALIDATION_LEVEL",
-        "SMART_SEARCH_FALLBACK_MODE",
-        "SMART_SEARCH_MINIMUM_PROFILE",
-        "SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS",
-        "SMART_SEARCH_RESEARCH_DISABLED_PROVIDERS",
-        "SMART_SEARCH_INTENT_ROUTER",
         "SMART_SEARCH_DEFAULT_MODE",
-        "SMART_SEARCH_PROMPT_DIR",
-        "SMART_SEARCH_SEARCH_PROMPT_FILE",
-        "SMART_SEARCH_FETCH_PROMPT_FILE",
-        "SMART_SEARCH_RESEARCH_PROMPT_FILE",
-        "INTENT_EMBEDDING_API_URL",
-        "INTENT_EMBEDDING_API_KEY",
-        "INTENT_EMBEDDING_MODEL",
-        "INTENT_EMBEDDING_THRESHOLD",
-        "INTENT_EMBEDDING_MARGIN",
-        "INTENT_CLASSIFIER_API_URL",
-        "INTENT_CLASSIFIER_API_KEY",
-        "INTENT_CLASSIFIER_MODEL",
-        "INTENT_ROUTER_TIMEOUT_SECONDS",
         "EXA_API_KEY",
         "EXA_ENABLED",
         "EXA_BASE_URL",
         "EXA_TIMEOUT_SECONDS",
-        "CONTEXT7_API_KEY",
-        "CONTEXT7_BASE_URL",
-        "CONTEXT7_TIMEOUT_SECONDS",
-        "ZHIPU_API_KEY",
-        "ZHIPU_API_URL",
-        "ZHIPU_SEARCH_ENGINE",
-        "ZHIPU_TIMEOUT_SECONDS",
-        "ZHIPU_MCP_API_KEY",
-        "ZHIPU_MCP_SEARCH_API_URL",
-        "ZHIPU_MCP_READER_API_URL",
-        "ZHIPU_MCP_ZREAD_API_URL",
-        "ZHIPU_MCP_TIMEOUT_SECONDS",
         "JINA_API_KEY",
         "JINA_READER_API_URL",
         "JINA_RESPOND_WITH",
@@ -110,27 +61,13 @@ class Config:
         "JINA_RERANK_MODEL",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
-        "ANYSEARCH_API_KEY",
-        "ANYSEARCH_API_URL",
-        "ANYSEARCH_TIMEOUT_SECONDS",
         "SMART_SEARCH_DEBUG",
         "SMART_SEARCH_LOG_LEVEL",
         "SMART_SEARCH_LOG_DIR",
         "SMART_SEARCH_RETRY_MAX_ATTEMPTS",
         "SMART_SEARCH_RETRY_MULTIPLIER",
         "SMART_SEARCH_RETRY_MAX_WAIT",
-        "SMART_SEARCH_OUTPUT_CLEANUP",
         "SMART_SEARCH_LOG_TO_FILE",
-        "SMART_SEARCH_CACHE_ENABLED",
-        "SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS",
-        "SMART_SEARCH_FETCH_CACHE_TTL_SECONDS",
-        "SMART_SEARCH_CACHE_MAX_SIZE",
-        "SSL_VERIFY",
-    }
-    _CREDENTIAL_KEYS = {
-        key
-        for key in _CONFIG_KEYS
-        if "KEY" in key or "TOKEN" in key or "SECRET" in key
     }
 
     def __new__(cls):
@@ -139,8 +76,6 @@ class Config:
             cls._instance._config_file = None
             cls._instance._config_dir_source = None
             cls._instance._config_snapshot = None
-            cls._instance._credential_state_digest = None
-            cls._instance._credential_epoch = 0
             cls._instance._load_error = None
         return cls._instance
 
@@ -539,82 +474,11 @@ class Config:
             return value, f"Invalid {key}: {value}. Supported values: {allowed_text}"
         return value, ""
 
-    def _float_value(self, key: str, default: str) -> float:
-        value = self._get_config_value(key, default) or default
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            raise ValueError(f"Invalid {key}: {value}. Expected a number.")
-
-    def _float_info(self, key: str, default: str) -> tuple[float, str]:
-        try:
-            return self._float_value(key, default), ""
-        except ValueError as e:
-            return float(default), str(e)
-
-    def _bounded_float_value(self, key: str, default: str, minimum: float, maximum: float) -> float:
-        value = self._float_value(key, default)
-        if value < minimum or value > maximum:
-            raise ValueError(f"Invalid {key}: {value}. Expected a number between {minimum:g} and {maximum:g}.")
-        return value
-
-    def _bounded_float_info(self, key: str, default: str, minimum: float, maximum: float) -> tuple[float, str]:
-        try:
-            return self._bounded_float_value(key, default, minimum, maximum), ""
-        except ValueError as e:
-            return float(default), str(e)
-
     def _bool_value(self, key: str, default: str) -> bool:
         value = (self._get_config_value(key, default) or default).strip().lower()
         if value not in {"true", "false", "1", "0", "yes", "no"}:
             raise ValueError(f"Invalid {key}: {value}. Expected true or false.")
         return value in {"true", "1", "yes"}
-
-    def _bool_info(self, key: str, default: str) -> tuple[bool, str]:
-        try:
-            return self._bool_value(key, default), ""
-        except ValueError as e:
-            return default.lower() in {"true", "1", "yes"}, str(e)
-
-    def _bounded_int_value(self, key: str, default: str, minimum: int, maximum: int) -> int:
-        value = self._get_config_value(key, default) or default
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            raise ValueError(f"Invalid {key}: {value}. Expected an integer.")
-        if parsed < minimum or parsed > maximum:
-            raise ValueError(f"Invalid {key}: {parsed}. Expected an integer between {minimum} and {maximum}.")
-        return parsed
-
-    def _bounded_int_info(self, key: str, default: str, minimum: int, maximum: int) -> tuple[int, str]:
-        try:
-            return self._bounded_int_value(key, default, minimum, maximum), ""
-        except ValueError as e:
-            return int(default), str(e)
-
-    @property
-    def validation_level(self) -> str:
-        return self._validated_enum(
-            "SMART_SEARCH_VALIDATION_LEVEL",
-            self._DEFAULT_VALIDATION_LEVEL,
-            self._ALLOWED_VALIDATION_LEVELS,
-        )
-
-    @property
-    def fallback_mode(self) -> str:
-        return self._validated_enum(
-            "SMART_SEARCH_FALLBACK_MODE",
-            self._DEFAULT_FALLBACK_MODE,
-            self._ALLOWED_FALLBACK_MODES,
-        )
-
-    @property
-    def minimum_profile(self) -> str:
-        return self._validated_enum(
-            "SMART_SEARCH_MINIMUM_PROFILE",
-            self._DEFAULT_MINIMUM_PROFILE,
-            self._ALLOWED_MINIMUM_PROFILES,
-        )
 
     @property
     def default_mode(self) -> str:
@@ -628,189 +492,6 @@ class Config:
     def default_retrieval_mode(self) -> str:
         """Explicit alias for callers selecting the stored search mode."""
         return self.default_mode
-
-    @property
-    def prompt_dir(self) -> str:
-        return self._get_config_value("SMART_SEARCH_PROMPT_DIR", "") or ""
-
-    @property
-    def search_prompt_file(self) -> str:
-        return self._get_config_value("SMART_SEARCH_SEARCH_PROMPT_FILE", "") or ""
-
-    @property
-    def fetch_prompt_file(self) -> str:
-        return self._get_config_value("SMART_SEARCH_FETCH_PROMPT_FILE", "") or ""
-
-    @property
-    def research_prompt_file(self) -> str:
-        return self._get_config_value("SMART_SEARCH_RESEARCH_PROMPT_FILE", "") or ""
-
-    @property
-    def intent_router_mode(self) -> str:
-        return self._validated_enum(
-            "SMART_SEARCH_INTENT_ROUTER",
-            self._DEFAULT_INTENT_ROUTER_MODE,
-            self._ALLOWED_INTENT_ROUTER_MODES,
-        )
-
-    @property
-    def cache_enabled(self) -> bool:
-        return self._bool_value("SMART_SEARCH_CACHE_ENABLED", self._DEFAULT_CACHE_ENABLED)
-
-    @property
-    def search_cache_ttl_seconds(self) -> int:
-        return self._bounded_int_value(
-            "SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS",
-            self._DEFAULT_SEARCH_CACHE_TTL_SECONDS,
-            *self._CACHE_TTL_BOUNDS,
-        )
-
-    @property
-    def fetch_cache_ttl_seconds(self) -> int:
-        return self._bounded_int_value(
-            "SMART_SEARCH_FETCH_CACHE_TTL_SECONDS",
-            self._DEFAULT_FETCH_CACHE_TTL_SECONDS,
-            *self._CACHE_TTL_BOUNDS,
-        )
-
-    @property
-    def cache_max_size(self) -> int:
-        return self._bounded_int_value(
-            "SMART_SEARCH_CACHE_MAX_SIZE",
-            self._DEFAULT_CACHE_MAX_SIZE,
-            *self._CACHE_MAX_SIZE_BOUNDS,
-        )
-
-    @property
-    def credential_epoch(self) -> int:
-        """
-        ================================================================================
-        步骤1：刷新凭据 epoch
-        ================================================================================
-        目标：凭据轮换后让旧缓存失效，但不把 secret 放入 key 或日志。
-        数据源：当前环境变量和本地配置文件中的 credential keys。
-        操作：
-        1) 只在 Config 私有内存中比较凭据摘要。
-        2) 凭据摘要变化时递增 epoch，调用方只使用整数 epoch。
-        """
-        values = [self._get_config_value(key, "") or "" for key in sorted(self._CREDENTIAL_KEYS)]
-        digest = hashlib.sha256("\0".join(values).encode("utf-8")).hexdigest()
-        if self._credential_state_digest is None:
-            self._credential_state_digest = digest
-        elif digest != self._credential_state_digest:
-            self._credential_state_digest = digest
-            self._credential_epoch += 1
-        return int(self._credential_epoch)
-
-    def runtime_cache_fingerprint(
-        self,
-        capability: str,
-        provider: str,
-        options: dict[str, object] | None = None,
-    ) -> str:
-        """
-        ================================================================================
-        步骤2：计算非敏感行为配置指纹
-        ================================================================================
-        目标：配置快照刷新后不复用旧 provider 结果。
-        数据源：capability/provider 对应的 endpoint、模型参数和调用选项。
-        操作：
-        1) 排除所有 credential key，只收集非敏感行为配置。
-        2) 将调用参数和配置按稳定 JSON 编码后计算摘要。
-        """
-        provider_config_keys = {
-            "web_search": {
-                "zhipu": ("ZHIPU_API_URL", "ZHIPU_SEARCH_ENGINE", "ZHIPU_TIMEOUT_SECONDS"),
-                "zhipu-mcp": ("ZHIPU_MCP_SEARCH_API_URL", "ZHIPU_MCP_TIMEOUT_SECONDS"),
-                "tavily": ("TAVILY_API_URL", "TAVILY_ENABLED", "TAVILY_TIMEOUT_SECONDS"),
-                "brave": ("BRAVE_API_URL", "BRAVE_ENABLED", "BRAVE_TIMEOUT_SECONDS"),
-                "firecrawl": ("FIRECRAWL_API_URL",),
-            },
-            "docs_search": {
-                "context7": ("CONTEXT7_BASE_URL", "CONTEXT7_TIMEOUT_SECONDS"),
-                "exa": ("EXA_BASE_URL", "EXA_TIMEOUT_SECONDS"),
-            },
-            "web_fetch": {
-                "tavily": ("TAVILY_API_URL", "TAVILY_ENABLED", "TAVILY_TIMEOUT_SECONDS"),
-                "jina": ("JINA_READER_API_URL", "JINA_RESPOND_WITH", "JINA_TIMEOUT_SECONDS"),
-                "zhipu-mcp-reader": ("ZHIPU_MCP_READER_API_URL", "ZHIPU_MCP_TIMEOUT_SECONDS"),
-                "firecrawl": ("FIRECRAWL_API_URL",),
-            },
-            "vertical_search": {
-                "anysearch": ("ANYSEARCH_API_URL", "ANYSEARCH_TIMEOUT_SECONDS"),
-            },
-        }
-        keys = provider_config_keys.get(capability, {}).get(provider, ())
-        values = {
-            key: self._get_config_value(key, "") or ""
-            for key in keys
-            if key not in self._CREDENTIAL_KEYS
-        }
-        values["SMART_SEARCH_OUTPUT_CLEANUP"] = self._get_config_value("SMART_SEARCH_OUTPUT_CLEANUP", "true") or "true"
-        payload = {
-            "capability": capability,
-            "provider": provider,
-            "config": values,
-            "options": options or {},
-        }
-        return hashlib.sha256(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()[:24]
-
-    @property
-    def intent_embedding_api_url(self) -> str:
-        return self._get_config_value("INTENT_EMBEDDING_API_URL", "") or ""
-
-    @property
-    def intent_embedding_api_key(self) -> str | None:
-        return self._get_config_value("INTENT_EMBEDDING_API_KEY")
-
-    @property
-    def intent_embedding_model(self) -> str:
-        return self._get_config_value("INTENT_EMBEDDING_MODEL", "") or ""
-
-    @property
-    def intent_embedding_threshold(self) -> float:
-        return self._bounded_float_value("INTENT_EMBEDDING_THRESHOLD", self._DEFAULT_INTENT_EMBEDDING_THRESHOLD, 0.0, 1.0)
-
-    @property
-    def intent_embedding_margin(self) -> float:
-        return self._bounded_float_value("INTENT_EMBEDDING_MARGIN", self._DEFAULT_INTENT_EMBEDDING_MARGIN, 0.0, 1.0)
-
-    @property
-    def intent_classifier_api_url(self) -> str:
-        return self._get_config_value("INTENT_CLASSIFIER_API_URL", "") or ""
-
-    @property
-    def intent_classifier_api_key(self) -> str | None:
-        return self._get_config_value("INTENT_CLASSIFIER_API_KEY")
-
-    @property
-    def intent_classifier_model(self) -> str:
-        return self._get_config_value("INTENT_CLASSIFIER_MODEL", "") or ""
-
-    @property
-    def intent_router_timeout(self) -> float:
-        return self._float_value("INTENT_ROUTER_TIMEOUT_SECONDS", self._DEFAULT_INTENT_ROUTER_TIMEOUT_SECONDS)
-
-    def _csv_values(self, key: str) -> list[str]:
-        raw = self._get_config_value(key, "") or ""
-        values: list[str] = []
-        seen: set[str] = set()
-        for item in raw.split(","):
-            value = item.strip().lower()
-            if value and value not in seen:
-                seen.add(value)
-                values.append(value)
-        return values
-
-    @property
-    def research_preferred_providers(self) -> list[str]:
-        return self._csv_values("SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS")
-
-    @property
-    def research_disabled_providers(self) -> list[str]:
-        return self._csv_values("SMART_SEARCH_RESEARCH_DISABLED_PROVIDERS")
 
     @property
     def tavily_enabled(self) -> bool:
@@ -867,18 +548,6 @@ class Config:
         return self._get_config_value("FIRECRAWL_API_KEY")
 
     @property
-    def anysearch_api_url(self) -> str:
-        return self._get_config_value("ANYSEARCH_API_URL", "https://api.anysearch.com/mcp") or "https://api.anysearch.com/mcp"
-
-    @property
-    def anysearch_api_key(self) -> str | None:
-        return self._get_config_value("ANYSEARCH_API_KEY")
-
-    @property
-    def anysearch_timeout(self) -> float:
-        return float(self._get_config_value("ANYSEARCH_TIMEOUT_SECONDS", "30") or "30")
-
-    @property
     def log_level(self) -> str:
         return (self._get_config_value("SMART_SEARCH_LOG_LEVEL", "INFO") or "INFO").upper()
 
@@ -908,16 +577,8 @@ class Config:
         return value
 
     @property
-    def output_cleanup_enabled(self) -> bool:
-        return (self._get_config_value("SMART_SEARCH_OUTPUT_CLEANUP", "true") or "true").lower() in ("true", "1", "yes")
-
-    @property
     def log_to_file_enabled(self) -> bool:
         return (self._get_config_value("SMART_SEARCH_LOG_TO_FILE", "false") or "false").lower() in ("true", "1", "yes")
-
-    @property
-    def ssl_verify_enabled(self) -> bool:
-        return (self._get_config_value("SSL_VERIFY", "true") or "true").lower() not in ("false", "0", "no")
 
     @property
     def exa_api_key(self) -> str | None:
@@ -934,63 +595,6 @@ class Config:
     @property
     def exa_timeout(self) -> float:
         return float(self._get_config_value("EXA_TIMEOUT_SECONDS", "30") or "30")
-
-    @property
-    def context7_api_key(self) -> str | None:
-        return self._get_config_value("CONTEXT7_API_KEY")
-
-    @property
-    def context7_base_url(self) -> str:
-        return self._get_config_value("CONTEXT7_BASE_URL", "https://context7.com") or "https://context7.com"
-
-    @property
-    def context7_timeout(self) -> float:
-        return float(self._get_config_value("CONTEXT7_TIMEOUT_SECONDS", "30") or "30")
-
-    @property
-    def zhipu_api_key(self) -> str | None:
-        return self._get_config_value("ZHIPU_API_KEY")
-
-    @property
-    def zhipu_api_url(self) -> str:
-        return self._get_config_value("ZHIPU_API_URL", "https://open.bigmodel.cn/api") or "https://open.bigmodel.cn/api"
-
-    @property
-    def zhipu_search_engine(self) -> str:
-        return self._get_config_value("ZHIPU_SEARCH_ENGINE", "search_std") or "search_std"
-
-    @property
-    def zhipu_timeout(self) -> float:
-        return float(self._get_config_value("ZHIPU_TIMEOUT_SECONDS", "30") or "30")
-
-    @property
-    def zhipu_mcp_api_key(self) -> str | None:
-        return self._get_config_value("ZHIPU_MCP_API_KEY")
-
-    @property
-    def zhipu_mcp_search_api_url(self) -> str:
-        return self._get_config_value(
-            "ZHIPU_MCP_SEARCH_API_URL",
-            "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
-        ) or "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp"
-
-    @property
-    def zhipu_mcp_reader_api_url(self) -> str:
-        return self._get_config_value(
-            "ZHIPU_MCP_READER_API_URL",
-            "https://open.bigmodel.cn/api/mcp/web_reader/mcp",
-        ) or "https://open.bigmodel.cn/api/mcp/web_reader/mcp"
-
-    @property
-    def zhipu_mcp_zread_api_url(self) -> str:
-        return self._get_config_value(
-            "ZHIPU_MCP_ZREAD_API_URL",
-            "https://open.bigmodel.cn/api/mcp/zread/mcp",
-        ) or "https://open.bigmodel.cn/api/mcp/zread/mcp"
-
-    @property
-    def zhipu_mcp_timeout(self) -> float:
-        return float(self._get_config_value("ZHIPU_MCP_TIMEOUT_SECONDS", "30") or "30")
 
     @property
     def jina_api_key(self) -> str | None:
@@ -1024,79 +628,8 @@ class Config:
             self._DEFAULT_RETRIEVAL_MODE,
             self._ALLOWED_RETRIEVAL_MODES,
         )
-        validation_level, validation_error = self._enum_info(
-            "SMART_SEARCH_VALIDATION_LEVEL",
-            self._DEFAULT_VALIDATION_LEVEL,
-            self._ALLOWED_VALIDATION_LEVELS,
-        )
-        fallback_mode, fallback_error = self._enum_info(
-            "SMART_SEARCH_FALLBACK_MODE",
-            self._DEFAULT_FALLBACK_MODE,
-            self._ALLOWED_FALLBACK_MODES,
-        )
-        minimum_profile, minimum_error = self._enum_info(
-            "SMART_SEARCH_MINIMUM_PROFILE",
-            self._DEFAULT_MINIMUM_PROFILE,
-            self._ALLOWED_MINIMUM_PROFILES,
-        )
-        intent_router_mode, intent_router_error = self._enum_info(
-            "SMART_SEARCH_INTENT_ROUTER",
-            self._DEFAULT_INTENT_ROUTER_MODE,
-            self._ALLOWED_INTENT_ROUTER_MODES,
-        )
-        intent_router_timeout, intent_router_timeout_error = self._float_info(
-            "INTENT_ROUTER_TIMEOUT_SECONDS",
-            self._DEFAULT_INTENT_ROUTER_TIMEOUT_SECONDS,
-        )
-        intent_embedding_threshold, intent_embedding_threshold_error = self._bounded_float_info(
-            "INTENT_EMBEDDING_THRESHOLD",
-            self._DEFAULT_INTENT_EMBEDDING_THRESHOLD,
-            0.0,
-            1.0,
-        )
-        intent_embedding_margin, intent_embedding_margin_error = self._bounded_float_info(
-            "INTENT_EMBEDDING_MARGIN",
-            self._DEFAULT_INTENT_EMBEDDING_MARGIN,
-            0.0,
-            1.0,
-        )
-        cache_enabled, cache_enabled_error = self._bool_info(
-            "SMART_SEARCH_CACHE_ENABLED",
-            self._DEFAULT_CACHE_ENABLED,
-        )
-        search_cache_ttl_seconds, search_cache_ttl_error = self._bounded_int_info(
-            "SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS",
-            self._DEFAULT_SEARCH_CACHE_TTL_SECONDS,
-            *self._CACHE_TTL_BOUNDS,
-        )
-        fetch_cache_ttl_seconds, fetch_cache_ttl_error = self._bounded_int_info(
-            "SMART_SEARCH_FETCH_CACHE_TTL_SECONDS",
-            self._DEFAULT_FETCH_CACHE_TTL_SECONDS,
-            *self._CACHE_TTL_BOUNDS,
-        )
-        cache_max_size, cache_max_size_error = self._bounded_int_info(
-            "SMART_SEARCH_CACHE_MAX_SIZE",
-            self._DEFAULT_CACHE_MAX_SIZE,
-            *self._CACHE_MAX_SIZE_BOUNDS,
-        )
-        config_parameter_errors.extend(
-            error
-            for error in (
-                validation_error,
-                default_mode_error,
-                fallback_error,
-                minimum_error,
-                intent_router_error,
-                intent_router_timeout_error,
-                intent_embedding_threshold_error,
-                intent_embedding_margin_error,
-                cache_enabled_error,
-                search_cache_ttl_error,
-                fetch_cache_ttl_error,
-                cache_max_size_error,
-            )
-            if error
-        )
+        if default_mode_error:
+            config_parameter_errors.append(default_mode_error)
         if config_parameter_errors and config_status.startswith("ok:"):
             config_status = f"config_error: {'; '.join(config_parameter_errors)}"
         if not config_path.get("ok", False):
@@ -1109,30 +642,7 @@ class Config:
 
         logger.info("配置诊断状态聚合完成")
         return {
-            "SMART_SEARCH_VALIDATION_LEVEL": validation_level,
             "SMART_SEARCH_DEFAULT_MODE": default_mode,
-            "SMART_SEARCH_FALLBACK_MODE": fallback_mode,
-            "SMART_SEARCH_MINIMUM_PROFILE": minimum_profile,
-            "SMART_SEARCH_PROMPT_DIR": self.prompt_dir,
-            "SMART_SEARCH_SEARCH_PROMPT_FILE": self.search_prompt_file,
-            "SMART_SEARCH_FETCH_PROMPT_FILE": self.fetch_prompt_file,
-            "SMART_SEARCH_RESEARCH_PROMPT_FILE": self.research_prompt_file,
-            "SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS": ",".join(self.research_preferred_providers),
-            "SMART_SEARCH_RESEARCH_DISABLED_PROVIDERS": ",".join(self.research_disabled_providers),
-            "SMART_SEARCH_INTENT_ROUTER": intent_router_mode,
-            "INTENT_EMBEDDING_API_URL": self.intent_embedding_api_url or "未配置",
-            "INTENT_EMBEDDING_API_KEY": self._mask_api_key(self.intent_embedding_api_key) if self.intent_embedding_api_key else "未配置",
-            "INTENT_EMBEDDING_MODEL": self.intent_embedding_model or "未配置",
-            "INTENT_EMBEDDING_THRESHOLD": intent_embedding_threshold,
-            "INTENT_EMBEDDING_MARGIN": intent_embedding_margin,
-            "INTENT_CLASSIFIER_API_URL": self.intent_classifier_api_url or "未配置",
-            "INTENT_CLASSIFIER_API_KEY": self._mask_api_key(self.intent_classifier_api_key) if self.intent_classifier_api_key else "未配置",
-            "INTENT_CLASSIFIER_MODEL": self.intent_classifier_model or "未配置",
-            "INTENT_ROUTER_TIMEOUT_SECONDS": intent_router_timeout,
-            "SMART_SEARCH_CACHE_ENABLED": cache_enabled,
-            "SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS": search_cache_ttl_seconds,
-            "SMART_SEARCH_FETCH_CACHE_TTL_SECONDS": fetch_cache_ttl_seconds,
-            "SMART_SEARCH_CACHE_MAX_SIZE": cache_max_size,
             "SMART_SEARCH_DEBUG": self.debug_enabled,
             "SMART_SEARCH_LOG_LEVEL": self.log_level,
             "SMART_SEARCH_LOG_DIR": self.log_dir_config_value,
@@ -1151,28 +661,11 @@ class Config:
             "JINA_RERANK_MODEL": self.jina_rerank_model,
             "FIRECRAWL_API_URL": self.firecrawl_api_url,
             "FIRECRAWL_API_KEY": self._mask_api_key(self.firecrawl_api_key) if self.firecrawl_api_key else "未配置",
-            "ANYSEARCH_API_URL": self.anysearch_api_url,
-            "ANYSEARCH_API_KEY": self._mask_api_key(self.anysearch_api_key) if self.anysearch_api_key else "未配置",
-            "ANYSEARCH_TIMEOUT_SECONDS": self.anysearch_timeout,
-            "SMART_SEARCH_OUTPUT_CLEANUP": self.output_cleanup_enabled,
             "SMART_SEARCH_LOG_TO_FILE": self.log_to_file_enabled,
-            "SSL_VERIFY": self.ssl_verify_enabled,
             "EXA_API_KEY": self._mask_api_key(self.exa_api_key) if self.exa_api_key else "未配置",
             "EXA_ENABLED": self.exa_enabled,
             "EXA_BASE_URL": self.exa_base_url,
             "EXA_TIMEOUT_SECONDS": self.exa_timeout,
-            "CONTEXT7_API_KEY": self._mask_api_key(self.context7_api_key) if self.context7_api_key else "未配置",
-            "CONTEXT7_BASE_URL": self.context7_base_url,
-            "CONTEXT7_TIMEOUT_SECONDS": self.context7_timeout,
-            "ZHIPU_API_KEY": self._mask_api_key(self.zhipu_api_key) if self.zhipu_api_key else "未配置",
-            "ZHIPU_API_URL": self.zhipu_api_url,
-            "ZHIPU_SEARCH_ENGINE": self.zhipu_search_engine,
-            "ZHIPU_TIMEOUT_SECONDS": self.zhipu_timeout,
-            "ZHIPU_MCP_API_KEY": self._mask_api_key(self.zhipu_mcp_api_key) if self.zhipu_mcp_api_key else "未配置",
-            "ZHIPU_MCP_SEARCH_API_URL": self.zhipu_mcp_search_api_url,
-            "ZHIPU_MCP_READER_API_URL": self.zhipu_mcp_reader_api_url,
-            "ZHIPU_MCP_ZREAD_API_URL": self.zhipu_mcp_zread_api_url,
-            "ZHIPU_MCP_TIMEOUT_SECONDS": self.zhipu_mcp_timeout,
             "JINA_API_KEY": self._mask_api_key(self.jina_api_key) if self.jina_api_key else "未配置",
             "JINA_READER_API_URL": self.jina_reader_api_url,
             "JINA_RESPOND_WITH": self.jina_respond_with,

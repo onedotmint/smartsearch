@@ -12,6 +12,7 @@ build/
 .smart-search/
 logs/
 .pytest_cache/
+benchmarks/artifacts/
 node_modules/
 *.tgz
 .agent/

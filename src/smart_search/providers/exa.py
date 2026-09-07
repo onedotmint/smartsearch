@@ -10,8 +10,6 @@ from ..core.normalizers import normalize_exa as to_discovery_candidates
 from ..config import config
 from ..logger import log_info
 from ..runtime_cache import (
-    RequestBudgetExceeded,
-    add_retry,
     bounded_retry_delay,
     current_context,
     request_client,
@@ -203,9 +201,6 @@ class ExaSearchProvider(BaseSearchProvider):
                 retry=retry_if_exception(_is_retryable_exception),
                 reraise=True,
             ):
-                if attempt.retry_state.attempt_number > 1:
-                    if not add_retry():
-                        raise RequestBudgetExceeded()
                 with attempt:
                     response = await client.post(
                         endpoint,

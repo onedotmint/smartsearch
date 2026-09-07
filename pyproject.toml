@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smart-search"
-version = "1.0.2"
+version = "1.0.3"
 description = "Evidence-first multi-source web research CLI for AI agents and terminal users."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,10 +14,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+eval = [
+    "ir-measures>=0.4.3,<0.5",
+]
 dev = [
     "jsonschema>=4.23,<5",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    "ir-measures>=0.4.3,<0.5",
 ]
 
 [tool.setuptools.packages.find]
@@ -33,3 +37,13 @@ smart_search = [
 
 [project.scripts]
 smart-search = "smart_search.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: pure local transformations with no provider I/O",
+    "contract: role-specific provider contracts using fake transports",
+    "integration: injected fake Registry search/read/research pipeline",
+    "regression: fixed v1, security, package, and release behavior",
+    "evaluation: offline evaluation/benchmark fixtures and smoke checks",
+]

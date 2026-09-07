@@ -23,11 +23,9 @@ _SENSITIVE_KEY_NAMES = frozenset(
     }
 )
 
-# Single source of truth for sensitive URL query-parameter names. Every
-# consumer (structured redaction above, ``runtime_cache`` cache-key
-# normalization, Research workflow URL dedupe) uses this policy so a signed
-# URL or API-key query parameter can never reach machine output or a cache
-# key unredacted.
+# Single source of truth for sensitive URL query-parameter names. Structured
+# redaction and Research workflow URL handling use this policy so a signed
+# URL or API-key query parameter can never reach machine output unredacted.
 SENSITIVE_QUERY_KEY_NAMES = _SENSITIVE_KEY_NAMES
 
 # Fully-masked sentinel values that may legitimately appear under a sensitive

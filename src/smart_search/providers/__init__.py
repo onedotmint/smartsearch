@@ -19,12 +19,6 @@ _EXPORTS = {
     "ExaSearchProvider": ("exa", "ExaSearchProvider"),
     "TavilySearchProvider": ("tavily", "TavilySearchProvider"),
     "ExaReaderProvider": ("exa_reader", "ExaReaderProvider"),
-    "Context7Provider": ("context7", "Context7Provider"),
-    "AnySearchProvider": ("anysearch", "AnySearchProvider"),
-    "ZhipuWebSearchProvider": ("zhipu", "ZhipuWebSearchProvider"),
-    "ZhipuMCPProvider": ("zhipu_mcp", "ZhipuMCPProvider"),
-    "XAIResponsesSearchProvider": ("xai_responses", "XAIResponsesSearchProvider"),
-    "OpenAICompatibleSearchProvider": ("openai_compatible", "OpenAICompatibleSearchProvider"),
     "JinaReaderProvider": ("jina", "JinaReaderProvider"),
     "FirecrawlReaderProvider": ("firecrawl", "FirecrawlReaderProvider"),
 }

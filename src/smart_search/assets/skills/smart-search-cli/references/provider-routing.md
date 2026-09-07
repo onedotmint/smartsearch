@@ -14,9 +14,8 @@ not public interfaces.
 
 Use `smart-search setup --format json` for first-time local configuration, or
 provide supported keys through the environment for CI. Common keys include
-`BRAVE_API_KEY`, `EXA_API_KEY`, `TAVILY_API_KEY`, `JINA_API_KEY`,
-`FIRECRAWL_API_KEY`, and the documented Zhipu/OpenAI-compatible settings. Exact
-availability depends on the installation. Missing credentials produce
+`BRAVE_API_KEY`, `EXA_API_KEY`, `TAVILY_API_KEY`, `JINA_API_KEY`, and
+`FIRECRAWL_API_KEY`. Exact availability depends on the installation. Missing credentials produce
 structured errors or degraded results; they are not silently replaced by a
 different command.
 

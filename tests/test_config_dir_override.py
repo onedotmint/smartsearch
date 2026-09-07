@@ -304,3 +304,52 @@ def test_empty_config_status_directs_users_to_v1_setup(monkeypatch, tmp_path):
     assert "doctor" not in status
     # The diagnostic probe must not persist any configuration file.
     assert not config.config_file.exists()
+    retired = {
+        "ANYSEARCH_API_KEY",
+        "ANYSEARCH_API_URL",
+        "ANYSEARCH_TIMEOUT_SECONDS",
+        "CONTEXT7_API_KEY",
+        "CONTEXT7_BASE_URL",
+        "CONTEXT7_TIMEOUT_SECONDS",
+        "ZHIPU_API_KEY",
+        "ZHIPU_API_URL",
+        "ZHIPU_SEARCH_ENGINE",
+        "ZHIPU_TIMEOUT_SECONDS",
+        "ZHIPU_MCP_API_KEY",
+        "ZHIPU_MCP_SEARCH_API_URL",
+        "ZHIPU_MCP_READER_API_URL",
+        "ZHIPU_MCP_ZREAD_API_URL",
+        "ZHIPU_MCP_TIMEOUT_SECONDS",
+        "SMART_SEARCH_OUTPUT_CLEANUP",
+        "SSL_VERIFY",
+        "SMART_SEARCH_INTENT_ROUTER",
+        "INTENT_EMBEDDING_API_URL",
+        "INTENT_CLASSIFIER_API_URL",
+        "SMART_SEARCH_VALIDATION_LEVEL",
+        "SMART_SEARCH_FALLBACK_MODE",
+        "SMART_SEARCH_MINIMUM_PROFILE",
+        "SMART_SEARCH_RESEARCH_PREFERRED_PROVIDERS",
+        "SMART_SEARCH_RESEARCH_DISABLED_PROVIDERS",
+        "SMART_SEARCH_PROMPT_DIR",
+        "SMART_SEARCH_SEARCH_PROMPT_FILE",
+        "SMART_SEARCH_FETCH_PROMPT_FILE",
+        "SMART_SEARCH_RESEARCH_PROMPT_FILE",
+        "SMART_SEARCH_CACHE_ENABLED",
+        "SMART_SEARCH_SEARCH_CACHE_TTL_SECONDS",
+        "SMART_SEARCH_FETCH_CACHE_TTL_SECONDS",
+        "SMART_SEARCH_CACHE_MAX_SIZE",
+    }
+    sources = info["config_sources"]
+    for key in retired:
+        assert key not in info
+        assert key not in sources
+    for key in (
+        "SMART_SEARCH_DEFAULT_MODE",
+        "TAVILY_TIMEOUT_SECONDS",
+        "BRAVE_API_KEY",
+        "EXA_ENABLED",
+        "JINA_API_KEY",
+        "FIRECRAWL_API_URL",
+    ):
+        assert key in info
+        assert key in sources

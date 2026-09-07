@@ -22,6 +22,32 @@ def test_default_mode_is_balanced_and_is_securely_persisted(monkeypatch, tmp_pat
         config.set_config_value("SMART_SEARCH_DEFAULT_MODE", "slow")
 
 
+def test_unknown_retired_file_key_survives_supported_update(tmp_path):
+    config = Config()
+    config._config_file = tmp_path / "config.json"
+    config._config_dir_source = "override"
+    config._config_snapshot = None
+    config._save_config_file({
+        "ZHIPU_API_KEY": "legacy-secret",
+        "SMART_SEARCH_CACHE_ENABLED": "true",
+        "SMART_SEARCH_DEFAULT_MODE": "fast",
+    })
+
+    config.set_config_values({"SMART_SEARCH_DEFAULT_MODE": "balanced"})
+
+    raw = json.loads(config.config_file.read_text(encoding="utf-8"))
+    assert raw["ZHIPU_API_KEY"] == "legacy-secret"
+    assert raw["SMART_SEARCH_CACHE_ENABLED"] == "true"
+    saved = config.get_saved_config(masked=False)
+    assert "ZHIPU_API_KEY" not in saved
+    assert "SMART_SEARCH_CACHE_ENABLED" not in saved
+    assert saved["SMART_SEARCH_DEFAULT_MODE"] == "balanced"
+    with pytest.raises(ValueError, match="Unsupported config key"):
+        config.set_config_value("ZHIPU_API_KEY", "new-secret")
+    with pytest.raises(ValueError, match="Unsupported config key"):
+        config.set_config_value("SMART_SEARCH_CACHE_ENABLED", "false")
+
+
 def test_search_mode_maps_to_fixed_policy(monkeypatch):
     from smart_search import cli
 
