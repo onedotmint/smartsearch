@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Offline developer checks: daily quick loop and full pre-commit gate."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+# Representative daily subset, not the full marker sets. Remaining contract,
+# replay, and regression tests stay in `full`.
+QUICK_TESTS = [
+    "tests/test_ranking_and_selection.py",
+    "tests/test_provider_role_contracts.py",
+    "tests/test_v1_core_cli.py",
+    "tests/test_retrieval_benchmark.py",
+    "tests/test_evaluation_v2.py",
+]
+
+
+def _npm() -> str:
+    if os.name == "nt":
+        return shutil.which("npm.cmd") or shutil.which("npm") or "npm"
+    return shutil.which("npm") or "npm"
+
+
+def _run(name: str, argv: list[str], *, cwd: Path = ROOT) -> int:
+    printable = " ".join(argv)
+    print(f"+ {name}: {printable}", flush=True)
+    started = time.monotonic()
+    result = subprocess.run(argv, cwd=cwd)
+    elapsed = time.monotonic() - started
+    print(f"{name}: {elapsed:.2f}s", flush=True)
+    if result.returncode != 0:
+        print(f"FAILED: {name}", file=sys.stderr, flush=True)
+        print(f"command: {printable}", file=sys.stderr, flush=True)
+    return result.returncode
+
+
+def _python() -> str:
+    return sys.executable
+
+
+def _env_with_src() -> None:
+    src = str(ROOT / "src")
+    current = os.environ.get("PYTHONPATH", "")
+    parts = [src] + [part for part in current.split(os.pathsep) if part and part != src]
+    os.environ["PYTHONPATH"] = os.pathsep.join(parts)
+
+
+def quick() -> int:
+    python = _python()
+    steps = [
+        ("compile", [python, "-m", "compileall", "-q", "src", "tests", "benchmarks", "scripts"]),
+        (
+            "pytest-quick",
+            [python, "-m", "pytest", *QUICK_TESTS, "-q", "--tb=short", "--maxfail=1"],
+        ),
+        ("benchmark-help", [python, str(ROOT / "benchmarks" / "retrieval_benchmark.py"), "--help"]),
+    ]
+    started = time.monotonic()
+    for name, argv in steps:
+        code = _run(name, argv)
+        if code:
+            return code
+    print(f"check quick: {time.monotonic() - started:.2f}s", flush=True)
+    return 0
+
+
+def full() -> int:
+    python = _python()
+    npm = _npm()
+    steps: list[tuple[str, list[str], Path]] = [
+        ("compile", [python, "-m", "compileall", "-q", "src", "tests", "benchmarks", "scripts"], ROOT),
+        ("pytest", [python, "-m", "pytest", "tests", "-q"], ROOT),
+        ("npm-test", [npm, "test"], ROOT),
+        ("npm-pack", [npm, "pack", "--dry-run"], ROOT),
+    ]
+    pi = ROOT / "integrations" / "pi"
+    if pi.is_dir():
+        steps.extend(
+            [
+                ("pi-typecheck", [npm, "run", "typecheck"], pi),
+                ("pi-test", [npm, "test"], pi),
+                ("pi-pack", [npm, "pack", "--dry-run"], pi),
+            ]
+        )
+    steps.append(("git-diff-check", ["git", "diff", "--check"], ROOT))
+    started = time.monotonic()
+    for name, argv, cwd in steps:
+        code = _run(name, argv, cwd=cwd)
+        if code:
+            return code
+    print(f"check full: {time.monotonic() - started:.2f}s", flush=True)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Offline Smart Search developer checks. Never calls live providers.")
+    parser.add_argument("mode", choices=("quick", "full"), help="quick daily loop or full offline gate")
+    args = parser.parse_args(argv)
+    os.chdir(ROOT)
+    _env_with_src()
+    return quick() if args.mode == "quick" else full()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

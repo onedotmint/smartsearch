@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""Maintainer-only live retrieval evaluation. Not a CI or correctness gate."""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+LIVE_WARNING = (
+    "WARNING: live retrieval evaluation makes real provider network calls and "
+    "consumes API quota. It is NOT a CI gate, NOT a correctness test, and NOT free. "
+    "Unconfigured Brave, Exa, Tavily, RRF, and RRF+Jina modes are skipped."
+)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Maintainer evaluation commands. Live retrieval is opt-in and never a CI gate.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+    retrieval = sub.add_parser(
+        "retrieval",
+        help="Live retrieval quality evaluation (requires --live).",
+        description=(
+            "LIVE PROVIDER CALLS — NOT A CI GATE. Requires --live. "
+            "Skips unconfigured Brave, Exa, Tavily, RRF, and RRF+Jina modes."
+        ),
+    )
+    retrieval.add_argument("--live", action="store_true", help="explicit opt-in for live provider calls")
+    retrieval.add_argument("--output", default="", help="directory for JSON, JSONL, and Markdown artifacts")
+    retrieval.add_argument("--modes", default="", help="comma-separated modes (default: all)")
+    retrieval.add_argument("--k", type=int, default=5, help="evaluation K (default: 5)")
+    retrieval.add_argument("--dataset", default="", help="dataset directory (queries.jsonl + qrels.jsonl)")
+    return parser
+
+
+def _git_commit() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _sanitize_run(run: dict[str, Any]) -> dict[str, Any]:
+    from smart_search.security import sanitize_data
+
+    return sanitize_data(run)
+
+
+async def _run_mode(mode: str, spec: dict[str, Any], queries: list[dict[str, Any]], *, k: int, registry, search, RetrievalPolicy) -> list[dict[str, Any]]:
+    from benchmarks.evaluation import SCHEMA_VERSION, document_id
+
+    policy = RetrievalPolicy(
+        providers=spec["providers"],
+        max_results=k,
+        rerank=bool(spec["rerank"]),
+        intent=spec.get("intent", "general"),
+    )
+    runs: list[dict[str, Any]] = []
+    for query in queries:
+        started = time.monotonic()
+        outcome = await search(query["query"], policy, registry=registry)
+        elapsed_ms = round((time.monotonic() - started) * 1000, 2)
+        ranked = list(outcome.ranked)[:k]
+        runs.append(
+            _sanitize_run(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "mode": mode,
+                    "query_id": query["query_id"],
+                    "urls": [document_id(item.candidate.url) for item in ranked],
+                    "providers": [list(item.candidate.providers) for item in ranked],
+                    "attempts": [
+                        {
+                            "provider": attempt.provider,
+                            "status": attempt.status,
+                            "error_type": attempt.error_type or None,
+                            "result_count": attempt.result_count,
+                            "elapsed_ms": attempt.elapsed_ms,
+                        }
+                        for attempt in outcome.attempts
+                    ],
+                    "warnings": list(outcome.warnings),
+                    "elapsed_ms": elapsed_ms,
+                }
+            )
+        )
+    return runs
+
+
+def retrieval(args: argparse.Namespace) -> int:
+    if not args.live:
+        print(
+            "refusing to run live retrieval evaluation without --live. "
+            "This command consumes API quota and is not a CI gate. See --help.",
+            file=sys.stderr,
+        )
+        return 2
+    print(LIVE_WARNING, file=sys.stderr)
+
+    src = str(ROOT / "src")
+    current = os.environ.get("PYTHONPATH", "")
+    parts = [str(ROOT), src] + [part for part in current.split(os.pathsep) if part and part not in {str(ROOT), src}]
+    os.environ["PYTHONPATH"] = os.pathsep.join(parts)
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    if src not in sys.path:
+        sys.path.insert(0, src)
+
+    from benchmarks.evaluation import (
+        DEFAULT_DATASET_DIR,
+        EVAL_MODES,
+        evaluate_report,
+        load_dataset,
+        mode_configured,
+        write_artifacts,
+    )
+
+    selected = [item.strip() for item in args.modes.split(",") if item.strip()] if args.modes else list(EVAL_MODES)
+    unknown = [item for item in selected if item not in EVAL_MODES]
+    if unknown:
+        print(f"unknown modes: {', '.join(unknown)} (valid: {', '.join(EVAL_MODES)})", file=sys.stderr)
+        return 2
+    if args.k < 1:
+        print("--k must be a positive integer", file=sys.stderr)
+        return 2
+
+    dataset = load_dataset(Path(args.dataset) if args.dataset else DEFAULT_DATASET_DIR)
+    from smart_search.core.models import RetrievalPolicy
+    from smart_search.core.retrieval import search
+    from smart_search.providers.registry import default_registry
+
+    registry = default_registry()
+    skipped: dict[str, str] = {}
+    runs_by_mode: dict[str, list[dict[str, Any]]] = {}
+    for mode in selected:
+        spec = EVAL_MODES[mode]
+        ok, reason = mode_configured(registry, spec)
+        if not ok:
+            skipped[mode] = reason
+            print(f"[skip] {mode}: {reason}", file=sys.stderr)
+            continue
+        print(f"[run ] {mode}: {len(dataset.queries)} queries", file=sys.stderr)
+        runs_by_mode[mode] = asyncio.run(
+            _run_mode(
+                mode,
+                spec,
+                list(dataset.queries),
+                k=args.k,
+                registry=registry,
+                search=search,
+                RetrievalPolicy=RetrievalPolicy,
+            )
+        )
+    for mode in EVAL_MODES:
+        if mode not in selected and mode not in skipped:
+            skipped[mode] = "not selected"
+
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    report = evaluate_report(
+        queries=dataset.queries,
+        qrels=dataset.qrels,
+        runs_by_mode=runs_by_mode,
+        skipped=skipped,
+        k=args.k,
+        metadata={
+            "generated_at": generated_at,
+            "commit": _git_commit(),
+            "python": sys.version.split()[0],
+            "live": True,
+        },
+    )
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_dir = Path(args.output) if args.output else ROOT / "benchmarks" / "artifacts" / f"eval-{stamp}"
+    write_artifacts(report, out_dir, runs_by_mode=runs_by_mode)
+    sys.stdout.write(Path(out_dir / "summary.md").read_text(encoding="utf-8"))
+    print(f"artifacts written to {out_dir}", file=sys.stderr)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command != "retrieval":
+        parser.error(f"unknown command: {args.command}")
+    os.chdir(ROOT)
+    return retrieval(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

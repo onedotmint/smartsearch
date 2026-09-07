@@ -31,20 +31,18 @@ outside the repository and never commit credentials.
 
 ## Verification
 
-Run the narrowest relevant checks first, then the complete set:
+Run the daily loop while editing, then the full offline gate before a pull
+request. Exact command coverage lives in [Development](docs/development.md).
 
 ```sh
-python -m compileall -q src tests
-python -m pytest tests -q
-npm test
-npm pack --dry-run
-(cd integrations/pi && npm run typecheck && npm test && npm pack --dry-run)
-git diff --check
+./scripts/check quick
+./scripts/check full
 ```
 
 Live provider checks are useful only when the change affects a configured
-provider path. State the provider, environment, and limitation in the pull
-request.
+provider path. They are never a correctness requirement. Retrieval quality
+evaluation is maintainer-only: `./scripts/eval retrieval --live`. State the
+provider, environment, and limitation in the pull request.
 
 ## Documentation changes
 

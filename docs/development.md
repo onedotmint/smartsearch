@@ -6,17 +6,51 @@ README, docs, Skills, and package metadata aligned.
 
 ## Offline verification
 
+Daily loop (offline, no credentials, target 2–5 seconds):
+
 ```sh
-python3 -m compileall -q src tests
-PYTHONPATH=src python3 -m pytest tests -q
-npm test
-npm pack --dry-run
-(cd integrations/pi && npm run typecheck && npm test && npm pack --dry-run)
-git diff --check
+./scripts/check quick
 ```
 
-These checks must not call live providers or publish packages. Inspect tarball
-contents in a temporary directory and keep generated archives out of commits.
+Pre-commit / PR gate:
+
+```sh
+./scripts/check full
+```
+
+`quick` compiles `src`/`tests`/`benchmarks`/`scripts`, runs a representative
+offline pytest subset (ranking/selection unit tests, role-specific provider
+contracts, v1 search/read/research integration, evaluator schema/import tests,
+and the benchmark import/`--help` smoke), then smokes
+`benchmarks/retrieval_benchmark.py --help`. Remaining contract, replay, and
+regression tests stay in `full`. `full` runs
+the complete offline gate: all Python tests, root `npm test` plus package
+dry-run, Pi typecheck/tests/package dry-run when `integrations/pi` exists, and
+`git diff --check`.
+Direct commands remain valid; these wrappers are the documented entry points.
+Neither command calls live providers, reads API keys, or publishes packages.
+Inspect tarball contents in a temporary directory and keep generated archives
+out of commits.
+
+## Live retrieval evaluation
+
+Maintainer-only quality measurement. It is never a CI gate, never a
+correctness requirement, and never free: it makes live provider calls and
+consumes API quota. Install the optional eval extra for standard IR metrics:
+
+```sh
+python -m pip install -e ".[eval]"
+./scripts/eval retrieval --help
+./scripts/eval retrieval --live
+./scripts/eval retrieval --live --output /tmp/smart-search-eval
+```
+
+`--help` is offline. `--live` is the explicit opt-in. Unconfigured Brave, Exa,
+Tavily, RRF, and RRF+Jina modes are skipped with a reason instead of scoring
+as zero. Artifacts are JSON (`report.json`), JSONL (`results.jsonl` plus
+sanitized `runs.jsonl`), and a Markdown summary. Use a supplied `--output`
+directory or accept a timestamped directory under `benchmarks/artifacts/`.
+Offline fixture evaluation lives in pytest, not this command.
 
 ## Release
 

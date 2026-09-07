@@ -1,0 +1,44 @@
+{"schema_version": 1, "query_id": "france-capital", "url": "https://www.britannica.com/place/Paris", "relevance": 3, "source_type": "encyclopedia", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "france-capital", "url": "https://en.wikipedia.org/wiki/Paris", "relevance": 2, "source_type": "wiki", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "france-capital", "url": "https://en.wikipedia.org/wiki/France", "relevance": 1, "source_type": "wiki", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "france-capital", "url": "https://example.test/paris-capital-spam", "relevance": 0, "source_type": "other", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "python-latest-release", "url": "https://www.python.org/downloads/", "relevance": 3, "source_type": "official", "judged_at": "2026-09-07", "freshness": "current"}
+{"schema_version": 1, "query_id": "python-latest-release", "url": "https://docs.python.org/3/whatsnew/index.html", "relevance": 2, "source_type": "docs", "judged_at": "2026-09-07", "freshness": "current"}
+{"schema_version": 1, "query_id": "python-latest-release", "url": "https://en.wikipedia.org/wiki/History_of_Python", "relevance": 1, "source_type": "wiki", "judged_at": "2026-09-07", "freshness": "stale"}
+{"schema_version": 1, "query_id": "python-latest-release", "url": "https://example.test/python-3-6-release", "relevance": 0, "source_type": "other", "judged_at": "2026-09-07", "freshness": "stale"}
+{"schema_version": 1, "query_id": "python-asyncio-docs", "url": "https://docs.python.org/3/library/asyncio-eventloop.html", "relevance": 3, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "python-asyncio-docs", "url": "https://docs.python.org/3/library/asyncio.html", "relevance": 2, "source_type": "docs", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "python-asyncio-docs", "url": "https://docs.python.org/3/library/asyncio-task.html", "relevance": 1, "source_type": "docs", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "python-asyncio-docs", "url": "https://superuser.com/questions/not-asyncio", "relevance": 0, "source_type": "community", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "attention-is-all-you-need", "url": "https://arxiv.org/abs/1706.03762", "relevance": 3, "source_type": "academic", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "attention-is-all-you-need", "url": "https://proceedings.neurips.cc/paper_files/paper/2017/file/3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf", "relevance": 2, "source_type": "academic", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "attention-is-all-you-need", "url": "https://en.wikipedia.org/wiki/Attention_Is_All_You_Need", "relevance": 1, "source_type": "wiki", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "attention-is-all-you-need", "url": "https://medium.com/totally-unrelated", "relevance": 0, "source_type": "community", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "openai-company", "url": "https://openai.com/about/", "relevance": 3, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "openai-company", "url": "https://openai.com/", "relevance": 2, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "openai-company", "url": "https://en.wikipedia.org/wiki/OpenAI", "relevance": 2, "source_type": "wiki", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "openai-company", "url": "https://example.test/openai-rumors", "relevance": 0, "source_type": "other", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "cloudflare-pages-static", "url": "https://developers.cloudflare.com/pages/get-started/", "relevance": 3, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "cloudflare-pages-static", "url": "https://developers.cloudflare.com/pages/framework-guides/deploy-a-static-html-site/", "relevance": 3, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "cloudflare-pages-static", "url": "https://developers.cloudflare.com/pages/", "relevance": 2, "source_type": "docs", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "cloudflare-pages-static", "url": "https://gist.github.com/example", "relevance": 0, "source_type": "community", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "duckdb-vs-sqlite", "url": "https://duckdb.org/why_duckdb", "relevance": 2, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "duckdb-vs-sqlite", "url": "https://www.sqlite.org/whentouse.html", "relevance": 2, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "duckdb-vs-sqlite", "url": "https://duckdb.org/docs/stable/guides/performance/overview", "relevance": 1, "source_type": "docs", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "duckdb-vs-sqlite", "url": "https://news.ycombinator.com/item?id=1", "relevance": 0, "source_type": "community", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "rag-survey", "url": "https://arxiv.org/abs/2005.11401", "relevance": 3, "source_type": "academic", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "rag-survey", "url": "https://arxiv.org/abs/2312.10997", "relevance": 2, "source_type": "academic", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "rag-survey", "url": "https://en.wikipedia.org/wiki/Prompt_engineering", "relevance": 1, "source_type": "wiki", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "rag-survey", "url": "https://example.test/rag-buzzwords", "relevance": 0, "source_type": "other", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "python-downloads", "url": "https://www.python.org/downloads/", "relevance": 3, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "python-downloads", "url": "https://www.python.org/", "relevance": 2, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "python-downloads", "url": "https://www.python.org/ftp/python/", "relevance": 2, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "python-downloads", "url": "https://docs.python.org/3/using/index.html", "relevance": 1, "source_type": "docs", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "rfc-9110", "url": "https://www.rfc-editor.org/rfc/rfc9110.html", "relevance": 3, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "rfc-9110", "url": "https://datatracker.ietf.org/doc/html/rfc9110", "relevance": 3, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "rfc-9110", "url": "https://httpwg.org/specs/rfc9110.html", "relevance": 2, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "rfc-9110", "url": "https://en.wikipedia.org/wiki/HTTP", "relevance": 1, "source_type": "wiki", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "apple", "url": "https://www.apple.com/", "relevance": 3, "source_type": "official", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "apple", "url": "https://en.wikipedia.org/wiki/Apple_Inc.", "relevance": 2, "source_type": "wiki", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "apple", "url": "https://en.wikipedia.org/wiki/Apple", "relevance": 2, "source_type": "wiki", "judged_at": "2026-09-07"}
+{"schema_version": 1, "query_id": "apple", "url": "https://www.britannica.com/plant/apple", "relevance": 1, "source_type": "encyclopedia", "judged_at": "2026-09-07"}

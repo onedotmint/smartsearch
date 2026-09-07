@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""v0.3.0 retrieval benchmark runner.
+"""v1 retrieval benchmark runner.
 
 LIVE PROVIDER CALLS — NOT A CI GATE.
 =============================
@@ -11,12 +11,12 @@ the deterministic pytest suite.
 
 Modes (each is a valid retrieval-policy expression):
 
-    brave-only             intent=fresh    providers=[brave]
-    exa-only               intent=semantic providers=[exa]
-    tavily-only            intent=research providers=[tavily]
-    brave+exa+RRF          intent=general  providers=[brave, exa]
-    brave+exa+tavily+RRF   intent=research providers=[brave, exa, tavily]
-    RRF+Jina               intent=general  providers=[brave, exa] (+ rerank)
+    brave-only             providers=[brave]
+    exa-only               providers=[exa]
+    tavily-only            providers=[tavily]
+    brave+exa+RRF          providers=[brave, exa]
+    brave+exa+tavily+RRF   providers=[brave, exa, tavily]
+    RRF+Jina               providers=[brave, exa] (+ rerank)
 
 A mode is skipped (with a note) when its providers are not configured.
 
@@ -40,18 +40,15 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from smart_search.config import config  # noqa: E402
-from smart_search.retrieval import retrieve  # noqa: E402
-
 QUERIES_FILE = Path(__file__).resolve().parent / "retrieval_queries.jsonl"
 
 MODES: dict[str, dict[str, Any]] = {
-    "brave-only": {"providers": ["brave"], "intent": "fresh"},
-    "exa-only": {"providers": ["exa"], "intent": "semantic"},
-    "tavily-only": {"providers": ["tavily"], "intent": "research"},
-    "brave+exa+RRF": {"providers": ["brave", "exa"], "intent": "general"},
-    "brave+exa+tavily+RRF": {"providers": ["brave", "exa", "tavily"], "intent": "research"},
-    "RRF+Jina": {"providers": ["brave", "exa"], "intent": "general"},
+    "brave-only": {"providers": ("brave",), "intent": "fresh", "rerank": False},
+    "exa-only": {"providers": ("exa",), "intent": "semantic", "rerank": False},
+    "tavily-only": {"providers": ("tavily",), "intent": "research", "rerank": False},
+    "brave+exa+RRF": {"providers": ("brave", "exa"), "intent": "general", "rerank": False},
+    "brave+exa+tavily+RRF": {"providers": ("brave", "exa", "tavily"), "intent": "research", "rerank": False},
+    "RRF+Jina": {"providers": ("brave", "exa"), "intent": "general", "rerank": True},
 }
 
 _PROVIDER_KEY = {
@@ -61,11 +58,28 @@ _PROVIDER_KEY = {
 }
 
 
-def _mode_configured(providers: list[str], *, rerank: bool) -> tuple[bool, str]:
-    missing = [p for p in providers if not getattr(config, f"{p}_api_key", None)]
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="v1 retrieval benchmark — LIVE PROVIDER CALLS, not a CI gate.",
+    )
+    parser.add_argument("--max-queries", type=int, default=0, help="limit the number of queries per mode (0 = all)")
+    parser.add_argument(
+        "--modes",
+        default="",
+        help="comma-separated modes to run (default: all)",
+    )
+    parser.add_argument("--limit", type=int, default=5, help="per-provider result count and final top-k")
+    parser.add_argument("--queries", default=str(QUERIES_FILE), help="path to the queries JSONL")
+    parser.add_argument("--output", default="", help="directory for detail JSONL + markdown output")
+    parser.add_argument("--no-jina", action="store_true", help="disable the RRF+Jina mode")
+    return parser
+
+
+def _mode_configured(registry: Any, providers: tuple[str, ...], *, rerank: bool) -> tuple[bool, str]:
+    missing = [provider for provider in providers if registry.search_provider(provider) is None]
     if missing:
         return False, f"missing {', '.join(_PROVIDER_KEY[p] for p in missing)}"
-    if rerank and not config.jina_api_key:
+    if rerank and registry.reranker() is None:
         return False, "missing JINA_API_KEY"
     return True, ""
 
@@ -94,16 +108,20 @@ async def run_mode(
     *,
     limit: int,
     rerank: bool,
+    registry: Any,
+    search,
+    RetrievalPolicy,
 ) -> list[dict[str, Any]]:
+    policy = RetrievalPolicy(
+        providers=spec["providers"],
+        max_results=limit,
+        rerank=rerank,
+        intent=spec.get("intent", "general"),
+    )
     runs: list[dict[str, Any]] = []
     for item in queries:
         started = time.monotonic()
-        outcome = await retrieve(
-            item["query"],
-            spec["providers"],
-            limit,
-            intent=spec["intent"],
-        )
+        outcome = await search(item["query"], policy, registry=registry)
         elapsed_ms = round((time.monotonic() - started) * 1000, 2)
         runs.append(
             {
@@ -111,7 +129,12 @@ async def run_mode(
                 "query": item["query"],
                 "category": item["category"],
                 "intent": item["intent"],
-                "policy": list(outcome.policy),
+                "policy": {
+                    "providers": list(policy.providers),
+                    "max_results": policy.max_results,
+                    "rerank": policy.rerank,
+                    "intent": policy.intent,
+                },
                 "candidates": [
                     {"url": ranked.candidate.url, "providers": list(ranked.candidate.providers)}
                     for ranked in outcome.ranked
@@ -119,8 +142,8 @@ async def run_mode(
                 "attempts": [
                     {
                         "provider": attempt.provider,
-                        "status": attempt.status.value,
-                        "error_type": attempt.error.type if attempt.error else None,
+                        "status": attempt.status,
+                        "error_type": attempt.error_type or None,
                         "result_count": attempt.result_count,
                     }
                     for attempt in outcome.attempts
@@ -145,27 +168,15 @@ def markdown_table(runs_by_mode: dict[str, list[dict[str, Any]]], skipped: dict[
             continue
         runs = runs_by_mode[mode]
         candidates = sum(len(run["candidates"]) for run in runs)
-        ok = sum(1 for run in runs for a in run["attempts"] if a["status"] == "ok")
-        failed = sum(1 for run in runs for a in run["attempts"] if a["status"] == "error")
+        ok = sum(1 for run in runs for a in run["attempts"] if a["status"] in {"complete", "success", "ok"})
+        failed = sum(1 for run in runs for a in run["attempts"] if a["status"] in {"failed", "error"})
         avg = round(sum(run["elapsed_ms"] for run in runs) / len(runs), 1) if runs else 0.0
         lines.append(f"| {mode} | {len(runs)} | {candidates} | {ok} | {failed} | {avg} |")
     return "\n".join(lines)
 
 
-async def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="v0.3.0 retrieval benchmark — LIVE PROVIDER CALLS, not a CI gate.",
-    )
-    parser.add_argument("--max-queries", type=int, default=0, help="limit the number of queries per mode (0 = all)")
-    parser.add_argument(
-        "--modes",
-        default="",
-        help="comma-separated modes to run (default: all)",
-    )
-    parser.add_argument("--limit", type=int, default=5, help="per-provider result count and final top-k")
-    parser.add_argument("--queries", default=str(QUERIES_FILE), help="path to the queries JSONL")
-    parser.add_argument("--output", default="", help="directory for detail JSONL + markdown output")
-    parser.add_argument("--no-jina", action="store_true", help="disable the RRF+Jina mode")
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     selected_modes = [m.strip() for m in args.modes.split(",") if m.strip()] if args.modes else list(MODES)
@@ -187,21 +198,40 @@ async def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
     )
 
+    from smart_search.core.models import RetrievalPolicy
+    from smart_search.core.retrieval import search
+    from smart_search.providers.registry import default_registry
+
+    registry = default_registry()
     runs_by_mode: dict[str, list[dict[str, Any]]] = {}
     skipped: dict[str, str] = {}
     for mode in selected_modes:
         spec = MODES[mode]
-        rerank = mode == "RRF+Jina" and not args.no_jina
-        if mode == "RRF+Jina" and args.no_jina:
+        rerank = bool(spec["rerank"]) and not args.no_jina
+        if spec["rerank"] and args.no_jina:
             skipped[mode] = "disabled via --no-jina"
             continue
-        configured, reason = _mode_configured(spec["providers"], rerank=rerank)
+        configured, reason = _mode_configured(registry, spec["providers"], rerank=rerank)
         if not configured:
             skipped[mode] = reason
             print(f"[skip] {mode}: {reason}", file=sys.stderr)
             continue
-        print(f"[run ] {mode}: {len(queries)} queries (providers={spec['providers']}, intent={spec['intent']})", file=sys.stderr)
-        runs_by_mode[mode] = await run_mode(mode, spec, queries, limit=args.limit, rerank=rerank)
+        print(
+            f"[run ] {mode}: {len(queries)} queries (providers={list(spec['providers'])}, rerank={rerank})",
+            file=sys.stderr,
+        )
+        runs_by_mode[mode] = asyncio.run(
+            run_mode(
+                mode,
+                spec,
+                queries,
+                limit=args.limit,
+                rerank=rerank,
+                registry=registry,
+                search=search,
+                RetrievalPolicy=RetrievalPolicy,
+            )
+        )
 
     table = markdown_table(runs_by_mode, skipped)
     print(table)
@@ -220,4 +250,4 @@ async def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit(main())

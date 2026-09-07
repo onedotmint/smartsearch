@@ -2,20 +2,18 @@
 
 ## Offline quality gate
 
-Run these checks from a source checkout before release:
+Run the full offline gate from a source checkout before release:
 
 ```sh
-python3 -m compileall -q src tests
-PYTHONPATH=src python3 -m pytest tests -q
-npm test
-npm pack --dry-run
-(cd integrations/pi && npm run typecheck && npm test && npm pack --dry-run)
-git diff --check
+./scripts/check full
 ```
 
-They must not call live providers, publish packages, push tags, or create a
-GitHub release. Inspect package contents from a temporary dry-run result and do
-not retain generated archives.
+It compiles Python sources, runs the complete offline pytest suite, root npm
+wrapper tests and package dry-run, Pi typecheck/tests/package dry-run, and
+`git diff --check`. Direct commands remain valid; see `docs/development.md`.
+These checks must not call live providers, publish packages, push tags, or
+create a GitHub release. Inspect package contents from a temporary dry-run
+result and do not retain generated archives.
 
 ## Stable release
 

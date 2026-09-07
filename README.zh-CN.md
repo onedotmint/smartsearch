@@ -40,12 +40,8 @@ pi install npm:@onedotmint/pi-smart-search@latest
 详见[开发与发布指南](https://github.com/onedotmint/smartsearch/blob/main/docs/development.md)。
 
 ```sh
-python3 -m compileall -q src tests
-PYTHONPATH=src python3 -m pytest tests -q
-npm test
-npm pack --dry-run
-(cd integrations/pi && npm run typecheck && npm test && npm pack --dry-run)
-git diff --check
+./scripts/check quick
+./scripts/check full
 ```
 
 MIT License。

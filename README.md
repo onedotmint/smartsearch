@@ -40,12 +40,8 @@ This release replaces pre-v1 commands, envelopes, and Python facades; there are 
 See [development and release](https://github.com/onedotmint/smartsearch/blob/main/docs/development.md) for maintainer checks.
 
 ```sh
-python3 -m compileall -q src tests
-PYTHONPATH=src python3 -m pytest tests -q
-npm test
-npm pack --dry-run
-(cd integrations/pi && npm run typecheck && npm test && npm pack --dry-run)
-git diff --check
+./scripts/check quick
+./scripts/check full
 ```
 
 MIT License.
