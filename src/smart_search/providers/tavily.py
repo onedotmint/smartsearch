@@ -1,7 +1,7 @@
 """Tavily direct search adapter for the v1 retrieval core.
 
 Mirrors the Brave/Exa adapter lifecycle: one authenticated POST through the
-shared request client with the shared retry budget, timeout/cancellation path,
+shared request client with tenacity retry, timeout/cancellation path,
 and classified errors via ``classify_provider_exception``. Auth uses the
 ``Authorization: Bearer`` header. The module re-exports the pure
 ``normalize_tavily()`` normalizer as ``to_discovery_candidates`` so captured
@@ -22,8 +22,6 @@ from ..config import config
 from ..logger import log_info
 from ..security import safe_provider_message, sanitize_data
 from ..runtime_cache import (
-    RequestBudgetExceeded,
-    add_retry,
     bounded_retry_delay,
     current_context,
     request_client,
@@ -133,9 +131,6 @@ class TavilySearchProvider(BaseSearchProvider):
                 retry=retry_if_exception(_is_retryable_exception),
                 reraise=True,
             ):
-                if attempt.retry_state.attempt_number > 1:
-                    if not add_retry():
-                        raise RequestBudgetExceeded()
                 with attempt:
                     response = await client.post(
                         endpoint,

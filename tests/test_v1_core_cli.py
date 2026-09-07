@@ -371,6 +371,101 @@ assert not Path(os.environ["V1_TEST_CONFIG_DIR"]).exists()
     assert completed.returncode == 0, completed.stderr + completed.stdout
 
 
+def test_fresh_process_reports_removed_legacy_modules_and_exports_absent():
+    import os
+    import subprocess
+    import sys
+
+    source_root = __import__("pathlib").Path(__file__).parents[1] / "src"
+    script = r'''
+import importlib
+
+removed = (
+    "smart_search.providers.anysearch",
+    "smart_search.providers.context7",
+    "smart_search.providers.openai_compatible",
+    "smart_search.providers.xai_responses",
+    "smart_search.providers.zhipu",
+    "smart_search.providers.zhipu_mcp",
+    "smart_search.sources",
+    "smart_search.embedding_presets",
+    "smart_search.utils",
+)
+for name in removed:
+    try:
+        importlib.import_module(name)
+    except ModuleNotFoundError as exc:
+        assert exc.name == name, (name, exc.name)
+    else:
+        raise AssertionError("removed module imported: " + name)
+
+import smart_search.providers as providers
+retired_exports = (
+    "Context7Provider",
+    "AnySearchProvider",
+    "ZhipuWebSearchProvider",
+    "ZhipuMCPProvider",
+    "XAIResponsesSearchProvider",
+    "OpenAICompatibleSearchProvider",
+)
+for export in retired_exports:
+    assert export not in providers._EXPORTS
+    assert export not in providers.__all__
+    try:
+        getattr(providers, export)
+    except AttributeError:
+        pass
+    else:
+        raise AssertionError("retired export still present: " + export)
+'''
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(source_root),
+    }
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert completed.returncode == 0, completed.stderr + completed.stdout
+
+
+def test_runtime_cache_keeps_client_helpers_without_inactive_machinery():
+    import smart_search.runtime_cache as runtime_cache
+
+    for name in ("request_client", "current_context", "request_timeout_kwargs", "bounded_retry_delay"):
+        assert callable(getattr(runtime_cache, name))
+    assert runtime_cache.current_context() is None
+    assert runtime_cache.request_timeout_kwargs(30.0, object()) == {}
+    assert runtime_cache.bounded_retry_delay(-1.5, object()) == 0.0
+    for name in (
+        "observe_command",
+        "RequestContext",
+        "request_scope",
+        "RequestBudget",
+        "RequestBudgetExceeded",
+        "RuntimeMetrics",
+        "metrics_scope",
+        "current_metrics",
+        "attach_metrics",
+        "observe_stage",
+        "add_request",
+        "add_fetch",
+        "add_retry",
+        "allow_synthesis",
+        "add_remote_router_call",
+        "mark_budget_exhausted",
+        "RuntimeTTLCache",
+        "CacheExecution",
+        "cache_input",
+        "normalize_query",
+        "normalize_url",
+        "request_timeout",
+    ):
+        assert not hasattr(runtime_cache, name)
+
+
 def test_empty_search_from_all_providers_remains_complete():
     from smart_search.cli import run_search
 

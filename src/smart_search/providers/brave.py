@@ -1,7 +1,7 @@
 """Brave Search provider adapter + DiscoveryCandidate normalizer (v0.3.0).
 
 Mirrors the Exa adapter lifecycle: httpx timeout, tenacity retry on retryable
-status codes, shared request client, retry budget, and classified errors via
+status codes, shared request client, and classified errors via
 ``classify_provider_exception``. Auth uses the ``X-Subscription-Token``
 header. ``freshness``/``country``/``language`` are sent ONLY when explicitly
 given — Brave language stays unrestricted by default and there is no language
@@ -19,8 +19,6 @@ from ..core.normalizers import normalize_brave as to_discovery_candidates
 from ..config import config
 from ..logger import log_info
 from ..runtime_cache import (
-    RequestBudgetExceeded,
-    add_retry,
     bounded_retry_delay,
     current_context,
     request_client,
@@ -146,9 +144,6 @@ class BraveSearchProvider(BaseSearchProvider):
                 retry=retry_if_exception(_is_retryable_exception),
                 reraise=True,
             ):
-                if attempt.retry_state.attempt_number > 1:
-                    if not add_retry():
-                        raise RequestBudgetExceeded()
                 with attempt:
                     response = await client.get(
                         endpoint,
